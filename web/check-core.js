@@ -18,7 +18,9 @@ function b64(s) {
 }
 
 /**
- * @returns {Promise<{ok: boolean, steps: {ok: boolean|null, text: string}[], result: object}>}
+ * `ok` = dëftesa përputhet me root-in. `trust` tregon nga erdhi root-i: "self" (i njëjti
+ * server, pra i besohet atij), "second" (një zile e dytë dha të njëjtin), "user" (e dhe ti).
+ * @returns {Promise<{ok: boolean, trust: "self"|"second"|"user", steps: {ok: boolean|null, text: string}[], result: object}>}
  */
 export async function checkAccount({ ziljaUrl, pubkey, solanaRpc, rootOverride, secondZilja }) {
   const steps = [];
@@ -26,17 +28,20 @@ export async function checkAccount({ ziljaUrl, pubkey, solanaRpc, rootOverride, 
   steps.push({ ok: null, text: `Zilja: slot ${r.slot}, dëftesë ${r.proofBytes} bajt${r.complete ? "" : " (pema nuk mbulon ende çdo llogari)"}` });
 
   let root = r.root;
+  let trust = "self";
   if (rootOverride) {
+    trust = "user";
     root = rootOverride.trim().toLowerCase();
     steps.push({ ok: null, text: "Root-i: ai që dhe ti" });
   } else if (secondZilja) {
-    const r2 = await rpc(secondZilja, "getZiljaRoot");
-    if (r2.slot === r.slot) {
+    const r2 = await rpc(secondZilja, "getZiljaRoot", [r.slot]).catch(() => null);
+    if (r2 && r2.slot === r.slot) {
       const same = r2.root === r.root;
       steps.push({ ok: same, text: same ? "Zilja e dytë jep të njëjtin root për këtë slot" : "Zilja e dytë jep root TJETËR për të njëjtin slot" });
-      if (!same) return { ok: false, steps, result: r };
+      if (!same) return { ok: false, trust, steps, result: r };
+      trust = "second";
     } else {
-      steps.push({ ok: null, text: `Zilja e dytë është në slot ${r2.slot}, s'mund të krahasohet tani` });
+      steps.push({ ok: null, text: `Zilja e dytë s'ka root për slotin ${r.slot}, s'mund të krahasohet` });
     }
   } else {
     steps.push({ ok: null, text: "Root-i: nga i njëjti server (ende pa firmë validatorësh)" });
@@ -68,5 +73,5 @@ export async function checkAccount({ ziljaUrl, pubkey, solanaRpc, rootOverride, 
       });
     }
   }
-  return { ok, steps, result: r };
+  return { ok, trust, steps, result: r };
 }

@@ -23,6 +23,8 @@ use zilja_verifier::Hash;
 
 /// Sa slote të fundit mbahen me firmë (që disa zile të krahasohen në të njëjtin slot).
 pub const ATTEST_HISTORY: usize = 1024;
+/// Sa root-e slotesh të fundit mbahen në RAM.
+pub const ROOT_HISTORY: usize = 1024;
 /// Llogaritë e snapshot-it i kalojmë pemës me copa të kësaj madhësie.
 const SNAPSHOT_CHUNK: usize = 1 << 16;
 
@@ -46,6 +48,8 @@ pub struct State {
     pub attester: Option<[u8; 32]>,
     /// Root-et e firmosura të sloteve të fundit.
     pub attestations: BTreeMap<Slot, SignedRoot>,
+    /// Root-et e sloteve të fundit të rrënjosur (ROOT_HISTORY), për `getZiljaRoot [slot]` dhe etiketat e dëftesave.
+    pub roots: BTreeMap<Slot, Hash>,
 }
 
 impl Default for State {
@@ -58,6 +62,7 @@ impl Default for State {
             broken: None,
             attester: None,
             attestations: BTreeMap::new(),
+            roots: BTreeMap::new(),
         }
     }
 }
@@ -168,6 +173,7 @@ impl Service {
             if let Some(r) = &resume {
                 tracker.resume(r.slot, r.fingerprint, r.complete);
                 st.slot = r.slot;
+                st.roots.insert(r.slot, r.root);
                 st.ready = true;
                 st.complete = r.complete;
                 let m = &shared.metrics;
@@ -224,6 +230,10 @@ impl Drop for Service {
 }
 
 fn sign_root(st: &mut State, signer: &Option<SigningKey>, slot: Slot, root: Hash) {
+    st.roots.insert(slot, root);
+    while st.roots.len() > ROOT_HISTORY {
+        st.roots.pop_first();
+    }
     if let Some(k) = signer {
         let signature = k.sign(&attest_message(slot, &root)).to_bytes();
         st.attestations.insert(slot, SignedRoot { root, signature });

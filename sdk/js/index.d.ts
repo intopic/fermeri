@@ -3,6 +3,7 @@ export type Trust = "single" | "agreement" | "quorum";
 
 /** Llogaria siç e jep Zilja (`getAccountProof`). */
 export interface ZiljaAccount {
+  /** u64: tekst dhjetor (si e jep RPC-ja), bigint, ose numër i plotë ≤ 2^53. */
   lamports: number | string | bigint;
   owner: string;
   executable: boolean;
@@ -19,6 +20,10 @@ export function sha256(data: Uint8Array): Promise<Uint8Array>;
 export function b58decode(s: string): Uint8Array;
 export function hexToBytes(h: string): Uint8Array;
 export function bytesToHex(b: Uint8Array): string;
+/** u64 i rreptë në [0, 2^64); hedh gabim përndryshe. */
+export function toU64(v: unknown): bigint;
+/** Kontrollon rreptë një llogari dhe e kthen në formën kanonike; hedh gabim përndryshe. */
+export function normalizeAccount(a: unknown): { lamports: bigint; owner: string; executable: boolean; dataLen: bigint; dataHash: string };
 
 export interface Attestation {
   validator: string;
@@ -46,7 +51,7 @@ export interface ZiljaClientOptions {
   minAgree?: number;
   /** Kontrollo firmat e validatorëve (> 2/3 e stake-ut). Kërkon `solanaRpc`. */
   quorum?: boolean;
-  /** Nën këtë nivel besimi, `ok` del `false`. Parazgjedhja: "single". */
+  /** Nën këtë nivel besimi, `ok` del `false`. Parazgjedhja: "agreement". */
   minTrust?: Trust;
   timeoutMs?: number;
   fetch?: typeof fetch;
@@ -58,14 +63,16 @@ export interface VerifyResult {
   verdict: Verdict;
   slot: number;
   root: string;
-  account: { lamports: bigint; owner: string; executable: boolean; dataLen: number; dataHash: string } | null;
+  /** Vlerat e kontrolluara (jo përgjigja e papërpunuar); `null` kur verdikti s'është "exists". */
+  account: { lamports: bigint; owner: string; executable: boolean; dataLen: bigint; dataHash: string } | null;
   trust: Trust;
   /** Sa zile dhanë të njëjtin root. */
   agreeing: number;
   endpoints: number;
   quorum: { reached: boolean; stakePercent: number; validSignatures: number } | null;
   /** Krahasimi me të dhënat e `solanaRpc`, nëse u bë. */
-  data: { checked: boolean; matches: boolean; rpcSlot: number } | null;
+  /** `bytes` jepet vetëm kur `matches === true`: vetëm atëherë të dhënat janë të verifikuara. */
+  data: { checked: boolean; matches: boolean; rpcSlot: number; bytes: Uint8Array | null } | null;
   warnings: string[];
 }
 

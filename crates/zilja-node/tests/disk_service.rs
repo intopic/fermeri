@@ -38,7 +38,7 @@ fn proof_ok(sh: &Shared, key: u8, at: Option<u64>) -> (u64, u64) {
     assert!(res.is_object(), "{r}");
     let root: [u8; 32] = hex::decode(res["root"].as_str().unwrap()).unwrap().try_into().unwrap();
     let proof = Proof::from_bytes(&hex::decode(res["proof"].as_str().unwrap()).unwrap()).unwrap();
-    let meta = AccountMeta { lamports: res["account"]["lamports"].as_u64().unwrap(), ..Default::default() };
+    let meta = AccountMeta { lamports: res["account"]["lamports"].as_str().unwrap().parse().unwrap(), ..Default::default() };
     assert_eq!(verify_account(&root, &[key; 32], Some(&meta), &proof), Verdict::Exists);
     (res["slot"].as_u64().unwrap(), meta.lamports)
 }

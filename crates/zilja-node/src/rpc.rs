@@ -2,8 +2,12 @@
 //!
 //! Metodat:
 //! - `getAccountProof [pubkey_base58, {"slot": n}?]` → dëftesa në slotin e fundit të rrënjosur,
-//!   ose në një slot të kaluar brenda kujtesës (vetëm me pemën në disk).
-//! - `getZiljaRoot []` → `{slot, root, accounts, complete}`.
+//!   ose në gjendjen e një sloti të kaluar brenda kujtesës (vetëm me pemën në disk). `slot` në
+//!   përgjigje është sloti i rrënjosur që u përdor vërtet (≤ i kërkuari, L-05).
+//! - `getZiljaRoot [slot?]` → `{slot, root, accounts, complete}`; me `slot`, root-i i atij sloti
+//!   nga unaza e sloteve të fundit (Simpler-5), në të dyja mënyrat.
+//!
+//! `lamports` dhe `dataLen` dalin si tekst dhjetor (F-08): JSON-i s'mund t'i mbajë saktë mbi 2^53.
 //! - `getZiljaAttestation [slot?]` → `{slot, root, validator, signature}` (kur zilja firmos).
 //!
 //! Rrugë GET: `/health`, `/metrics` (Prometheus).
@@ -15,16 +19,32 @@ use std::thread::JoinHandle;
 use tiny_http::{Header, Method, Response, Server};
 use zilja_verifier::Key;
 
+/// Gabim RPC: (kodi, mesazhi).
+pub type RpcError = (i64, String);
+
 /// Ndërton përgjigjen e `getAccountProof` nga gjendja (`at = None` = sloti i fundit).
-pub fn account_proof_json(st: &State, pubkey: &Key, at: Option<u64>) -> Result<Value, String> {
-    let (slot, root, proof, meta) = st.tree.prove_at(pubkey, at)?;
+pub fn account_proof_json(st: &State, pubkey: &Key, at: Option<u64>) -> Result<Value, RpcError> {
+    // L-05: gjendja në slotin `v` është ajo e slotit më të fundit të rrënjosur ≤ v; ai etiketohet.
+    let at = match at {
+        None => None,
+        Some(v) if v >= st.slot => Some(st.slot),
+        Some(v) => match st.roots.range(..=v).next_back() {
+            Some((s, _)) => Some(*s),
+            None => return Err((-32602, format!("sloti {v} është jashtë kujtesës"))),
+        },
+    };
+    let (slot, root, proof, meta) = st.tree.prove_at(pubkey, at).map_err(|e| (-32602, e))?;
+    // L-02: një pemë që s'mbulon çdo llogari nuk jep dëftesa "nuk ekziston".
+    if meta.is_none() && !st.complete {
+        return Err((-32006, "pema e kësaj zileje nuk mbulon çdo llogari (nisi pa snapshot): s'jep dëftesa mospërfshirjeje".into()));
+    }
     let bytes = proof.to_bytes();
     let account = meta.map(|m| {
         json!({
-            "lamports": m.lamports,
+            "lamports": m.lamports.to_string(),
             "owner": bs58::encode(m.owner).into_string(),
             "executable": m.executable,
-            "dataLen": m.data_len,
+            "dataLen": m.data_len.to_string(),
             "dataHash": hex::encode(m.data_hash),
         })
     });
@@ -53,6 +73,10 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
     let params = req.get("params").cloned().unwrap_or(json!([]));
+    // L-04: params, nëse jepen, duhet të jenë listë.
+    let Some(params) = params.as_array().cloned() else {
+        return err(id, -32602, "params duhet të jenë listë");
+    };
     let st = shared.state.read().unwrap();
     if !st.ready {
         return match &st.broken {
@@ -62,30 +86,61 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
     }
     match method {
         "getAccountProof" => {
-            let Some(pk) = params.get(0).and_then(|p| p.as_str()) else {
-                return err(id, -32602, "duhet params: [pubkey]");
+            let (Some(pk), true) = (params.first().and_then(|p| p.as_str()), params.len() <= 2) else {
+                return err(id, -32602, "duhet params: [pubkey, {slot}?]");
             };
-            let at = params.get(1).and_then(|o| o.get("slot")).and_then(|s| s.as_u64());
-            match parse_pubkey(pk).and_then(|k| account_proof_json(&st, &k, at)) {
+            let at = match params.get(1) {
+                None => None,
+                Some(o) => match o.as_object() {
+                    Some(m) if m.keys().all(|k| k == "slot") => match m.get("slot") {
+                        None => None,
+                        Some(s) => match s.as_u64() {
+                            Some(s) => Some(s),
+                            None => return err(id, -32602, "slot duhet numër i plotë jo negativ"),
+                        },
+                    },
+                    _ => return err(id, -32602, "opsionet e njohura: {slot}"),
+                },
+            };
+            match parse_pubkey(pk).map_err(|e| (-32602, e)).and_then(|k| account_proof_json(&st, &k, at)) {
                 Ok(res) => {
                     shared.metrics.proofs_served.fetch_add(1, Ordering::Relaxed);
                     json!({"jsonrpc": "2.0", "id": id, "result": res})
                 }
-                Err(e) => err(id, -32602, &e),
+                Err((code, e)) => err(id, code, &e),
             }
         }
-        "getZiljaRoot" => json!({
-            "jsonrpc": "2.0", "id": id,
-            "result": {
-                "slot": st.slot, "root": hex::encode(st.tree.root()), "accounts": st.tree.len(), "complete": st.complete,
-                "provableFrom": st.tree.provable_range().map(|r| r.0),
-            }
-        }),
+        "getZiljaRoot" => {
+            let (slot, root) = match params.first() {
+                None => (st.slot, st.tree.root()),
+                Some(v) => match v.as_u64() {
+                    Some(s) if s == st.slot => (s, st.tree.root()),
+                    Some(s) => match st.roots.get(&s) {
+                        Some(r) => (s, *r),
+                        None => return err(id, -32005, &format!("s'ka root për slotin {s}")),
+                    },
+                    None => return err(id, -32602, "slot duhet numër i plotë jo negativ"),
+                },
+            };
+            json!({
+                "jsonrpc": "2.0", "id": id,
+                "result": {
+                    "slot": slot, "root": hex::encode(root), "accounts": st.tree.len(), "complete": st.complete,
+                    "provableFrom": st.tree.provable_range().map(|r| r.0),
+                }
+            })
+        }
         "getZiljaAttestation" => {
             let Some(attester) = st.attester else {
                 return err(id, -32004, "kjo zile nuk firmos (mungon attest_keypair)");
             };
-            let wanted = params.get(0).and_then(|p| p.as_u64());
+            let wanted = match params.first() {
+                None => None,
+                Some(v) => match v.as_u64() {
+                    Some(s) => Some(s),
+                    None => return err(id, -32602, "slot duhet numër i plotë jo negativ"),
+                },
+            };
             let found = match wanted {
                 Some(s) => st.attestations.get(&s).map(|a| (s, a)),
                 None => st.attestations.iter().next_back().map(|(s, a)| (*s, a)),
@@ -154,10 +209,10 @@ mod tests {
 
     fn decode_meta(v: &Value) -> AccountMeta {
         AccountMeta {
-            lamports: v["lamports"].as_u64().unwrap(),
+            lamports: v["lamports"].as_str().unwrap().parse().unwrap(),
             owner: bs58::decode(v["owner"].as_str().unwrap()).into_vec().unwrap().try_into().unwrap(),
             executable: v["executable"].as_bool().unwrap(),
-            data_len: v["dataLen"].as_u64().unwrap(),
+            data_len: v["dataLen"].as_str().unwrap().parse().unwrap(),
             data_hash: hex::decode(v["dataHash"].as_str().unwrap()).unwrap().try_into().unwrap(),
         }
     }
@@ -207,6 +262,22 @@ mod tests {
         assert_eq!(handle_jsonrpc(&shared, r#"{"id":1,"method":"getZiljaAttestation"}"#)["error"]["code"], -32004);
 
         assert_eq!(handle_jsonrpc(&shared, "jo json")["error"]["code"], -32700);
+        // L-04: parametrat e gabuar refuzohen.
+        let pk = bs58::encode(b).into_string();
+        for bad in [
+            format!(r#"{{"id":1,"method":"getAccountProof","params":["{pk}",{{"slot":-1}}]}}"#),
+            format!(r#"{{"id":1,"method":"getAccountProof","params":["{pk}",{{"slot":"5"}}]}}"#),
+            format!(r#"{{"id":1,"method":"getAccountProof","params":["{pk}",{{"slott":5}}]}}"#),
+            format!(r#"{{"id":1,"method":"getAccountProof","params":{{"pubkey":"{pk}"}}}}"#),
+            r#"{"id":1,"method":"getZiljaRoot","params":["x"]}"#.to_string(),
+        ] {
+            assert_eq!(handle_jsonrpc(&shared, &bad)["error"]["code"], -32602, "{bad}");
+        }
+        // Simpler-5: root-i i një sloti të kaluar nga unaza.
+        let r5 = handle_jsonrpc(&shared, r#"{"id":1,"method":"getZiljaRoot","params":[5]}"#);
+        assert_eq!(r5["result"]["slot"], 5, "{r5}");
+        assert_ne!(r5["result"]["root"], root_resp["result"]["root"]);
+        assert_eq!(handle_jsonrpc(&shared, r#"{"id":1,"method":"getZiljaRoot","params":[4]}"#)["error"]["code"], -32005);
         assert_eq!(handle_jsonrpc(&shared, r#"{"id":1,"method":"x"}"#)["error"]["code"], -32601);
         assert_eq!(
             handle_jsonrpc(&shared, r#"{"id":1,"method":"getAccountProof","params":["0OIl"]}"#)["error"]["code"],

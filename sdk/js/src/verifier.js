@@ -11,15 +11,49 @@ const ACCOUNT_DOMAIN = enc.encode("zilja/account/v1");
 const EMPTY = new Uint8Array(32);
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
+const HEX = /^(?:[0-9a-fA-F]{2})*$/;
+const U64_MAX = (1n << 64n) - 1n;
+
+/** Hex i rreptë (L-03): vetëm shifra hex, gjatësi çift. */
 export function hexToBytes(h) {
-  if (h.length % 2) throw new Error("hex me gjatësi tek");
+  if (typeof h !== "string" || !HEX.test(h)) throw new Error("hex i pavlefshëm");
   const out = new Uint8Array(h.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    const b = parseInt(h.substr(i * 2, 2), 16);
-    if (Number.isNaN(b)) throw new Error("hex i pavlefshëm");
-    out[i] = b;
-  }
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
   return out;
+}
+
+function hex32(h) {
+  const b = hexToBytes(h);
+  if (b.length !== 32) throw new Error("duhen 32 bajt");
+  return b;
+}
+
+/**
+ * u64 i rreptë (F-03, F-08): bigint, tekst dhjetor ose numër i plotë i sigurt, në [0, 2^64).
+ * Një numër JSON mbi 2^53 nuk pranohet, sepse JS e ka rrumbullakuar tashmë.
+ */
+export function toU64(v) {
+  let n;
+  if (typeof v === "bigint") n = v;
+  else if (typeof v === "string" && /^(0|[1-9][0-9]{0,19})$/.test(v)) n = BigInt(v);
+  else if (typeof v === "number" && Number.isSafeInteger(v)) n = BigInt(v);
+  else throw new Error("u64 i pavlefshëm");
+  if (n < 0n || n > U64_MAX) throw new Error("u64 jashtë kufijve");
+  return n;
+}
+
+/**
+ * Kontrollon dhe kthen llogarinë në formën kanonike (F-03):
+ * `{lamports: bigint, owner: string, executable: boolean, dataLen: bigint, dataHash: string}`.
+ * Hedh gabim për çdo fushë që mungon, ka llojin e gabuar ose del jashtë kufijve.
+ */
+export function normalizeAccount(a) {
+  if (a === null || typeof a !== "object") throw new Error("llogari e pavlefshme");
+  if (typeof a.executable !== "boolean") throw new Error("executable duhet boolean");
+  if (typeof a.owner !== "string") throw new Error("owner duhet tekst");
+  key32(a.owner);
+  const dataHash = bytesToHex(hex32(a.dataHash));
+  return { lamports: toU64(a.lamports), owner: a.owner, executable: a.executable, dataLen: toU64(a.dataLen), dataHash };
 }
 
 export function bytesToHex(b) {
@@ -27,6 +61,7 @@ export function bytesToHex(b) {
 }
 
 export function b58decode(s) {
+  if (typeof s !== "string" || s.length === 0 || s.length > 64) throw new Error("base58 i pavlefshëm");
   let n = 0n;
   for (const c of s) {
     const i = B58.indexOf(c);
@@ -84,15 +119,9 @@ function commonPrefixLen(a, b) {
 
 /** value_hash sipas SPEC.md. `account` = {lamports, owner, executable, dataLen, dataHash}. */
 export async function valueHash(account) {
+  const a = normalizeAccount(account);
   return sha256(
-    concat(
-      ACCOUNT_DOMAIN,
-      u64le(account.lamports),
-      key32(account.owner),
-      Uint8Array.of(account.executable ? 1 : 0),
-      u64le(account.dataLen),
-      hexToBytes(account.dataHash),
-    ),
+    concat(ACCOUNT_DOMAIN, u64le(a.lamports), key32(a.owner), Uint8Array.of(a.executable ? 1 : 0), u64le(a.dataLen), hex32(a.dataHash)),
   );
 }
 
@@ -149,7 +178,7 @@ async function computeRoot(key, proof) {
  */
 export async function verifyAccount(rootHex, pubkeyB58, account, proofHex) {
   try {
-    const root = hexToBytes(rootHex);
+    const root = hex32(rootHex);
     const key = key32(pubkeyB58);
     const proof = parseProof(hexToBytes(proofHex));
     if (account) {
@@ -168,5 +197,5 @@ export async function verifyAccount(rootHex, pubkeyB58, account, proofHex) {
 
 /** Kontrollon që të dhënat (nga çdo RPC) përputhen me dataHash/dataLen të vulosur. */
 export async function dataMatches(account, dataBytes) {
-  return BigInt(account.dataLen) === BigInt(dataBytes.length) && bytesToHex(await sha256(dataBytes)) === account.dataHash;
+  return toU64(account.dataLen) === BigInt(dataBytes.length) && eq(await sha256(dataBytes), hex32(account.dataHash));
 }

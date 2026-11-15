@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 
 #[cfg(feature = "attest")]
 pub mod attest;
+pub mod wire;
 
 pub type Hash = [u8; 32];
 pub type Key = [u8; 32];

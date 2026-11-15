@@ -23,7 +23,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node test/verifier.test.mjs && node test/attest.test.mjs && node test/client.test.mjs",
+    "test": "node test/verifier.test.mjs && node test/attest.test.mjs && node test/client.test.mjs && node test/audit.test.mjs && node test/wire.test.mjs",
     "test:audit": "node test/audit.test.mjs"
   },
   "keywords": [

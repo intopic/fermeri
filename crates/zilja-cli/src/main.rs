@@ -73,10 +73,10 @@ fn run() -> Result<bool, String> {
     } else {
         let a = &r["account"];
         Some(AccountMeta {
-            lamports: a["lamports"].as_u64().ok_or("lamports")?,
+            lamports: u64_field(&a["lamports"]).ok_or("lamports")?,
             owner: b58_32(a["owner"].as_str().ok_or("owner")?)?,
             executable: a["executable"].as_bool().ok_or("executable")?,
-            data_len: a["dataLen"].as_u64().ok_or("dataLen")?,
+            data_len: u64_field(&a["dataLen"]).ok_or("dataLen")?,
             data_hash: h32(a["dataHash"].as_str().ok_or("dataHash")?)?,
         })
     };
@@ -130,5 +130,14 @@ fn main() {
             eprintln!("gabim: {e}");
             exit(2)
         }
+    }
+}
+
+/// u64 nga JSON sipas `zilja_verifier::wire`: tekst dhjetor, ose numër ≤ 2^53 - 1 (F-08).
+fn u64_field(v: &Value) -> Option<u64> {
+    match v {
+        Value::String(s) => zilja_verifier::wire::parse_u64_dec(s),
+        Value::Number(n) => n.as_u64().filter(|n| *n <= zilja_verifier::wire::MAX_SAFE_JSON_INT),
+        _ => None,
     }
 }

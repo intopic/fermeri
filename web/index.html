@@ -65,7 +65,9 @@
   import { checkAccount } from "./check-core.js";
   const $ = (id) => document.getElementById(id);
   const q = new URLSearchParams(location.search);
-  for (const k of ["pubkey", "zilja", "rpc", "zilja2", "root"]) if (q.get(k)) $(k).value = q.get(k);
+  // I-05: nga URL-ja plotësohet vetëm llogaria. Adresat e zileve dhe root-i, që vendosin se kujt
+  // i besohet, nuk merren kurrë nga një lidhje që mund ta ketë bërë dikush tjetër.
+  if (q.get("pubkey")) $("pubkey").value = q.get("pubkey");
 
   $("f").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -81,16 +83,21 @@
       $("steps").append(li);
     };
     try {
-      const { ok, steps } = await checkAccount({
-        ziljaUrl: $("zilja").value.trim(),
+      const ziljaUrl = $("zilja").value.trim();
+      const { ok, trust, steps } = await checkAccount({
+        ziljaUrl,
         pubkey: $("pubkey").value.trim(),
         solanaRpc: $("rpc").value.trim() || undefined,
         secondZilja: $("zilja2").value.trim() || undefined,
         rootOverride: $("root").value.trim() || undefined,
       });
       steps.forEach((s) => add(s.ok, s.text));
-      $("verdict").className = "verdict " + (ok ? "ok" : "bad");
-      $("verdict").textContent = ok ? "✅ E verifikuar me matematikë" : "❌ Mos i beso: dëftesa nuk përputhet";
+      // L-01: "e verifikuar" vetëm kur root-i nuk vjen nga i njëjti server.
+      const whom = { self: `root-i vjen nga ${ziljaUrl} dhe i besohet asaj`, second: "dy zile dhanë të njëjtin root", user: "root-i që dhe ti" }[trust];
+      $("verdict").className = "verdict " + (ok && trust !== "self" ? "ok" : ok ? "" : "bad");
+      $("verdict").textContent = ok
+        ? (trust === "self" ? "⚠️ Dëftesa përputhet, por " : "✅ E verifikuar: ") + whom
+        : `❌ Mos i beso: dëftesa nga ${ziljaUrl} nuk përputhet`;
     } catch (err) {
       add(false, "Gabim: " + err.message);
     } finally {

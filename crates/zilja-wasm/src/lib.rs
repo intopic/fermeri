@@ -14,17 +14,32 @@ fn b58_32(s: &str) -> Result<[u8; 32], String> {
     bs58::decode(s).into_vec().map_err(|e| e.to_string())?.try_into().map_err(|_| "duhen 32 bajt".to_string())
 }
 
+/// u64 i rreptë nga tekst dhjetor (F-03), sipas `zilja_verifier::wire`.
+pub fn parse_u64(s: &str) -> Result<u64, String> {
+    zilja_verifier::wire::parse_u64_dec(s).ok_or_else(|| format!("u64 i pavlefshëm: {s:?}"))
+}
+
+fn parse_bool(s: &str) -> Result<bool, String> {
+    match s {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(format!("executable duhet \"true\" ose \"false\", jo {s:?}")),
+    }
+}
+
 /// Kthen "exists", "does_not_exist", "invalid" ose "error: ...".
 ///
-/// Për llogari që pretendohet se nuk ekziston, jep `lamports = 0` dhe `owner = ""`.
+/// Numrat jepen si tekst dhjetor dhe `executable` si "true"/"false": kufiri JS→WASM
+/// përndryshe i mbështjell numrat modulo 2^64 dhe i kthen vlerat në boolean sipas "truthiness".
+/// Për llogari që pretendohet se nuk ekziston, jep `owner = ""` (fushat e tjera injorohen).
 #[allow(clippy::too_many_arguments)]
 pub fn verify_str(
     root_hex: &str,
     pubkey_b58: &str,
-    lamports: u64,
+    lamports: &str,
     owner_b58: &str,
-    executable: bool,
-    data_len: u64,
+    executable: &str,
+    data_len: &str,
     data_hash_hex: &str,
     proof_hex: &str,
 ) -> String {
@@ -35,7 +50,13 @@ pub fn verify_str(
         let meta = if owner_b58.is_empty() {
             None
         } else {
-            Some(AccountMeta { lamports, owner: b58_32(owner_b58)?, executable, data_len, data_hash: h32(data_hash_hex)? })
+            Some(AccountMeta {
+                lamports: parse_u64(lamports)?,
+                owner: b58_32(owner_b58)?,
+                executable: parse_bool(executable)?,
+                data_len: parse_u64(data_len)?,
+                data_hash: h32(data_hash_hex)?,
+            })
         };
         Ok(verify_account(&root, &pubkey, meta.as_ref(), &proof))
     };
@@ -52,10 +73,10 @@ pub fn verify_str(
 pub fn verify(
     root_hex: &str,
     pubkey_b58: &str,
-    lamports: u64,
+    lamports: &str,
     owner_b58: &str,
-    executable: bool,
-    data_len: u64,
+    executable: &str,
+    data_len: &str,
     data_hash_hex: &str,
     proof_hex: &str,
 ) -> String {
@@ -81,19 +102,55 @@ mod tests {
         for c in cases {
             let a = &c["account"];
             let s = |x: &serde_json::Value| x.as_str().unwrap_or("").to_string();
-            let n = |x: &serde_json::Value| x.as_str().map(|v| v.parse::<u64>().unwrap()).unwrap_or(0);
             let got = verify_str(
                 c["root"].as_str().unwrap(),
                 c["pubkey"].as_str().unwrap(),
-                n(&a["lamports"]),
+                &s(&a["lamports"]),
                 &s(&a["owner"]),
-                a["executable"].as_bool().unwrap_or(false),
-                n(&a["dataLen"]),
+                if a["executable"].as_bool().unwrap_or(false) { "true" } else { "false" },
+                &s(&a["dataLen"]),
                 &s(&a["dataHash"]),
                 c["proof"].as_str().unwrap(),
             );
             assert_eq!(got, c["expect"].as_str().unwrap(), "{}", c["name"]);
         }
         assert!(cases.len() >= 100);
+    }
+
+    /// Vektorët e formatit në rrjet: e njëjta përgjigje JSON, e kaluar te WASM si në JS.
+    #[test]
+    fn passes_wire_vectors() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/js/test/wire-vectors.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        for c in v["cases"].as_array().unwrap() {
+            let r = &c["response"];
+            let a = &r["account"];
+            let s = |x: &serde_json::Value| x.as_str().unwrap_or("").to_string();
+            // Kufiri JS→WASM: numrat si tekst; një numër JSON vetëm kur JS e mban saktë.
+            let num = |x: &serde_json::Value| match x {
+                serde_json::Value::String(t) => t.clone(),
+                serde_json::Value::Number(n) => match n.as_u64().filter(|n| *n <= zilja_verifier::wire::MAX_SAFE_JSON_INT) {
+                    Some(n) => n.to_string(),
+                    None => "x".into(),
+                },
+                _ => "x".into(),
+            };
+            let exe = match &a["executable"] {
+                serde_json::Value::Bool(b) => b.to_string(),
+                _ => "x".into(),
+            };
+            let got = verify_str(&s(&r["root"]), &s(&r["pubkey"]), &num(&a["lamports"]), &s(&a["owner"]), &exe, &num(&a["dataLen"]), &s(&a["dataHash"]), &s(&r["proof"]));
+            let got = if got.starts_with("error") { "invalid".to_string() } else { got };
+            assert_eq!(got, c["expect"].as_str().unwrap(), "{}", c["name"]);
+        }
+    }
+
+    #[test]
+    fn strict_inputs() {
+        assert_eq!(parse_u64("18446744073709551615"), Ok(u64::MAX));
+        for bad in ["18446744073709551616", "-1", " 1", "01", "", "1e3", "0x10"] {
+            assert!(parse_u64(bad).is_err(), "{bad}");
+        }
+        assert!(parse_bool("1").is_err() && parse_bool("False").is_err() && parse_bool("true") == Ok(true));
     }
 }

@@ -1,5 +1,5 @@
-// Testet e auditimit për SDK-në (F-03, F-08, L-03). Duhet të kalojnë pas Fazës 2.
-// Deri atëherë nisen me `npm run test:audit` dhe dështojnë me qëllim.
+// Testet e auditimit për SDK-në (F-03, F-08, L-03). Kalojnë që nga Faza 2 dhe janë pjesë e `npm test`.
+
 import { readFileSync } from "node:fs";
 import { verifyAccount, hexToBytes, ZiljaClient } from "../src/index.js";
 

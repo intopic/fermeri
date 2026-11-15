@@ -14,7 +14,10 @@ function zilja(caseFor, { root, slot = 100, complete = true, attest = null } = {
       const c = caseFor(params[0]);
       return { slot: params[1]?.slot ?? slot, root: root ?? c.root, complete, pubkey: c.pubkey, account: c.account, proof: c.proof, proofBytes: c.proof.length / 2 };
     }
-    if (method === "getZiljaRoot") return { slot, root: root ?? inc.root, accounts: 300, complete };
+    if (method === "getZiljaRoot") {
+      if (params[0] != null && params[0] !== slot) throw new Error("s'ka root për këtë slot");
+      return { slot, root: root ?? inc.root, accounts: 300, complete };
+    }
     if (method === "getZiljaAttestation") {
       if (!attest) throw new Error("s'firmos");
       return attest;
@@ -45,9 +48,9 @@ const check = (name, cond, extra) => {
 
 const byKey = (pk) => vec.cases.find((c) => c.pubkey === pk && (c.name === "inclusion" || c.name === "exclusion"));
 
-// 1) Një zile e vetme: e vlefshme, por besimi "single" dhe paralajmërim.
+// 1) Një zile e vetme me minTrust "single": e vlefshme, por paralajmërim.
 {
-  const z = new ZiljaClient({ endpoints: ["a"], fetch: fakeFetch({ a: zilja(byKey) }) });
+  const z = new ZiljaClient({ endpoints: ["a"], minTrust: "single", fetch: fakeFetch({ a: zilja(byKey) }) });
   const r = await z.verifyAccount(inc.pubkey);
   check("single ok", r.ok && r.verdict === "exists" && r.trust === "single", r);
   check("single lamports bigint", r.account.lamports === BigInt(inc.account.lamports));
@@ -77,22 +80,37 @@ const byKey = (pk) => vec.cases.find((c) => c.pubkey === pk && (c.name === "incl
   check("lying zilja → invalid", !r.ok && r.verdict === "invalid", r);
 }
 
-// 5) minTrust "agreement" me një zile të vetme → ok = false (dëftesa e vlefshme, besimi i pamjaftueshëm).
+// 5) Parazgjedhja (L-01) është "agreement": një zile e vetme → ok = false.
 {
-  const z = new ZiljaClient({ endpoints: ["a"], minTrust: "agreement", fetch: fakeFetch({ a: zilja(byKey) }) });
+  const z = new ZiljaClient({ endpoints: ["a"], fetch: fakeFetch({ a: zilja(byKey) }) });
   const r = await z.verifyAccount(inc.pubkey);
   check("minTrust not met", !r.ok && r.verdict === "exists" && r.trust === "single", r);
 }
 
-// 6) Zile me pemë në RAM (pa histori): krahasimi bie te getZiljaRoot në të njëjtin slot.
+// 6) E njëjta adresë dy herë nuk jep "agreement" (L-04).
 {
-  const ram = (method, params) => {
-    if (method === "getAccountProof" && params[1]) throw new Error("pema në RAM ka vetëm slotin e fundit");
-    return zilja(byKey)(method, params);
-  };
-  const z = new ZiljaClient({ endpoints: ["a", "b"], fetch: fakeFetch({ a: zilja(byKey), b: ram }) });
+  const z = new ZiljaClient({ endpoints: ["a", "a/"], fetch: fakeFetch({ a: zilja(byKey) }) });
   const r = await z.verifyAccount(inc.pubkey);
-  check("ram fallback agreement", r.trust === "agreement" && r.agreeing === 2, r);
+  check("dyfishimi nuk numërohet", r.endpoints === 1 && r.trust === "single" && !r.ok, r);
+}
+
+// 6b) Dëftesë për një llogari tjetër ose slot tjetër → invalid (L-04).
+{
+  const other = (m, p) => ({ ...zilja(byKey)(m, p), pubkey: exc.pubkey });
+  const z = new ZiljaClient({ endpoints: ["a"], minTrust: "single", fetch: fakeFetch({ a: other }) });
+  const r = await z.verifyAccount(inc.pubkey);
+  check("pubkey tjetër → invalid", !r.ok && r.verdict === "invalid", r);
+  const later = (m, p) => ({ ...zilja(byKey)(m, p), slot: 999 });
+  const z2 = new ZiljaClient({ endpoints: ["a"], minTrust: "single", fetch: fakeFetch({ a: later }) });
+  const r2 = await z2.verifyAccount(inc.pubkey, { slot: 50 });
+  check("slot pas të kërkuarit → invalid", !r2.ok && r2.verdict === "invalid", r2);
+}
+
+// 6c) "Nuk ekziston" nga pemë jo e plotë nuk është ok (L-02).
+{
+  const z = new ZiljaClient({ endpoints: ["a", "b"], fetch: fakeFetch({ a: zilja(byKey, { complete: false }), b: zilja(byKey, { complete: false }) }) });
+  const r = await z.verifyAccount(exc.pubkey);
+  check("exclusion jo e plotë → jo ok", !r.ok && r.verdict === "does_not_exist", r);
 }
 
 // 7) Gabimet e konfigurimit.
@@ -114,4 +132,4 @@ if (fail) {
   console.error(`${fail} gabime`);
   process.exit(1);
 }
-console.log("✅ 12 teste të klientit kaluan");
+console.log("✅ 15 teste të klientit kaluan");
