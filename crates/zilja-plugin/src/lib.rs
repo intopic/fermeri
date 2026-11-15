@@ -19,7 +19,8 @@
 //! ```
 
 use agave_geyser_plugin_interface::geyser_plugin_interface::{
-    GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, ReplicaBlockInfoVersions, Result as PluginResult,
+    GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, ReplicaEntryUpdateParentInfoVersions,
+    Result as PluginResult,
     SlotStatus,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -255,34 +256,13 @@ impl GeyserPlugin for ZiljaPlugin {
         !self.resuming.load(Ordering::Relaxed)
     }
 
-    // Validatori mund të thërrasë këtë drejtpërdrejt (metoda e vjetër) ose përmes
-    // `notify_block_metadata_for_bank`, që sipas parazgjedhjes e thërret këtë.
-    #[allow(deprecated)]
-    fn notify_block_metadata(&self, info: ReplicaBlockInfoVersions) -> PluginResult<()> {
-        let ev = match info {
-            ReplicaBlockInfoVersions::V0_0_1(b) => {
-                Event::Block { slot: b.slot, parent_slot: None, blockhash: b.blockhash.to_string(), parent_blockhash: None }
+    // L-06 (Alpenglow): një shënues UpdateParent pastron një bank; zëvendësuesja vjen me CreatedBank.
+    fn notify_entry_update_parent(&self, info: ReplicaEntryUpdateParentInfoVersions) -> PluginResult<()> {
+        match info {
+            ReplicaEntryUpdateParentInfoVersions::V0_0_1(u) => {
+                self.send(Event::BankCleared { slot: u.slot, bank_id: u.cleared_bank_id })
             }
-            ReplicaBlockInfoVersions::V0_0_2(b) => Event::Block {
-                slot: b.slot,
-                parent_slot: Some(b.parent_slot),
-                blockhash: b.blockhash.to_string(),
-                parent_blockhash: Some(b.parent_blockhash.to_string()),
-            },
-            ReplicaBlockInfoVersions::V0_0_3(b) => Event::Block {
-                slot: b.slot,
-                parent_slot: Some(b.parent_slot),
-                blockhash: b.blockhash.to_string(),
-                parent_blockhash: Some(b.parent_blockhash.to_string()),
-            },
-            ReplicaBlockInfoVersions::V0_0_4(b) => Event::Block {
-                slot: b.slot,
-                parent_slot: Some(b.parent_slot),
-                blockhash: b.blockhash.to_string(),
-                parent_blockhash: Some(b.parent_blockhash.to_string()),
-            },
-        };
-        self.send(ev);
+        }
         Ok(())
     }
 

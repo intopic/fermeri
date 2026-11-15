@@ -41,7 +41,6 @@ fn rooted(out: &[Output]) -> Option<(u64, usize, Vec<Update>)> {
 /// status the plugin sees for that range is `Rooted(13, parent = 12)`.
 /// Expected: slots 11, 12, 13 are all applied (or the node halts). Actual: 11 is dropped.
 #[test]
-#[ignore = "F-01: rregullohet në Fazën 1"]
 fn f01_startup_ledger_replay_must_not_drop_slots() {
     let mut t = Tracker::new();
     t.handle(Event::Snapshot { slot: 10, pubkey: key(1), meta: meta(1) });
@@ -67,7 +66,6 @@ fn f01_startup_ledger_replay_must_not_drop_slots() {
 /// Slots 51..=60 can never be delivered, so the node must halt. Actual: it applies
 /// slots 69 and 70 on top of the slot-50 tree and keeps serving and signing.
 #[test]
-#[ignore = "F-01: rregullohet në Fazën 1"]
 fn f01_resume_gap_hidden_by_startup_replayed_banks() {
     let mut t = Tracker::new();
     t.resume(50, None, true);
@@ -87,7 +85,6 @@ fn f01_resume_gap_hidden_by_startup_replayed_banks() {
 /// storage/slot, storages scanned in parallel, arbitrary order). The newest slot
 /// must win. Here the old version (slot 10) happens to arrive after the new one (slot 20).
 #[test]
-#[ignore = "F-02: rregullohet në Fazën 1"]
 fn f02_snapshot_duplicates_newest_slot_must_win() {
     let mut svc = Service::start(None).unwrap();
     let k = key(7);
@@ -112,8 +109,9 @@ fn f02_snapshot_duplicates_newest_slot_must_win() {
 #[ignore = "F-05: rregullohet në Fazën 3"]
 fn f05_no_unbounded_buffering_after_broken() {
     let mut t = Tracker::new();
-    t.resume(50, Some("H50".into()), true);
-    let out = t.handle(Event::Block { slot: 51, parent_slot: Some(50), blockhash: "X51".into(), parent_blockhash: Some("X50".into()) });
+    // (Faza 1: Event::Block u hoq; zinxhiri i gabuar tani zbulohet nga SlotHashes.)
+    t.resume(50, Some((50, [0x50; 32])), true);
+    let out = t.handle(Event::SlotHashes { slot: 51, bank_id: 51, entries: vec![(50, [0xEE; 32]), (49, [0xEE; 32])] });
     assert!(matches!(out[0], Output::Broken(_)));
     for s in 51..2051u64 {
         t.handle(st(s, s - 1, s, Status::CreatedBank));

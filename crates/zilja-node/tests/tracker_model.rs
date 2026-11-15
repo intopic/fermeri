@@ -13,7 +13,7 @@ use rand::{rngs::StdRng, seq::SliceRandom, Rng, SeedableRng};
 use std::collections::{BTreeMap, HashMap};
 use zilja_node::tracker::{Output, Tracker};
 use zilja_node::{Event, Status};
-use zilja_tree::{reference_root, Tree, Update};
+use zilja_tree::{reference_root, MemTree, StateTree};
 use zilja_verifier::{AccountMeta, Key};
 
 #[derive(Clone, Copy)]
@@ -239,13 +239,18 @@ fn generate(seed: u64, cfg: Cfg) -> (Vec<Event>, BTreeMap<Key, AccountMeta>, u64
 fn run(seed: u64, cfg: Cfg) -> Result<(), String> {
     let (events, expect, final_root) = generate(seed, cfg);
     let mut t = Tracker::new();
-    let mut tree = Tree::new();
+    let mut mt = MemTree::new();
     for ev in events {
         for out in t.handle(ev) {
             match out {
-                Output::Startup { accounts, .. } => tree = Tree::from_accounts(accounts),
-                Output::Rooted { updates, .. } => {
-                    tree.apply_batch(updates);
+                Output::Startup { slot, accounts } => {
+                    for (s, u) in accounts {
+                        mt.stage_snapshot(s, vec![u]);
+                    }
+                    mt.finish_snapshot(slot, true);
+                }
+                Output::Rooted { slot, updates, fingerprint, .. } => {
+                    mt.apply_slot(slot, updates, fingerprint);
                 }
                 Output::Broken(why) => return Err(format!("seed {seed}: ndaloi pa boshllëk: {why}")),
             }
@@ -254,6 +259,7 @@ fn run(seed: u64, cfg: Cfg) -> Result<(), String> {
     if t.last_rooted() != Some(final_root) {
         return Err(format!("seed {seed}: sloti i fundit {:?}, pritej {final_root}", t.last_rooted()));
     }
+    let tree = &mt.tree;
     let accs: Vec<(Key, AccountMeta)> = expect.iter().map(|(k, m)| (*k, m.clone())).collect();
     if tree.root() != reference_root(&accs) {
         let got: BTreeMap<Key, u64> = accs.iter().filter_map(|(k, _)| tree.get(k).map(|m| (*k, m.lamports))).collect();
@@ -269,6 +275,8 @@ fn run(seed: u64, cfg: Cfg) -> Result<(), String> {
 }
 
 fn many(cfg: Cfg, seeds: u64) {
+    // ZILJA_MODEL_SEEDS=10000 për një kontroll më të gjerë.
+    let seeds = std::env::var("ZILJA_MODEL_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(seeds);
     let errs: Vec<String> = (0..seeds).filter_map(|s| run(s, cfg).err()).collect();
     assert!(errs.is_empty(), "{} nga {seeds} histori dështuan, p.sh.:\n{}", errs.len(), errs.iter().take(5).cloned().collect::<Vec<_>>().join("\n"));
 }
@@ -281,21 +289,18 @@ fn model_live_forks_dead_banks_dropped_roots() {
 
 /// F-01: ripërsëritja e ledger-it gjatë nisjes, pa statuse.
 #[test]
-#[ignore = "F-01: rregullohet në Fazën 1"]
 fn model_startup_ledger_replay() {
     many(Cfg { replay: 6, snapshot_dups: false, forks: 0.2, dead: 0.1, drop_root: 0.2 }, 1000);
 }
 
 /// F-02: snapshot-i dërgon versione të vjetra në radhë të rastësishme.
 #[test]
-#[ignore = "F-02: rregullohet në Fazën 1"]
 fn model_snapshot_duplicate_versions() {
     many(Cfg { replay: 0, snapshot_dups: true, forks: 0.2, dead: 0.1, drop_root: 0.2 }, 1000);
 }
 
 /// Gjithçka bashkë, siç do të ndodhë në një rinisje të vërtetë.
 #[test]
-#[ignore = "F-01 + F-02: rregullohet në Fazën 1"]
 fn model_realistic_restart() {
     many(Cfg { replay: 8, snapshot_dups: true, forks: 0.25, dead: 0.15, drop_root: 0.3 }, 2000);
 }

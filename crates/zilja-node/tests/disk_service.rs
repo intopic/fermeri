@@ -16,7 +16,8 @@ fn start(dir: &std::path::Path) -> Service {
 
 /// Dërgon slotin `s` (prindi `s-1`) me një ndryshim dhe e rrënjos.
 fn slot(svc: &Service, s: u64, key: u8, lamports: u64) {
-    svc.send(Event::Block { slot: s, parent_slot: Some(s - 1), blockhash: format!("H{s}"), parent_blockhash: Some(format!("H{}", s - 1)) });
+    let entries = (s.saturating_sub(20)..s).rev().map(|p| (p, [p as u8; 32])).collect();
+    svc.send(Event::SlotHashes { slot: s, bank_id: s, entries });
     svc.send(Event::Status { slot: s, parent: Some(s - 1), bank_id: Some(s), status: Status::CreatedBank });
     svc.send(Event::Account { slot: s, bank_id: s, pubkey: [key; 32], write_version: s, meta: m(lamports) });
     svc.send(Event::Status { slot: s, parent: Some(s - 1), bank_id: Some(s), status: Status::Rooted });
@@ -97,10 +98,11 @@ fn resume_history_and_wrong_chain() {
         assert_eq!(proof_ok(&sh, 2, Some(22)), (22, 220));
     }
     {
-        // Zinxhir tjetër: blloku pas slotit 25 nuk lidhet me H25 → ndalon dhe fshin diskun.
+        // Zinxhir tjetër: SlotHashes i bankës pas slotit 25 ka hash-e të tjera → ndalon dhe fshin diskun.
         let mut svc = start(dir.path());
         assert!(svc.resumed);
-        svc.send(Event::Block { slot: 26, parent_slot: Some(25), blockhash: "X26".into(), parent_blockhash: Some("X25".into()) });
+        let entries = (5..26u64).rev().map(|p| (p, [0xEE; 32])).collect();
+        svc.send(Event::SlotHashes { slot: 26, bank_id: 26, entries });
         let sh = svc.shared.clone();
         svc.shutdown();
         let r = rpc(&sh, r#"{"id":1,"method":"getZiljaRoot"}"#);

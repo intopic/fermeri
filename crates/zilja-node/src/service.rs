@@ -85,7 +85,7 @@ pub struct Metrics {
     pub broken: AtomicU64,
     pub provable_from_slot: AtomicU64,
     pub resume_verified: AtomicU64,
-    pub blocks_seen: AtomicU64,
+    pub ambiguous_banks: AtomicU64,
 }
 
 impl Metrics {
@@ -114,8 +114,8 @@ impl Metrics {
             g("resumed", "1 kur zilja vazhdoi nga pema në disk pa snapshot", &self.resumed),
             g("broken", "1 kur zilja ndaloi (boshllëk ose zinxhir tjetër)", &self.broken),
             g("provable_from_slot", "Sloti më i vjetër për të cilin jepen dëftesa", &self.provable_from_slot),
-            g("blocks_seen", "Meta-t e blloqeve të marra nga validatori", &self.blocks_seen),
-            g("resume_verified", "1 kur pas rinisjes u konfirmua që jemi në të njëjtin zinxhir (blockhash)", &self.resume_verified),
+            g("ambiguous_banks", "Herët kur një slot kishte disa banka të gjalla (rrugë rezervë)", &self.ambiguous_banks),
+            g("resume_verified", "1 kur pas rinisjes u konfirmua që jemi në të njëjtin zinxhir (SlotHashes)", &self.resume_verified),
         ]
         .concat()
     }
@@ -166,7 +166,7 @@ impl Service {
             st.attester = opts.signer.as_ref().map(|k| k.verifying_key().to_bytes());
             st.tree = tree;
             if let Some(r) = &resume {
-                tracker.resume(r.slot, r.blockhash.clone(), r.complete);
+                tracker.resume(r.slot, r.fingerprint, r.complete);
                 st.slot = r.slot;
                 st.ready = true;
                 st.complete = r.complete;
@@ -259,9 +259,9 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
         m.events_received.fetch_add(1, Ordering::Relaxed);
         let outs = tracker.handle(ev);
         // Snapshot-i kalon te pema me copa, që të mos mbahet i gjithi në RAM.
-        if let Some((slot, chunk)) = tracker.take_startup_chunk(SNAPSHOT_CHUNK) {
+        if let Some(chunk) = tracker.take_startup_chunk(SNAPSHOT_CHUNK) {
             staged_total += chunk.len() as u64;
-            shared.state.write().unwrap().tree.stage_snapshot(slot, chunk);
+            stage_by_slot(&mut *shared.state.write().unwrap().tree, chunk);
         }
         for out in outs {
             match out {
@@ -271,7 +271,7 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
                     let complete = tracker.complete();
                     let (root, len) = {
                         let mut st = shared.state.write().unwrap();
-                        st.tree.stage_snapshot(slot, accounts);
+                        stage_by_slot(&mut *st.tree, accounts);
                         let root = st.tree.finish_snapshot(slot, complete);
                         st.slot = slot;
                         st.ready = true;
@@ -289,12 +289,12 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
                     log::info!("zilja: pema fillestare me {n} llogari u ndërtua në {ms} ms, slot {slot}");
                     write_root(&mut log, slot, &root);
                 }
-                Output::Rooted { slot, slots_in_batch: _, updates, blockhash } => {
+                Output::Rooted { slot, slots_in_batch: _, updates, fingerprint } => {
                     let n = updates.len() as u64;
                     let t0 = Instant::now();
                     let (root, len) = {
                         let mut st = shared.state.write().unwrap();
-                        let root = st.tree.apply_slot(slot, updates, blockhash);
+                        let root = st.tree.apply_slot(slot, updates, fingerprint);
                         st.slot = slot;
                         st.ready = true;
                         sign_root(&mut st, &signer, slot, root);
@@ -327,7 +327,18 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
         m.dead_banks.store(tracker.stats.dead_banks, Ordering::Relaxed);
         m.queue_len.store(rx.len() as u64, Ordering::Relaxed);
         m.resume_verified.store(tracker.resume_verified() as u64, Ordering::Relaxed);
-        m.blocks_seen.store(tracker.stats.blocks_seen, Ordering::Relaxed);
+        m.ambiguous_banks.store(tracker.stats.ambiguous_banks, Ordering::Relaxed);
+    }
+}
+
+/// Llogaritë e snapshot-it, të grupuara sipas slotit të versionit, në radhën e mbërritjes.
+fn stage_by_slot(tree: &mut dyn StateTree, chunk: Vec<(Slot, zilja_tree::Update)>) {
+    let mut by_slot: BTreeMap<Slot, Vec<zilja_tree::Update>> = BTreeMap::new();
+    for (s, u) in chunk {
+        by_slot.entry(s).or_default().push(u);
+    }
+    for (s, ups) in by_slot {
+        tree.stage_snapshot(s, ups);
     }
 }
 

@@ -73,7 +73,7 @@ fn equivalence(cache_depth: u16) {
         slot += 1 + (round % 3);
         let n = rng.gen_range(1..300);
         let batch = random_batch(&mut rng, &mut keys, n);
-        disk.apply_slot(slot, batch.clone(), Some(format!("hash{slot}")));
+        disk.apply_slot(slot, batch.clone(), Some((slot, [slot as u8; 32])));
         mem.apply_batch(batch);
         assert_eq!(disk.root(), mem.root(), "slot {slot}");
         assert_eq!(disk.len(), mem.len(), "slot {slot}");
@@ -109,7 +109,7 @@ fn reopen_keeps_state_cache_and_history() {
         disk.finish_snapshot(1, false); // nisje nga genesis, pa llogari
         for slot in 2..30 {
             let b = random_batch(&mut rng, &mut keys, 200);
-            disk.apply_slot(slot, b.clone(), Some(format!("bh{slot}")));
+            disk.apply_slot(slot, b.clone(), Some((slot, [slot as u8; 32])));
             mem.apply_batch(b);
             past.insert(slot, mem.clone());
         }
@@ -122,7 +122,7 @@ fn reopen_keeps_state_cache_and_history() {
     let r = disk.resume_point().unwrap();
     assert_eq!(r.slot, 29);
     assert_eq!(r.root, mem.root());
-    assert_eq!(r.blockhash.as_deref(), Some("bh29"));
+    assert_eq!(r.fingerprint, Some((29, [29u8; 32])));
     assert!(!r.complete);
     assert_eq!(disk.root(), mem.root());
     // Pas rihapjes, kujtesa nis nga sloti i rihapjes (nivelet e sipërme s'kanë histori në disk).
@@ -198,4 +198,24 @@ fn archive_stays_bounded() {
     let late = *sizes.last().unwrap();
     assert!(late <= early * 2, "arkiva rritet: {early} → {late}");
     disk.verify_integrity().unwrap();
+}
+
+/// F-02: versionet e snapshot-it vijnë në radhë të çfarëdoshme; fiton sloti më i ri,
+/// dhe një llogari e mbyllur nuk ringjallet nga një kopje e vjetër.
+#[test]
+fn snapshot_newest_version_wins_on_disk_and_in_ram() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut disk = zilja_store::DiskTree::open(dir.path(), 8).unwrap();
+    let mut ram = zilja_tree::MemTree::new();
+    let m = |l: u64| Some(AccountMeta { lamports: l, ..Default::default() });
+    for t in [&mut disk as &mut dyn StateTree, &mut ram] {
+        t.stage_snapshot(20, vec![([7; 32], m(200)), ([8; 32], None)]);
+        t.stage_snapshot(10, vec![([7; 32], m(100)), ([8; 32], m(5)), ([9; 32], m(9))]);
+        t.stage_snapshot(20, vec![([9; 32], m(90))]);
+        t.finish_snapshot(20, true);
+    }
+    let want = Tree::from_accounts(vec![([7; 32], m(200)), ([9; 32], m(90))]);
+    assert_eq!(disk.root(), want.root());
+    assert_eq!(ram.root(), want.root());
+    assert_eq!(disk.len(), 2);
 }

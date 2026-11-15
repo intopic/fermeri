@@ -34,7 +34,7 @@ type HashMap<K, V> = ahash::AHashMap<K, V>;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use zilja_tree::{normalize_updates, ProofAt, Resume, StateTree, Update};
+use zilja_tree::{normalize_updates, Fingerprint, ProofAt, Resume, StateTree, Update};
 use zilja_verifier::{bit, internal_hash, leaf_hash, AccountMeta, Hash, Key, Proof, EMPTY};
 
 /// Nivelet e pemës që mbahen në RAM (deri në ~2^20 nyje).
@@ -306,6 +306,28 @@ fn enc_meta(m: &AccountMeta) -> [u8; META_LEN] {
     v
 }
 
+/// Vlera e staging-ut: `slot u64 ‖ 0` (llogari e mbyllur) ose `slot u64 ‖ 1 ‖ meta`.
+fn enc_staged(slot: u64, m: &Option<AccountMeta>) -> Vec<u8> {
+    let mut v = slot.to_le_bytes().to_vec();
+    match m {
+        None => v.push(0),
+        Some(m) => {
+            v.push(1);
+            v.extend_from_slice(&enc_meta(m));
+        }
+    }
+    v
+}
+
+fn dec_staged(b: &[u8]) -> Option<(u64, Option<AccountMeta>)> {
+    let slot = u64::from_le_bytes(b.get(..8)?.try_into().ok()?);
+    match b.get(8)? {
+        0 if b.len() == 9 => Some((slot, None)),
+        1 => Some((slot, Some(dec_meta(&b[9..])?))),
+        _ => None,
+    }
+}
+
 fn dec_meta(b: &[u8]) -> Option<AccountMeta> {
     if b.len() != META_LEN {
         return None;
@@ -356,12 +378,12 @@ struct State {
     /// Sloti i ndërtimit të fundit nga snapshot-i.
     base: u64,
     cache_depth: u16,
-    blockhash: Option<String>,
+    fingerprint: Option<Fingerprint>,
 }
 
 impl State {
     fn enc(&self) -> Vec<u8> {
-        let mut v = vec![3u8];
+        let mut v = vec![4u8];
         v.extend_from_slice(&self.version.to_le_bytes());
         v.push(self.root.kind as u8);
         v.extend_from_slice(&self.root.hash);
@@ -369,13 +391,14 @@ impl State {
         v.push(self.complete as u8);
         v.extend_from_slice(&self.base.to_le_bytes());
         v.extend_from_slice(&self.cache_depth.to_le_bytes());
-        if let Some(b) = &self.blockhash {
-            v.extend_from_slice(b.as_bytes());
+        if let Some((slot, h)) = &self.fingerprint {
+            v.extend_from_slice(&slot.to_le_bytes());
+            v.extend_from_slice(h);
         }
         v
     }
     fn dec(b: &[u8]) -> Option<State> {
-        if b.len() < 61 || b[0] != 3 {
+        if b.len() < 61 || b[0] != 4 || !(b.len() == 61 || b.len() == 101) {
             return None;
         }
         Some(State {
@@ -385,7 +408,7 @@ impl State {
             complete: b[50] == 1,
             base: u64::from_le_bytes(b[51..59].try_into().ok()?),
             cache_depth: u16::from_le_bytes(b[59..61].try_into().ok()?),
-            blockhash: String::from_utf8(b[61..].to_vec()).ok().filter(|s| !s.is_empty()),
+            fingerprint: (b.len() == 101).then(|| (u64::from_le_bytes(b[61..69].try_into().unwrap()), b[69..101].try_into().unwrap())),
         })
     }
 }
@@ -1075,7 +1098,9 @@ impl DiskTree {
                 if !p.contains(&k) {
                     break;
                 }
-                ups.push((k, Some(dec_meta(it.value().unwrap()).ok_or("meta e dëmtuar")?)));
+                if let (_, Some(m)) = dec_staged(it.value().unwrap()).ok_or("meta e dëmtuar")? {
+                    ups.push((k, Some(m)));
+                }
                 it.next();
             }
             let mut out = Vec::new();
@@ -1135,19 +1160,34 @@ impl StateTree for DiskTree {
         self.state.as_ref().map_or(0, |s| s.len as usize)
     }
 
-    fn stage_snapshot(&mut self, _slot: u64, ups: Vec<Update>) {
+    fn stage_snapshot(&mut self, slot: u64, ups: Vec<Update>) {
         if self.staged == 0 && self.state.is_some() {
             // Ndërtim i ri: hidh gjendjen e vjetër.
             let _ = self.clear();
         }
-        let mut batch = WriteBatch::default();
+        // F-02: validatori dërgon çdo version të ruajtur, në radhë të çfarëdoshme. Fiton sloti më i ri;
+        // llogaritë e mbyllura ruhen si varre deri në `finish_snapshot`, që një kopje e vjetër të mos ringjallet.
+        let mut last: HashMap<Key, Option<AccountMeta>> = HashMap::with_capacity(ups.len());
         for (k, m) in ups {
-            match m {
-                Some(m) => batch.put_cf(self.cf(CF_STAGING), k, enc_meta(&m)),
-                None => batch.delete_cf(self.cf(CF_STAGING), k),
-            }
-            self.staged += 1;
+            last.insert(k, m);
         }
+        let keys: Vec<Key> = last.keys().copied().collect();
+        let cf = self.cf(CF_STAGING);
+        let existing = self.db.batched_multi_get_cf(cf, keys.iter(), false);
+        let mut batch = WriteBatch::default();
+        let mut n = 0;
+        for (k, old) in keys.iter().zip(existing) {
+            let old_slot = match old {
+                Ok(Some(v)) => dec_staged(&v).map(|(s, _)| s),
+                _ => None,
+            };
+            if old_slot.is_some_and(|s| s > slot) {
+                continue;
+            }
+            batch.put_cf(cf, k, enc_staged(slot, &last[k]));
+            n += 1;
+        }
+        self.staged += n;
         if let Err(e) = self.write(batch) {
             log::error!("zilja-store: shkrimi i snapshot-it dështoi: {e}");
         }
@@ -1157,7 +1197,11 @@ impl StateTree for DiskTree {
         if self.staged == 0 && self.state.is_some() {
             let _ = self.clear();
         }
-        let len = self.db.iterator_cf(self.cf(CF_STAGING), IteratorMode::Start).count() as u64;
+        let len = self
+            .db
+            .iterator_cf(self.cf(CF_STAGING), IteratorMode::Start)
+            .filter(|r| r.as_ref().is_ok_and(|(_, v)| v.get(8) == Some(&1)))
+            .count() as u64;
         let mut bucket_depth = 0u16;
         // Kovat nuk shkojnë më thellë se cache-ja, që çdo faqe të jetë e tëra brenda një kove.
         while (len >> bucket_depth) > self.bucket_target && bucket_depth < 16.min(self.cache_depth) {
@@ -1176,7 +1220,7 @@ impl StateTree for DiskTree {
             complete,
             base: slot,
             cache_depth: self.cache_depth,
-            blockhash: None,
+            fingerprint: None,
         };
         self.commit_state(&mut batch, st).expect("shkrimi i gjendjes dështoi");
         self.db.compact_range_cf(self.cf(CF_STAGING), None::<&[u8]>, None::<&[u8]>);
@@ -1186,7 +1230,7 @@ impl StateTree for DiskTree {
         self.root()
     }
 
-    fn apply_slot(&mut self, slot: u64, mut ups: Vec<Update>, blockhash: Option<String>) -> Hash {
+    fn apply_slot(&mut self, slot: u64, mut ups: Vec<Update>, fingerprint: Option<Fingerprint>) -> Hash {
         let prof = std::env::var_os("ZILJA_PROFILE").is_some();
         let t0 = std::time::Instant::now();
         normalize_updates(&mut ups);
@@ -1198,7 +1242,7 @@ impl StateTree for DiskTree {
             complete: false,
             base: slot,
             cache_depth: self.cache_depth,
-            blockhash: None,
+            fingerprint: None,
         });
         if self.state.is_none() {
             self.cache_since = slot;
@@ -1228,7 +1272,7 @@ impl StateTree for DiskTree {
             complete: prev.complete,
             base: prev.base,
             cache_depth: self.cache_depth,
-            blockhash,
+            fingerprint,
         };
         self.commit_state(&mut batch, st).expect("shkrimi i slotit dështoi");
         self.trim_history(slot);
@@ -1292,7 +1336,7 @@ impl StateTree for DiskTree {
             root: s.root.hash,
             len: s.len as usize,
             complete: s.complete,
-            blockhash: s.blockhash.clone(),
+            fingerprint: s.fingerprint,
         })
     }
 

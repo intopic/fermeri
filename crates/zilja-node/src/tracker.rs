@@ -26,7 +26,8 @@ pub enum Status {
 
 #[derive(Clone, Debug)]
 pub enum Event {
-    /// Llogari nga snapshot-i gjatë nisjes.
+    /// Llogari nga snapshot-i gjatë nisjes. Validatori dërgon çdo version të ruajtur të një
+    /// llogarie (një për çdo slot ku ajo ndryshoi), në radhë të çfarëdoshme: fiton sloti më i ri (F-02).
     Snapshot { slot: Slot, pubkey: Key, meta: Option<AccountMeta> },
     /// Fundi i nisjes.
     EndOfStartup,
@@ -34,19 +35,23 @@ pub enum Event {
     Account { slot: Slot, bank_id: BankId, pubkey: Key, write_version: u64, meta: Option<AccountMeta> },
     /// Ndryshim statusi. `bank_id = None` kur validatori nuk e jep (p.sh. Dead në disa versione).
     Status { slot: Slot, parent: Option<Slot>, bank_id: Option<BankId>, status: Status },
-    /// Meta e bllokut: përdoret për të kontrolluar që, pas rinisjes, jemi në të njëjtin zinxhir.
-    Block { slot: Slot, parent_slot: Option<Slot>, blockhash: String, parent_blockhash: Option<String> },
     /// Përmbajtja e sysvar-it SlotHashes në një bank: (slot, bank_hash) të paraardhësve, nga më i riu.
-    /// Gjurma e gishtit të zinxhirit, e dukshme edhe gjatë ripërsëritjes pas rinisjes.
+    /// Hyrja e parë është prindi i bankës. Vjen për çdo bank, edhe për ato që ripërsëriten gjatë
+    /// nisjes pa asnjë status (F-01), ndaj është burimi kryesor i prindit.
     SlotHashes { slot: Slot, bank_id: BankId, entries: Vec<(Slot, [u8; 32])> },
+    /// Alpenglow: një shënues UpdateParent e pastroi këtë bank (L-06). Zëvendësuesja vjen me CreatedBank.
+    BankCleared { slot: Slot, bank_id: BankId },
 }
+
+/// Gjurma e zinxhirit: (slot, bank_hash). Ruhet me pemën dhe kontrollohet pas rinisjes.
+pub type Fingerprint = zilja_tree::Fingerprint;
 
 #[derive(Debug, PartialEq)]
 pub enum Output {
-    /// Pema fillestare nga snapshot-i.
-    Startup { slot: Slot, accounts: Vec<Update> },
+    /// Pema fillestare nga snapshot-i: (sloti i llogarisë, ndryshimi).
+    Startup { slot: Slot, accounts: Vec<(Slot, Update)> },
     /// Ndryshimet e bashkuara të një ose më shumë sloteve të sapo-rrënjosur.
-    Rooted { slot: Slot, slots_in_batch: usize, updates: Vec<Update>, blockhash: Option<String> },
+    Rooted { slot: Slot, slots_in_batch: usize, updates: Vec<Update>, fingerprint: Option<Fingerprint> },
     /// Zilja nuk mund të vazhdojë saktë (boshllëk ose zinxhir tjetër). Duhet rindërtim nga snapshot-i.
     Broken(String),
 }
@@ -56,6 +61,8 @@ struct Bank {
     slot: Slot,
     parent: Option<Slot>,
     dead: bool,
+    /// Hyrja e parë e SlotHashes: (prindi, hash-i i bankës së prindit).
+    parent_hash: Option<(Slot, [u8; 32])>,
     /// pubkey → (write_version, meta)
     updates: HashMap<Key, (u64, Option<AccountMeta>)>,
 }
@@ -67,14 +74,16 @@ pub struct TrackerStats {
     pub missing_parents: u64,
     pub dead_banks: u64,
     pub stale_roots_ignored: u64,
-    pub blocks_seen: u64,
+    /// Herët kur një slot kishte disa banka të gjalla dhe u zgjodh më e reja (rrugë rezervë).
+    pub ambiguous_banks: u64,
+    pub parents_from_slot_hashes: u64,
 }
 
 #[derive(Default)]
 pub struct Tracker {
     started: bool,
     snapshot_slot: Option<Slot>,
-    startup: Vec<Update>,
+    startup: Vec<(Slot, Update)>,
     banks: HashMap<BankId, Bank>,
     /// Sloti i fundit i rrënjosur dhe i aplikuar.
     last_rooted: Option<Slot>,
@@ -82,14 +91,10 @@ pub struct Tracker {
     deferred_roots: Vec<(Slot, Option<BankId>)>,
     /// `true` kur pema u ndërtua nga snapshot-i i plotë (mbulon çdo llogari).
     complete: bool,
-    /// Hash-et e blloqeve për slotet ende të parrënjosura.
-    blockhashes: HashMap<Slot, String>,
-    /// Pas rinisjes nga disku: (sloti, blockhash) që duhet ta gjejmë në zinxhir.
-    resume_check: Option<(Slot, Option<String>)>,
+    /// Pas rinisjes nga disku: sloti i ruajtur dhe gjurma që duhet ta gjejmë në SlotHashes.
+    resume_check: Option<(Slot, Option<Fingerprint>)>,
     resumed: bool,
     broken: bool,
-    /// Për çdo bank: hyrja e parë e SlotHashes (prindi dhe hash-i i bankës së tij).
-    parent_hash_by_bank: HashMap<BankId, (Slot, [u8; 32])>,
     pub stats: TrackerStats,
 }
 
@@ -103,13 +108,14 @@ impl Tracker {
         Self::default()
     }
 
-    /// Vazhdon nga gjendja e ruajtur në disk, pa snapshot.
-    pub fn resume(&mut self, slot: Slot, blockhash: Option<String>, complete: bool) {
+    /// Vazhdon nga gjendja e ruajtur në disk, pa snapshot. Asnjë slot nuk aplikohet derisa
+    /// gjurma të gjendet në SlotHashes e një banke të re (F-11).
+    pub fn resume(&mut self, slot: Slot, fingerprint: Option<Fingerprint>, complete: bool) {
         self.started = true;
         self.resumed = true;
         self.complete = complete;
         self.last_rooted = Some(slot);
-        self.resume_check = Some((slot, blockhash));
+        self.resume_check = Some((slot, fingerprint));
     }
 
     /// A u konfirmua që pas rinisjes jemi në të njëjtin zinxhir?
@@ -122,11 +128,11 @@ impl Tracker {
     }
 
     /// Merr llogaritë e snapshot-it të grumbulluara deri tani (që të mos mbahen të gjitha në RAM).
-    pub fn take_startup_chunk(&mut self, min: usize) -> Option<(Slot, Vec<Update>)> {
+    pub fn take_startup_chunk(&mut self, min: usize) -> Option<Vec<(Slot, Update)>> {
         if self.started || self.startup.len() < min {
             return None;
         }
-        Some((self.snapshot_slot.unwrap_or(0), std::mem::take(&mut self.startup)))
+        Some(std::mem::take(&mut self.startup))
     }
 
     fn break_with(&mut self, why: String) -> Vec<Output> {
@@ -145,12 +151,16 @@ impl Tracker {
         self.banks.len()
     }
 
+    fn is_old(&self, slot: Slot) -> bool {
+        self.last_rooted.is_some_and(|r| slot <= r)
+    }
+
     pub fn handle(&mut self, ev: Event) -> Vec<Output> {
         match ev {
             Event::Snapshot { .. } if self.resumed => vec![],
             Event::Snapshot { slot, pubkey, meta } => {
                 self.snapshot_slot = Some(self.snapshot_slot.map_or(slot, |s| s.max(slot)));
-                self.startup.push((pubkey, meta));
+                self.startup.push((slot, (pubkey, meta)));
                 vec![]
             }
             Event::EndOfStartup => {
@@ -170,70 +180,46 @@ impl Tracker {
                 }
                 out
             }
-            Event::Block { slot, parent_slot, blockhash, parent_blockhash } => {
-                self.stats.blocks_seen += 1;
-                if let Some((v, Some(expected))) = self.resume_check.clone().filter(|(_, f)| f.as_deref().is_some_and(|f| !f.starts_with("bank:"))) {
-                    let verdict = if slot == v {
-                        Some(blockhash == expected)
-                    } else if parent_slot == Some(v) {
-                        parent_blockhash.as_ref().map(|p| *p == expected)
-                    } else if slot > v && parent_slot.is_some_and(|p| p < v) {
-                        // Ky bllok kapërcen slotin tonë: s'është i njëjti zinxhir.
-                        Some(false)
-                    } else {
-                        None
+            Event::SlotHashes { slot, bank_id, entries } => {
+                if let Some((v, Some((ps, ph)))) = self.resume_check {
+                    let newest = entries.first().map(|e| e.0);
+                    let oldest = entries.last().map(|e| e.0);
+                    let verdict = match (newest, oldest) {
+                        (Some(n), Some(o)) if ps <= n && ps >= o => Some(entries.iter().any(|(s, h)| *s == ps && *h == ph)),
+                        // Sloti ynë është më i vjetër se slotet e SlotHashes të një banke të re: s'lidhet dot.
+                        (Some(_), Some(o)) if ps < o && slot > v => Some(false),
+                        _ => None,
                     };
                     match verdict {
                         Some(true) => self.resume_check = None,
                         Some(false) => {
                             return self.break_with(format!(
-                                "pas rinisjes, blloku i slotit {v} nuk përputhet: ledger-i është ndryshe nga ai i pemës në disk"
+                                "pas rinisjes, hash-i i bankës së slotit {ps} nuk gjendet në SlotHashes: zinxhir tjetër ose boshllëk"
                             ))
                         }
                         None => {}
                     }
-                } else if matches!(self.resume_check, Some((_, None))) {
-                    // Pema në disk s'ka blockhash (p.sh. e ndërtuar nga snapshot pa slot të mëpasshëm).
-                    self.resume_check = None;
                 }
-                if !self.last_rooted.is_some_and(|r| slot <= r) {
-                    self.blockhashes.insert(slot, blockhash);
+                if !self.is_old(slot) && !self.broken {
+                    let bank = self.banks.entry(bank_id).or_insert_with(|| Bank { slot, ..Default::default() });
+                    if let Some(first) = entries.first() {
+                        bank.parent_hash = Some(*first);
+                        if bank.parent != Some(first.0) {
+                            self.stats.parents_from_slot_hashes += 1;
+                        }
+                        bank.parent = Some(first.0);
+                    }
                 }
                 vec![]
             }
-            Event::SlotHashes { slot, bank_id, entries } => {
-                if let Some((v, Some(fp))) = self.resume_check.clone() {
-                    if let Some((ps, ph)) = parse_fingerprint(&fp) {
-                        let newest = entries.first().map(|e| e.0);
-                        let oldest = entries.last().map(|e| e.0);
-                        let verdict = match (newest, oldest) {
-                            (Some(n), Some(o)) if ps <= n && ps >= o => {
-                                Some(entries.iter().any(|(s, h)| *s == ps && *h == ph))
-                            }
-                            // Sloti ynë është më i vjetër se 512 slotet e SlotHashes: s'lidhet dot.
-                            (Some(_), Some(o)) if ps < o && slot > v => Some(false),
-                            _ => None,
-                        };
-                        match verdict {
-                            Some(true) => self.resume_check = None,
-                            Some(false) => {
-                                return self.break_with(format!(
-                                    "pas rinisjes, hash-i i bankës së slotit {ps} nuk gjendet në SlotHashes: zinxhir tjetër ose boshllëk"
-                                ))
-                            }
-                            None => {}
-                        }
-                    }
-                }
-                if !self.last_rooted.is_some_and(|r| slot <= r) {
-                    if let Some(first) = entries.first() {
-                        self.parent_hash_by_bank.insert(bank_id, *first);
-                    }
+            Event::BankCleared { bank_id, .. } => {
+                if let Some(b) = self.banks.get_mut(&bank_id) {
+                    b.dead = true;
                 }
                 vec![]
             }
             Event::Account { slot, bank_id, pubkey, write_version, meta } => {
-                if self.last_rooted.is_some_and(|r| slot <= r) {
+                if self.is_old(slot) || self.broken {
                     return vec![];
                 }
                 let bank = self.banks.entry(bank_id).or_insert_with(|| Bank { slot, ..Default::default() });
@@ -247,9 +233,10 @@ impl Tracker {
             }
             Event::Status { slot, parent, bank_id, status } => {
                 if let Some(b) = bank_id {
-                    if !self.last_rooted.is_some_and(|r| slot <= r) {
+                    if !self.is_old(slot) && !self.broken {
                         let bank = self.banks.entry(b).or_insert_with(|| Bank { slot, ..Default::default() });
-                        if parent.is_some() {
+                        // SlotHashes ka përparësi; statusi plotëson kur ai mungon.
+                        if bank.parent.is_none() {
                             bank.parent = parent;
                         }
                     }
@@ -257,7 +244,6 @@ impl Tracker {
                 match status {
                     Status::Dead => {
                         match bank_id {
-                            // Kur kemi bank_id, shëno vetëm atë bank.
                             Some(b) => {
                                 if let Some(bank) = self.banks.get_mut(&b) {
                                     bank.dead = true;
@@ -298,45 +284,82 @@ impl Tracker {
         }
     }
 
-    fn live_bank_at(&self, slot: Slot) -> Option<BankId> {
-        // Nëse ka disa (rrallë), merr atë që s'është i vdekur dhe ka id më të madh (më i riu).
-        self.banks
-            .iter()
-            .filter(|(_, b)| b.slot == slot && !b.dead)
-            .map(|(id, _)| *id)
-            .max()
+    fn live_bank_at(&mut self, slot: Slot) -> Option<BankId> {
+        let mut live = self.banks.iter().filter(|(_, b)| b.slot == slot && !b.dead).map(|(id, _)| *id);
+        let first = live.next()?;
+        let mut best = first;
+        let mut n = 1;
+        for id in live {
+            best = best.max(id);
+            n += 1;
+        }
+        if n > 1 {
+            // Rrallë: disa banka të gjalla në një slot. Merr më të renë (id më i madh).
+            self.stats.ambiguous_banks += 1;
+        }
+        Some(best)
     }
 
     fn root(&mut self, slot: Slot, bank_id: Option<BankId>) -> Vec<Output> {
-        if self.last_rooted.is_some_and(|r| slot <= r) {
+        if self.is_old(slot) {
             self.stats.stale_roots_ignored += 1;
             return vec![];
         }
-        let start = bank_id.filter(|b| self.banks.contains_key(b)).or_else(|| self.live_bank_at(slot));
-        // Zinxhiri i bankave nga S prapa deri te sloti i fundit i rrënjosur.
-        let mut chain: Vec<BankId> = Vec::new();
-        let mut cur = start;
-        while let Some(b) = cur {
-            chain.push(b);
-            let parent = self.banks[&b].parent;
-            cur = match parent {
-                Some(p) if self.last_rooted.is_none_or(|r| p > r) => {
-                    let next = self.live_bank_at(p);
-                    if next.is_none() {
-                        // Çdo slot ndryshon të paktën sysvar-ët, kështu që prindi duhet ta kishte bankën.
-                        self.stats.missing_parents += 1;
-                        if let Some(r) = self.last_rooted {
-                            // Mungojnë slote mes r dhe p: vula do të ishte e gabuar.
-                            return self.break_with(format!(
-                                "boshllëk: sloti {p} (prindi i një sloti të rrënjosur) mungon pas slotit të fundit të ruajtur {r}"
-                            ));
-                        }
-                    }
-                    next
-                }
-                _ => None,
+        // F-11: pas rinisjes asgjë nuk aplikohet pa e konfirmuar zinxhirin.
+        if let Some((v, fp)) = self.resume_check {
+            let why = match fp {
+                None => format!("pas rinisjes, pema në disk (slot {v}) nuk ka gjurmë zinxhiri: s'mund të konfirmohet"),
+                Some((ps, _)) => format!(
+                    "pas rinisjes, gjurma e slotit {ps} nuk u gjet në asnjë SlotHashes para rrënjosjes së slotit {slot}"
+                ),
             };
+            return self.break_with(why);
         }
+        let start = match bank_id.filter(|b| self.banks.contains_key(b)) {
+            Some(b) => Some(b),
+            None => self.live_bank_at(slot),
+        };
+        let Some(start) = start else {
+            self.stats.missing_parents += 1;
+            return self.break_with(format!("sloti i rrënjosur {slot} nuk ka asnjë bank të njohur"));
+        };
+        // Zinxhiri i bankave nga S prapa. Duhet të mbarojë SAKTËSISHT te sloti i fundit i rrënjosur (F-01).
+        let mut chain: Vec<BankId> = vec![start];
+        let mut cur = start;
+        loop {
+            let parent = self.banks[&cur].parent;
+            match (parent, self.last_rooted) {
+                (Some(p), Some(r)) if p == r => break,
+                (Some(p), Some(r)) if p < r => {
+                    return self.break_with(format!(
+                        "zinxhiri i slotit {slot} kalon nga sloti {p}, nën slotin e fundit të ruajtur {r}: zinxhir tjetër ose boshllëk"
+                    ));
+                }
+                (Some(p), _) => match self.live_bank_at(p) {
+                    Some(next) => {
+                        chain.push(next);
+                        cur = next;
+                    }
+                    None if self.last_rooted.is_none() => break, // nisje nga genesis: s'ka gjë më poshtë
+                    None => {
+                        self.stats.missing_parents += 1;
+                        return self.break_with(format!(
+                            "boshllëk: sloti {p} (paraardhës i slotit të rrënjosur {slot}) mungon pas slotit të fundit të ruajtur {}",
+                            self.last_rooted.unwrap()
+                        ));
+                    }
+                },
+                (None, None) => break,
+                (None, Some(r)) => {
+                    self.stats.missing_parents += 1;
+                    let s = self.banks[&cur].slot;
+                    return self.break_with(format!(
+                        "prindi i slotit {s} është i panjohur (pa status dhe pa SlotHashes): s'mund të lidhet me slotin {r}"
+                    ));
+                }
+            }
+        }
+        let start_parent_hash = self.banks[&start].parent_hash;
         chain.reverse();
         let slots_in_batch = chain.len();
         let mut merged: HashMap<Key, Option<AccountMeta>> = HashMap::new();
@@ -353,36 +376,12 @@ impl Tracker {
         self.stats.abandoned_banks += (before - self.banks.len()) as u64;
         self.stats.rooted_slots += 1;
         self.last_rooted = Some(slot);
-        // Gjurma e gishtit: hash-i i bankës së prindit nga SlotHashes i vetë sloti S (zinxhiri kanonik),
-        // ose blockhash-i kur SlotHashes mungon.
-        let fp = start
-            .and_then(|b| self.parent_hash_by_bank.get(&b))
-            .map(|(ps, h)| format!("bank:{ps}:{}", hex32(h)));
-        let blockhash = fp.or_else(|| self.blockhashes.get(&slot).cloned());
-        self.blockhashes.retain(|s, _| *s > slot);
-        let live: std::collections::HashSet<BankId> = self.banks.keys().copied().collect();
-        self.parent_hash_by_bank.retain(|b, _| live.contains(b));
-        vec![Output::Rooted { slot, slots_in_batch, updates: merged.into_iter().collect(), blockhash }]
+        // Gjurma: hash-i i bankës së vetë slotit S, nga SlotHashes i një fëmije të S (F-11).
+        // Kur fëmija ende s'është parë, merret hash-i i prindit të S nga SlotHashes i vetë S.
+        let fingerprint =
+            self.banks.values().find_map(|b| b.parent_hash.filter(|(ps, _)| *ps == slot)).or(start_parent_hash);
+        vec![Output::Rooted { slot, slots_in_batch, updates: merged.into_iter().collect(), fingerprint }]
     }
-}
-
-fn hex32(h: &[u8; 32]) -> String {
-    h.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// `bank:<slot>:<hex>` → (slot, hash)
-fn parse_fingerprint(s: &str) -> Option<(Slot, [u8; 32])> {
-    let rest = s.strip_prefix("bank:")?;
-    let (slot, hexs) = rest.split_once(':')?;
-    let slot = slot.parse().ok()?;
-    if hexs.len() != 64 {
-        return None;
-    }
-    let mut h = [0u8; 32];
-    for (i, b) in h.iter_mut().enumerate() {
-        *b = u8::from_str_radix(&hexs[i * 2..i * 2 + 2], 16).ok()?;
-    }
-    Some((slot, h))
 }
 
 #[cfg(test)]
@@ -476,38 +475,46 @@ mod tests {
         assert_eq!(ups, sorted(vec![(key(5), meta(222)), (key(6), meta(333))]));
     }
 
-    fn block(slot: Slot, parent: Slot, h: &str, ph: &str) -> Event {
-        Event::Block { slot, parent_slot: Some(parent), blockhash: h.into(), parent_blockhash: Some(ph.into()) }
+    fn sh(slot: Slot, bank_id: BankId, newest_parent: Slot, tag: u8) -> Event {
+        // SlotHashes i bankës: paraardhësit nga prindi poshtë, me hash [tag ^ slot].
+        let entries = (newest_parent.saturating_sub(20)..=newest_parent).rev().map(|s| (s, [tag ^ (s as u8); 32])).collect();
+        Event::SlotHashes { slot, bank_id, entries }
+    }
+    fn fp(s: Slot, tag: u8) -> Option<Fingerprint> {
+        Some((s, [tag ^ (s as u8); 32]))
+    }
+    fn fingerprint_of(out: &[Output]) -> Option<Fingerprint> {
+        out.iter().find_map(|o| match o {
+            Output::Rooted { fingerprint, .. } => *fingerprint,
+            _ => None,
+        })
     }
 
     #[test]
-    fn resume_on_same_chain_continues_and_carries_blockhash() {
+    fn resume_on_same_chain_continues_and_carries_fingerprint() {
         let mut t = Tracker::new();
-        t.resume(50, Some("H50".into()), true);
+        t.resume(50, fp(50, 7), true);
         // Snapshot-i nuk duhet të vijë, por nëse vjen injorohet.
         t.handle(Event::Snapshot { slot: 40, pubkey: key(1), meta: meta(1) });
         // Ripërsëritja e sloteve të vjetra injorohet.
         t.handle(status(45, Some(44), Some(1), Status::CreatedBank));
         t.handle(acc(45, 1, 9, 1, 999));
         assert!(t.handle(status(45, Some(44), Some(1), Status::Rooted)).is_empty());
-        t.handle(block(51, 50, "H51", "H50"));
+        t.handle(sh(51, 2, 50, 7));
         assert!(t.resume_verified());
         t.handle(status(51, Some(50), Some(2), Status::CreatedBank));
         t.handle(acc(51, 2, 3, 2, 30));
+        t.handle(sh(52, 3, 51, 7)); // fëmija i 51: jep hash-in e vetë slotit 51
         let out = t.handle(status(51, Some(50), Some(2), Status::Rooted));
-        match &out[0] {
-            Output::Rooted { slot, updates, blockhash, .. } => {
-                assert_eq!((*slot, updates.len(), blockhash.as_deref()), (51, 1, Some("H51")));
-            }
-            x => panic!("{x:?}"),
-        }
+        assert_eq!(fingerprint_of(&out), fp(51, 7));
+        assert!(matches!(&out[0], Output::Rooted { slot: 51, updates, .. } if updates.len() == 1));
     }
 
     #[test]
     fn resume_on_other_chain_breaks() {
         let mut t = Tracker::new();
-        t.resume(50, Some("H50".into()), true);
-        let out = t.handle(block(51, 50, "X51", "X50"));
+        t.resume(50, fp(50, 7), true);
+        let out = t.handle(sh(51, 2, 50, 8));
         assert!(matches!(&out[0], Output::Broken(_)));
         assert!(t.is_broken());
         // Pas kësaj, asgjë nuk aplikohet.
@@ -515,29 +522,36 @@ mod tests {
         assert!(t.handle(status(51, Some(50), Some(2), Status::Rooted)).is_empty());
     }
 
-    fn sh(slot: Slot, bank_id: BankId, newest_parent: Slot, tag: u8) -> Event {
-        // SlotHashes i bankës: paraardhësit nga prindi poshtë, me hash [tag; slot].
-        let entries = (newest_parent.saturating_sub(20)..=newest_parent).rev().map(|s| (s, [tag ^ (s as u8); 32])).collect();
-        Event::SlotHashes { slot, bank_id, entries }
+    #[test]
+    fn resume_unverified_never_applies() {
+        // F-11: pa asnjë SlotHashes që e konfirmon, Rooted-i i parë mbi 50 ndalon.
+        let mut t = Tracker::new();
+        t.resume(50, fp(50, 7), true);
+        t.handle(status(51, Some(50), Some(2), Status::CreatedBank));
+        t.handle(acc(51, 2, 3, 2, 30));
+        let out = t.handle(status(51, Some(50), Some(2), Status::Rooted));
+        assert!(matches!(&out[0], Output::Broken(_)), "{out:?}");
+        // Edhe pa gjurmë fare.
+        let mut t = Tracker::new();
+        t.resume(50, None, true);
+        t.handle(sh(51, 2, 50, 7));
+        let out = t.handle(status(51, Some(50), Some(2), Status::Rooted));
+        assert!(matches!(&out[0], Output::Broken(_)), "{out:?}");
     }
 
     #[test]
     fn fingerprint_from_slot_hashes_roundtrip() {
-        // Punë normale: rrënjosja e slotit 11 ruan gjurmën (10, hash(10)) nga SlotHashes i bankës 11.
         let mut t = started(10);
         t.handle(status(11, Some(10), Some(1), Status::CreatedBank));
         t.handle(sh(11, 1, 10, 7));
         t.handle(acc(11, 1, 2, 1, 5));
-        let out = t.handle(status(11, Some(10), Some(1), Status::Rooted));
-        let fp = match &out[0] {
-            Output::Rooted { blockhash: Some(f), .. } => f.clone(),
-            x => panic!("{x:?}"),
-        };
-        assert_eq!(parse_fingerprint(&fp), Some((10, [7 ^ 10u8; 32])));
+        t.handle(sh(12, 2, 11, 7));
+        let f = fingerprint_of(&t.handle(status(11, Some(10), Some(1), Status::Rooted)));
+        assert_eq!(f, fp(11, 7));
 
         // Rinisja në të njëjtin zinxhir: SlotHashes i një sloti të mëvonshëm e përmban → verifikuar.
         let mut t2 = Tracker::new();
-        t2.resume(11, Some(fp.clone()), true);
+        t2.resume(11, f, true);
         t2.handle(sh(5, 9, 4, 7)); // ripërsëritje e vjetër: s'jep vendim
         assert!(!t2.resume_verified());
         t2.handle(sh(30, 99, 29, 7));
@@ -545,20 +559,34 @@ mod tests {
 
         // Rinisja në zinxhir tjetër (hash-e të tjera) → ndalon.
         let mut t3 = Tracker::new();
-        t3.resume(11, Some(fp), true);
+        t3.resume(11, f, true);
         let out = t3.handle(sh(30, 99, 29, 8));
         assert!(matches!(&out[0], Output::Broken(_)), "{out:?}");
+    }
+
+    #[test]
+    fn startup_replay_without_statuses_uses_slot_hashes_parents() {
+        // F-01: snapshot 10, ripërsëritje 11..13 me shkrime dhe SlotHashes por pa statuse.
+        let mut t = started(10);
+        for s in 11..=13u64 {
+            t.handle(sh(s, 100 + s, s - 1, 7));
+            t.handle(acc(s, 100 + s, s as u8, s, s * 10));
+        }
+        t.handle(status(14, Some(13), Some(114), Status::CreatedBank));
+        let (slot, n, ups) = rooted_updates(t.handle(status(13, Some(12), Some(113), Status::Rooted)));
+        assert_eq!((slot, n, ups.len()), (13, 3, 3));
     }
 
     #[test]
     fn gap_after_resume_breaks() {
         // Disku është në slotin 50, por validatori nis nga një snapshot i slotit 80.
         let mut t = Tracker::new();
-        t.resume(50, Some("H50".into()), true);
+        t.resume(50, fp(50, 7), true);
+        t.handle(sh(81, 1, 80, 7)); // përmban 61..80: sloti 50 është jashtë → s'lidhet
         t.handle(status(81, Some(80), Some(1), Status::CreatedBank));
         t.handle(acc(81, 1, 3, 1, 30));
         let out = t.handle(status(81, Some(80), Some(1), Status::Rooted));
-        assert!(matches!(&out[0], Output::Broken(_)), "{out:?}");
+        assert!(matches!(out.first(), Some(Output::Broken(_))) || t.is_broken(), "{out:?}");
     }
 
     #[test]
@@ -568,8 +596,9 @@ mod tests {
             t.handle(Event::Snapshot { slot: 7, pubkey: key(i), meta: meta(1) });
         }
         assert!(t.take_startup_chunk(20).is_none());
-        let (slot, c) = t.take_startup_chunk(5).unwrap();
-        assert_eq!((slot, c.len()), (7, 10));
+        let c = t.take_startup_chunk(5).unwrap();
+        assert_eq!(c.len(), 10);
+        assert!(c.iter().all(|(s, _)| *s == 7));
         t.handle(Event::Snapshot { slot: 7, pubkey: key(11), meta: meta(1) });
         let out = t.handle(Event::EndOfStartup);
         assert!(matches!(&out[0], Output::Startup { slot: 7, accounts } if accounts.len() == 1));

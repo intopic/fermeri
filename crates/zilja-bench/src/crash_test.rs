@@ -33,7 +33,7 @@ fn writer(dir: &str) {
                 (key(i), if rng.gen_bool(0.05) { None } else { Some(meta(&mut rng)) })
             })
             .collect();
-        t.apply_slot(slot, ups, Some(format!("h{slot}")));
+        t.apply_slot(slot, ups, Some((slot, [slot as u8; 32])));
         // Vetëm pasi shkrimi u krye: "ky slot është në disk".
         println!("{slot}");
     }

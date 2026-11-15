@@ -253,6 +253,9 @@ impl Tree {
     }
 }
 
+/// Gjurma e zinxhirit: (slot, bank_hash) e slotit të fundit të rrënjosur, nga SlotHashes.
+pub type Fingerprint = (u64, [u8; 32]);
+
 /// Gjendja e ruajtur e një peme që mund të vazhdojë pas rinisjes (vetëm për pemën në disk).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resume {
@@ -260,7 +263,8 @@ pub struct Resume {
     pub root: Hash,
     pub len: usize,
     pub complete: bool,
-    pub blockhash: Option<String>,
+    /// Gjurma e zinxhirit të slotit të ruajtur; `None` kur ende s'dihet (p.sh. menjëherë pas snapshot-it).
+    pub fingerprint: Option<Fingerprint>,
 }
 
 /// Përgjigja e një dëftese: sloti, root-i në atë slot, dëftesa dhe meta (nëse llogaria ekziston).
@@ -273,12 +277,13 @@ pub trait StateTree: Send + Sync {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    /// Llogari nga snapshot-i (mund të thirret disa herë, me copa).
+    /// Llogari nga snapshot-i, të gjitha nga sloti `slot` (mund të thirret disa herë, me copa).
+    /// Kur e njëjta llogari vjen disa herë, fiton sloti më i ri; në të njëjtin slot, e fundit (F-02).
     fn stage_snapshot(&mut self, slot: u64, ups: Vec<Update>);
     /// Ndërton pemën nga llogaritë e snapshot-it.
     fn finish_snapshot(&mut self, slot: u64, complete: bool) -> Hash;
     /// Zbaton ndryshimet e një sloti të rrënjosur.
-    fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, blockhash: Option<String>) -> Hash;
+    fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, fingerprint: Option<Fingerprint>) -> Hash;
     /// Dëftesa në slotin e fundit (`at = None`) ose në një slot të kaluar.
     fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, String>;
     /// Slotet për të cilat mund të jepen dëftesa: (më i vjetri, më i riu).
@@ -296,7 +301,8 @@ pub trait StateTree: Send + Sync {
 pub struct MemTree {
     pub tree: Tree,
     slot: Option<u64>,
-    staged: Vec<Update>,
+    /// pubkey → (sloti i versionit, meta); `None` = e mbyllur.
+    staged: std::collections::HashMap<Key, (u64, Option<AccountMeta>)>,
 }
 
 impl MemTree {
@@ -312,15 +318,23 @@ impl StateTree for MemTree {
     fn len(&self) -> usize {
         self.tree.len()
     }
-    fn stage_snapshot(&mut self, _slot: u64, mut ups: Vec<Update>) {
-        self.staged.append(&mut ups);
+    fn stage_snapshot(&mut self, slot: u64, ups: Vec<Update>) {
+        for (k, m) in ups {
+            match self.staged.get(&k) {
+                Some((s, _)) if *s > slot => {}
+                _ => {
+                    self.staged.insert(k, (slot, m));
+                }
+            }
+        }
     }
     fn finish_snapshot(&mut self, slot: u64, _complete: bool) -> Hash {
-        self.tree = Tree::from_accounts(std::mem::take(&mut self.staged));
+        let accs = std::mem::take(&mut self.staged).into_iter().filter_map(|(k, (_, m))| m.map(|m| (k, Some(m)))).collect();
+        self.tree = Tree::from_accounts(accs);
         self.slot = Some(slot);
         self.tree.root()
     }
-    fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, _blockhash: Option<String>) -> Hash {
+    fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, _fingerprint: Option<Fingerprint>) -> Hash {
         self.slot = Some(slot);
         self.tree.apply_batch(ups)
     }

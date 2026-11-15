@@ -24,8 +24,8 @@ export PATH="$BIN:$PATH"
 export NO_PROXY="127.0.0.1,localhost" no_proxy="127.0.0.1,localhost"
 # Sonda e auditimit (Faza 0): çfarë thërret validatori dhe kur.
 export ZILJA_PROBE="$WORK/probe.log"
-# F-01 me e2e: 0 = vetëm raporto (deri në Fazën 1), 1 = dështo.
-STRICT_F01="${STRICT_F01:-0}"
+# F-01 me e2e: 1 = dështo (parazgjedhja pas Fazës 1), 0 = vetëm raporto.
+STRICT_F01="${STRICT_F01:-1}"
 
 [ -f "$LIB" ] || { echo "Mungon $LIB: cargo build --release -p zilja-plugin"; exit 2; }
 [ -x "$CHECK" ] || { echo "Mungon $CHECK: cargo build --release -p zilja-cli"; exit 2; }
