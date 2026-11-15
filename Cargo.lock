@@ -4689,8 +4689,11 @@ dependencies = [
 name = "zilja-bench"
 version = "0.1.0"
 dependencies = [
+ "bs58",
+ "hex",
  "rand 0.8.8",
  "serde_json",
+ "zilja-node",
  "zilja-tree",
  "zilja-verifier",
 ]

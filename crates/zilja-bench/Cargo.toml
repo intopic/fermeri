@@ -11,3 +11,18 @@ zilja-verifier = { workspace = true }
 zilja-tree = { workspace = true }
 rand = { workspace = true }
 serde_json = { workspace = true }
+zilja-node = { workspace = true }
+hex = { workspace = true }
+bs58 = { workspace = true }
+
+[[bin]]
+name = "zilja-bench"
+path = "src/main.rs"
+
+[[bin]]
+name = "zilja-rpc-bench"
+path = "src/rpc_bench.rs"
+
+[[bin]]
+name = "zilja-vectors"
+path = "src/vectors.rs"
