@@ -1,0 +1,7 @@
+# I-06: Agave 4.3.2 kërkon rustc 1.97.1. Plugin-i ngarkohet si trait object, ndaj
+# kompilatori duhet të përputhet me atë të validatorit që synojmë.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

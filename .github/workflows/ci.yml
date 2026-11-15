@@ -14,7 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust (versioni nga rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: libclang (për RocksDB)
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
@@ -26,6 +27,8 @@ jobs:
         run: |
           cargo run -q -p zilja-bench --bin zilja-vectors > sdk/js/test/vectors.json
           git diff --exit-code sdk/js/test/vectors.json
+      - name: testet e auditimit që janë rregulluar (pa --ignored)
+        run: cargo test -p zilja-node -p zilja-store --test audit_poc
       - name: SDK zilja-verify (npm test + pack)
         working-directory: sdk/js
         run: |
@@ -37,9 +40,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
+      - name: Rust (versioni nga rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: build
         run: cargo build -p zilja-wasm --target wasm32-unknown-unknown --profile release-wasm
@@ -60,7 +62,8 @@ jobs:
         db: ["0", "1"]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust (versioni nga rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: libclang (për RocksDB)
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev

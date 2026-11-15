@@ -29,6 +29,8 @@ use std::sync::Mutex;
 use zilja_node::{rpc, Event, Options, Service, Status};
 use zilja_verifier::{AccountMeta, Key};
 
+mod probe;
+
 #[derive(Deserialize, Debug)]
 pub struct Config {
     #[serde(default = "default_bind")]
@@ -167,7 +169,8 @@ impl GeyserPlugin for ZiljaPlugin {
         "zilja"
     }
 
-    fn on_load(&mut self, config_file: &str, _is_reload: bool) -> PluginResult<()> {
+    fn on_load(&mut self, config_file: &str, is_reload: bool) -> PluginResult<()> {
+        probe::line(&format!("on_load reload={is_reload}"));
         let text = std::fs::read_to_string(config_file)?;
         let cfg: Config = serde_json::from_str(&text).map_err(custom)?;
         let signer = match &cfg.attest_keypair {
@@ -197,12 +200,14 @@ impl GeyserPlugin for ZiljaPlugin {
     }
 
     fn on_unload(&mut self) {
+        probe::line("on_unload");
         if let Some(mut s) = self.service.take() {
             s.shutdown();
         }
     }
 
     fn update_account_from_snapshot(&self, account: ReplicaAccountInfoVersions, slot: u64) -> PluginResult<()> {
+        probe::snapshot_account();
         if let Some((pubkey, meta)) = to_meta(&view(&account)) {
             self.send(Event::Snapshot { slot, pubkey, meta });
         }
@@ -210,6 +215,7 @@ impl GeyserPlugin for ZiljaPlugin {
     }
 
     fn update_account_for_bank(&self, account: ReplicaAccountInfoVersions, slot: u64, bank_id: u64) -> PluginResult<()> {
+        probe::account(slot, bank_id);
         let v = view(&account);
         let write_version = v.write_version;
         if v.pubkey == SLOT_HASHES_ID {
@@ -222,17 +228,20 @@ impl GeyserPlugin for ZiljaPlugin {
     }
 
     fn notify_end_of_startup(&self) -> PluginResult<()> {
+        probe::end_of_startup();
         self.send(Event::EndOfStartup);
         Ok(())
     }
 
     fn update_slot_status(&self, slot: u64, parent: Option<u64>, s: &SlotStatus) -> PluginResult<()> {
+        probe::line(&format!("slot_status slot={slot} parent={parent:?} status={s:?}"));
         // Statuse pa bank (p.sh. Dead në këtë version të ndërfaqes).
         self.send(Event::Status { slot, parent, bank_id: None, status: status(s) });
         Ok(())
     }
 
     fn update_bank_status(&self, slot: u64, parent: Option<u64>, s: &SlotStatus, bank_id: u64) -> PluginResult<()> {
+        probe::line(&format!("bank_status slot={slot} parent={parent:?} bank={bank_id} status={s:?}"));
         self.send(Event::Status { slot, parent, bank_id: Some(bank_id), status: status(s) });
         Ok(())
     }

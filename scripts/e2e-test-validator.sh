@@ -22,6 +22,10 @@ RPC="http://127.0.0.1:8899"
 ZILJA="http://127.0.0.1:7799"
 export PATH="$BIN:$PATH"
 export NO_PROXY="127.0.0.1,localhost" no_proxy="127.0.0.1,localhost"
+# Sonda e auditimit (Faza 0): çfarë thërret validatori dhe kur.
+export ZILJA_PROBE="$WORK/probe.log"
+# F-01 me e2e: 0 = vetëm raporto (deri në Fazën 1), 1 = dështo.
+STRICT_F01="${STRICT_F01:-0}"
 
 [ -f "$LIB" ] || { echo "Mungon $LIB: cargo build --release -p zilja-plugin"; exit 2; }
 [ -x "$CHECK" ] || { echo "Mungon $CHECK: cargo build --release -p zilja-cli"; exit 2; }
@@ -114,10 +118,26 @@ curl -s --noproxy '*' "$ZILJA/metrics" | grep -v '^#'
 zroot; echo
 
 echo "== Hapi 4: rinis nga ledger-i (nisje nga snapshot)"
-# Prit që të krijohet të paktën një snapshot.
-for _ in $(seq 1 120); do ls "$LEDGER"/snapshot-*.tar* >/dev/null 2>&1 && break; sleep 1; done
+# F-01: një transferim i finalizuar PAS snapshot-it të fundit, pastaj ndalim para snapshot-it tjetër.
+# Pas rinisjes validatori ngarkon snapshot-in dhe e ripërsërit këtë slot nga ledger-i gjatë nisjes.
+snap_slot() { ls "$LEDGER"/snapshot-*.tar* 2>/dev/null | sed -E 's/.*snapshot-([0-9]+)-.*/\1/' | sort -n | tail -1; }
+for _ in $(seq 1 120); do [ -n "$(snap_slot)" ] && break; sleep 1; done
+S0=$(snap_slot)
+for _ in $(seq 1 180); do [ "$(snap_slot)" != "$S0" ] && break; sleep 1; done
+solana-keygen new --force --no-bip39-passphrase -s -o "$WORK/f01.json" >/dev/null
+F01=$(solana-keygen pubkey "$WORK/f01.json")
+F01_SIG=$(solana -u "$RPC" transfer --keypair "$WORK/payer.json" --allow-unfunded-recipient "$F01" 0.123 --commitment finalized --output json | python3 -c 'import json,sys; print(json.load(sys.stdin)["signature"])')
+F01_SLOT=$(curl -s --noproxy '*' -X POST -H 'content-type: application/json' \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTransaction\",\"params\":[\"$F01_SIG\",{\"commitment\":\"finalized\"}]}" "$RPC" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["slot"])')
+# Prit që rrënja e ledger-it të kalojë qartë slotin e transferimit (që të ripërsëritet gjatë nisjes).
+wait_rooted_past "$((F01_SLOT + 40))"
 BEFORE=$(zroot)
+echo "$(date +%s%3N) MARK stop" >> "$ZILJA_PROBE"
 stop
+S1=$(snap_slot)
+echo "   llogaria e provës F-01: $F01, 0.123 SOL në slotin $F01_SLOT (i finalizuar); snapshot-i i fundit: $S1"
+[ "$F01_SLOT" -gt "$S1" ] || echo "   ⚠️ snapshot-i e mbulon transferimin: hapi 4b nuk e provon F-01 këtë herë"
 sleep 2
 start
 if [ "${ZILJA_DB:-0}" = "1" ]; then
@@ -140,8 +160,22 @@ wait_rooted_past "$((SLOT + 1))"
 # Llogari që nuk preket më: duhet të jetë aty pas rinisjes.
 "$CHECK" "$ZILJA" "11111111111111111111111111111111" "$RPC"
 curl -s --noproxy '*' "$ZILJA/metrics" | grep -v '^#'
+echo "== Hapi 4b: a e pa zilja ndryshimin që u ripërsërit gjatë nisjes? (F-01)"
+FIN=$(solana -u "$RPC" slot --commitment finalized)
+wait_rooted_past "$((FIN + 1))"
+ZL=$(curl -s --noproxy '*' -X POST -H 'content-type: application/json' \
+  -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountProof\",\"params\":[\"$F01\"]}" "$ZILJA" \
+  | python3 -c 'import json,sys; a=json.load(sys.stdin)["result"]["account"]; print(a["lamports"] if a else 0)')
+RL=$(solana -u "$RPC" balance "$F01" --lamports --commitment finalized | awk '{print $1}')
+if [ "$ZL" = "$RL" ]; then
+  echo "   ✅ zilja: $ZL lamports = RPC: $RL lamports"
+elif [ "$STRICT_F01" = "1" ]; then
+  echo "GABIM F-01: zilja $ZL lamports, RPC $RL lamports"; exit 1
+else
+  echo "   ❌ F-01 u riprodhua: zilja $ZL lamports, RPC $RL lamports (e pritur deri në Fazën 1)"
+fi
 if [ "${ZILJA_DB:-0}" = "1" ]; then
-  echo "== Hapi 5 (disk): dëftesë historike dhe asnjë ndalim"
+echo "== Hapi 5 (disk): dëftesë historike dhe asnjë ndalim"
   [ "$(metric broken)" = "0" ] || { echo "GABIM: zilja ndaloi"; exit 1; }
   [ "$(metric resume_verified)" = "1" ] || { echo "GABIM: blockhash-i pas rinisjes nuk u kontrollua"; exit 1; }
   echo "   ✅ gjurma e zinxhirit (SlotHashes) e slotit të ruajtur u gjet pas rinisjes"
@@ -156,7 +190,7 @@ if [ "${ZILJA_DB:-0}" = "1" ]; then
   echo "   ✅ sloti $OLD_SLOT: 1.75 SOL · tani: 2.25 SOL, të dyja të verifikuara"
 else
 echo "== Hapi 5: vazhdimësia: root-i i rindërtuar nga snapshot-i = root-i i ndërtuar slot pas sloti"
-python3 - "$WORK/roots.log" <<'PY'
+if python3 - "$WORK/roots.log" <<'PY'
 import sys
 seen, same, diff = {}, 0, 0
 for line in open(sys.argv[1]):
@@ -168,6 +202,12 @@ for line in open(sys.argv[1]):
 print(f"   slote të llogaritura dy herë: {same} identike, {diff} të ndryshme")
 sys.exit(0 if same > 0 and diff == 0 else 1)
 PY
+then :
+elif [ "$STRICT_F01" = "1" ]; then
+  echo "GABIM: root-i pas rinisjes ndryshon"; exit 1
+else
+  echo "   ❌ F-01 u riprodhua edhe këtu (e pritur deri në Fazën 1)"
+fi
 fi
 echo "== Hapi 6: pleqtë firmosin ziles (kuorumi > 2/3 i stake-ut nga getVoteAccounts)"
 "$ROOT/target/release/zilja-quorum" "$RPC" "$ZILJA"
@@ -185,5 +225,7 @@ if [ "${ZILJA_DB:-0}" = "1" ]; then
   echo "$R" | grep -q "zilja ndaloi" || { echo "GABIM: RPC-ja duhet të refuzojë"; exit 1; }
   echo "   ✅ zilja ndaloi dhe nuk jep vula të gabuara; disku u fshi për rindërtim"
 fi
+echo "== Sonda: pyetjet e hapura të auditimit"
+python3 "$ROOT/scripts/probe-report.py" "$ZILJA_PROBE" || true
 echo
 echo "== GJITHÇKA KALOI ✅ (roots.log: $(wc -l < "$WORK/roots.log") rreshta)"
