@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: libclang (për RocksDB)
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
       - name: cargo test
         run: cargo test --workspace --all-features
       - name: testi i rrymës që ikën (pema në disk)
@@ -55,6 +57,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: libclang (për RocksDB)
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
       - name: build plugin + cli
         run: cargo build --release -p zilja-plugin -p zilja-cli
       - name: shkarko Agave
