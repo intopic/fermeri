@@ -4762,6 +4762,7 @@ version = "0.1.0"
 dependencies = [
  "bs58",
  "hex",
+ "serde_json",
  "wasm-bindgen",
  "zilja-verifier",
 ]

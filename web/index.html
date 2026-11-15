@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="sq">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zilja e fshatit: verifiko hambarin tënd</title>
+<style>
+  :root { --bg:#faf7f0; --fg:#2b2a26; --muted:#77736a; --line:#e3ddd0; --ok:#2f7d4a; --bad:#b3362c; --accent:#a8641e; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#1c1b19; --fg:#ece8df; --muted:#a39e93; --line:#38352f; --ok:#6cc48a; --bad:#ef7a6f; --accent:#e0a15a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width: 640px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 28px; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin:16px 0 4px; }
+  input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--fg); font:inherit; font-family: ui-monospace, monospace; font-size:.9rem; }
+  details { margin-top: 16px; }
+  summary { cursor:pointer; color:var(--muted); font-size:.9rem; }
+  button { margin-top:24px; width:100%; padding:12px; border:0; border-radius:8px; background:var(--accent); color:#fff; font:inherit; font-weight:600; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:wait; }
+  ol { list-style:none; padding:0; margin:28px 0 0; }
+  li { padding:10px 0; border-top:1px solid var(--line); display:flex; gap:10px; }
+  li .i { width:1.4em; flex:none; text-align:center; }
+  li.ok .i { color:var(--ok); } li.bad .i { color:var(--bad); }
+  .verdict { margin-top:20px; padding:14px; border-radius:8px; font-weight:600; }
+  .verdict.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color:var(--ok); }
+  .verdict.bad { background: color-mix(in srgb, var(--bad) 14%, transparent); color:var(--bad); }
+  footer { margin-top:40px; font-size:.8rem; color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>🔔 Zilja e fshatit</h1>
+  <p class="lead">Kontrollo vetë hambarin tënd (llogarinë Solana), pa i besuar RPC-së. Verifikimi bëhet këtu, në shfletuesin tënd.</p>
+
+  <form id="f">
+    <label for="pubkey">Llogaria (pubkey)</label>
+    <input id="pubkey" required placeholder="p.sh. 11111111111111111111111111111111" autocomplete="off">
+
+    <label for="zilja">Adresa e Ziles</label>
+    <input id="zilja" value="http://127.0.0.1:7799">
+
+    <details>
+      <summary>Kontrolle shtesë</summary>
+      <label for="rpc">RPC Solana, për të krahasuar të dhënat (opsionale)</label>
+      <input id="rpc" placeholder="http://127.0.0.1:8899">
+      <label for="zilja2">Zile e dytë e pavarur, për të krahasuar root-in (opsionale)</label>
+      <input id="zilja2" placeholder="http://...">
+      <label for="root">Root që e njeh nga një burim i besuar (opsionale)</label>
+      <input id="root" placeholder="64 shenja hex">
+    </details>
+
+    <button id="go">Verifiko</button>
+  </form>
+
+  <ol id="steps"></ol>
+  <div id="verdict"></div>
+
+  <footer>
+    Root-i ende nuk firmoset nga validatorët (Faza 4). Për besim më të fortë, krahasoje me një zile të dytë ose me një root të njohur.
+    Formati: <code>docs/SPEC.md</code>.
+  </footer>
+</main>
+<script type="module">
+  import { checkAccount } from "./check-core.js";
+  const $ = (id) => document.getElementById(id);
+  const q = new URLSearchParams(location.search);
+  for (const k of ["pubkey", "zilja", "rpc", "zilja2", "root"]) if (q.get(k)) $(k).value = q.get(k);
+
+  $("f").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("go").disabled = true;
+    $("steps").innerHTML = "";
+    $("verdict").className = "";
+    $("verdict").textContent = "";
+    const add = (ok, text) => {
+      const li = document.createElement("li");
+      li.className = ok === true ? "ok" : ok === false ? "bad" : "";
+      li.innerHTML = `<span class="i">${ok === true ? "✓" : ok === false ? "✗" : "•"}</span><span></span>`;
+      li.lastChild.textContent = text;
+      $("steps").append(li);
+    };
+    try {
+      const { ok, steps } = await checkAccount({
+        ziljaUrl: $("zilja").value.trim(),
+        pubkey: $("pubkey").value.trim(),
+        solanaRpc: $("rpc").value.trim() || undefined,
+        secondZilja: $("zilja2").value.trim() || undefined,
+        rootOverride: $("root").value.trim() || undefined,
+      });
+      steps.forEach((s) => add(s.ok, s.text));
+      $("verdict").className = "verdict " + (ok ? "ok" : "bad");
+      $("verdict").textContent = ok ? "✅ E verifikuar me matematikë" : "❌ Mos i beso: dëftesa nuk përputhet";
+    } catch (err) {
+      add(false, "Gabim: " + err.message);
+    } finally {
+      $("go").disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

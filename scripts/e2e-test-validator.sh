@@ -79,9 +79,15 @@ echo "== Hapi 3: banori verifikon"
 "$CHECK" "$ZILJA" "$FERMER" "$RPC"
 "$CHECK" "$ZILJA" "$PAYER" "$RPC"
 "$CHECK" "$ZILJA" "$NOBODY"
+echo "-- i njëjti kontroll me verifikuesin JavaScript (kodi i faqes demo):"
+node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC"
+node "$ROOT/web/check.mjs" "$ZILJA" "$NOBODY"
 echo "-- root i rremë duhet të refuzohet:"
 if "$CHECK" "$ZILJA" "$FERMER" --root "$(printf 'ab%.0s' $(seq 1 32))"; then
   echo "GABIM: root i rremë u pranua"; exit 1
+fi
+if node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" --root "$(printf 'ab%.0s' $(seq 1 32))"; then
+  echo "GABIM: root i rremë u pranua nga JS"; exit 1
 fi
 EXPECTED=$((1750000000))
 GOT=$(curl -s --noproxy '*' -X POST -H 'content-type: application/json' \
@@ -108,5 +114,18 @@ wait_rooted_past "$((SLOT + 1))"
 # Llogari që nuk preket më: duhet të jetë aty pas rinisjes.
 "$CHECK" "$ZILJA" "11111111111111111111111111111111" "$RPC"
 curl -s --noproxy '*' "$ZILJA/metrics" | grep -v '^#'
+echo "== Hapi 5: vazhdimësia: root-i i rindërtuar nga snapshot-i = root-i i ndërtuar slot pas sloti"
+python3 - "$WORK/roots.log" <<'PY'
+import sys
+seen, same, diff = {}, 0, 0
+for line in open(sys.argv[1]):
+    slot, root = line.split()
+    if slot in seen:
+        if seen[slot] == root: same += 1
+        else: diff += 1; print(f"   ❌ slot {slot}: {seen[slot]} != {root}")
+    seen[slot] = root
+print(f"   slote të llogaritura dy herë: {same} identike, {diff} të ndryshme")
+sys.exit(0 if same > 0 and diff == 0 else 1)
+PY
 echo
 echo "== GJITHÇKA KALOI ✅ (roots.log: $(wc -l < "$WORK/roots.log") rreshta)"

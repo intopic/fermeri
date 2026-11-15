@@ -67,3 +67,33 @@ pub fn verify(
 pub fn data_hash(data: &[u8]) -> String {
     hex::encode(zilja_verifier::sha256(data))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// I njëjti skedar vektorësh që kalon edhe verifikuesi JS.
+    #[test]
+    fn passes_shared_vectors() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/vectors.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let cases = v["cases"].as_array().unwrap();
+        for c in cases {
+            let a = &c["account"];
+            let s = |x: &serde_json::Value| x.as_str().unwrap_or("").to_string();
+            let n = |x: &serde_json::Value| x.as_str().map(|v| v.parse::<u64>().unwrap()).unwrap_or(0);
+            let got = verify_str(
+                c["root"].as_str().unwrap(),
+                c["pubkey"].as_str().unwrap(),
+                n(&a["lamports"]),
+                &s(&a["owner"]),
+                a["executable"].as_bool().unwrap_or(false),
+                n(&a["dataLen"]),
+                &s(&a["dataHash"]),
+                c["proof"].as_str().unwrap(),
+            );
+            assert_eq!(got, c["expect"].as_str().unwrap(), "{}", c["name"]);
+        }
+        assert!(cases.len() >= 100);
+    }
+}
