@@ -26,7 +26,7 @@ Kjo provon pjesën që nuk varet nga madhësia. Mbetet të provohet madhësia
 | Verifikimi | < 50 ms | **3.5 µs** (Rust), **0.6 ms** (JS në Node) | ✅ |
 | Madhësia e verifikuesit | < 500 KB | **64 KB** WASM, **5.3 KB** JS (2.2 KB gzip) | ✅ |
 | Përgjigja e RPC-së | < 100 ms | **0.10 ms** p50, 0.22 ms p99 (1M llogari, HTTP lokal) | ✅ |
-| Memoria shtesë | < 10% | **300–370 bajt për llogari** në RAM | ❌ për mainnet vetëm në RAM, duhet pemë në disk |
+| Memoria shtesë | < 10% | RAM: 300–370 B/llogari · Disk: RAM pothuajse fiks, 200–230 B/llogari në disk | ⚠️ disku e zgjidh RAM-in, por është ende i ngadaltë (shih "Pema në disk") |
 | CPU shtesë për validatorin | < 5% | E pamatur: kërkon një node mainnet | ⏳ |
 
 ## Faza 0: Përgatitja ✅ (në shkallë të vogël)
@@ -106,10 +106,62 @@ falsifikuara ose të dyfishta.
 
 Kodi është në këtë repo, me CI jeshile. Drafti i propozimit është te `docs/SIMD-DRAFT.md`.
 
+## Pema në disk (RocksDB) ✅ e saktë · ⚠️ ende e ngadaltë në makinë të vogël
+
+**Si funksionon:** nivelet e sipërme të pemës (`cache_depth`, parazgjedhja 20)
+jetojnë vetëm në RAM. Në disk shkruhen gjethet (me meta-n e llogarisë brenda) dhe
+nyjet poshtë cache-së. Çdo slot shkruhet me **një `WriteBatch` atomik**. Kur hapet
+disku, nivelet e sipërme rillogariten nga shtresa e poshtme dhe krahasohen me
+root-in e ruajtur. Nyjet e lexuara nga disku merren nivel pas niveli, me kërkesa të
+grupuara (multi-get) në paralel.
+
+**Kujtesa e sloteve: 32 slote (~13 s).** Fillimisht propozova 256, por matjet
+treguan që historia e niveleve të sipërme kushton ~45 mijë hyrje për slot në RAM.
+32 slote mjaftojnë për të krahasuar disa zile në të njëjtin slot dhe për vonesat e
+RPC-së. Numri ndryshohet me `history_slots`. Për prova më të vjetra, banori ruan
+vetë dëftesën, vulën dhe firmat.
+
+**Rinisja:** nëse disku ka gjendje, zilja i thotë validatorit të mos dërgojë
+snapshot-in dhe vazhdon menjëherë. Gjurma e gishtit të zinxhirit është hash-i i
+bankës së slotit të fundit, marrë nga sysvar-i **SlotHashes**. Pas rinisjes, zilja
+e kërkon atë hash në SlotHashes-in e parë që vjen. Nëse nuk e gjen (zinxhir tjetër
+ose boshllëk > 512 slote), ndalon, nuk jep vula të gabuara dhe e fshin diskun që
+nisja tjetër ta rindërtojë.
+
+**Korrektësia:**
+- Pema në disk = pema në RAM pas çdo slot, me cache 0, 4 dhe 20 nivele, me fshirje dhe me slote të kapërcyera. Edhe dëftesat janë bajt për bajt të njëjta.
+- Dëftesat historike në çdo slot brenda kujtesës përputhen me kopjet e pemës në RAM të atyre sloteve.
+- **Testi i "rrymës që ikën":** 12 herë SIGKILL në momente të rastësishme gjatë shkrimit. Çdo herë disku mbeti i plotë (root-i = root-i i rillogaritur nga gjethet) dhe asnjë slot i konfirmuar nuk humbi.
+- **Mbi validatorin e vërtetë** (`ZILJA_DB=1 scripts/e2e-test-validator.sh`):
+  - pas rinisjes, zilja vazhdoi nga disku pa snapshot, me të njëjtin root;
+  - gjurma SlotHashes u konfirmua;
+  - dëftesa historike tregoi 1.75 SOL në slotin para një transferimi, kurse tani llogaria ka 2.25 SOL, dhe të dyja u verifikuan;
+  - me `--reset` (zinxhir i ri) dhe disk të vjetër, zilja ndaloi vetë.
+
+**Matjet** (2 bërthama, 7 GB RAM, disk virtual; 5 000 ndryshime për slot; kujtesa 32 slote):
+
+| | RAM | Disk, cache 20 | Disk, cache 22 |
+|---|---|---|---|
+| **1M llogari:** përditësimi p50 / p99 | 18 / 26 ms | 164 / 230 ms | – |
+| **10M llogari:** përditësimi p50 / p99 | **22 / 32 ms** | 406 / 575 ms | 299 / 574 ms |
+| 10M: RAM i procesit | 2.9 GB (vetëm pema) | 1.7 GB* | 2.5 GB* |
+| 10M: disku | – | 2.2 GB (229 B/llogari) | 2.0 GB (200 B/llogari) |
+| 10M: ndërtimi nga snapshot-i | 11 s | 88 s | 95 s |
+| 10M: dëftesë e tanishme / historike | – | 0.08 / 0.04 ms | 0.06 / 0.03 ms |
+
+\* Përfshin cache-në e RocksDB (256 MB) dhe listën e çelësave të vetë testit (~320 MB).
+
+**Përfundimi i ndershëm:**
+- Disku është **i saktë dhe i sigurt**, por në këtë makinë është 13–18 herë më i ngadaltë se RAM-i. Me 10M llogari kalon kufirin e 400 ms të një sloti.
+- Kufiri vjen nga ~5 lexime të rastësishme nga disku për çdo ndryshim, me ~10 µs secili në një disk virtual me 2 bërthama.
+- Me 10M llogari, disku kursen pak RAM. Kursimi i madh del në shkallë mainnet: pema në RAM rritet ~300 B për llogari (~30 GB për 100M), kurse me diskun RAM-i rritet pak (cache-ja është ~2^`cache_depth` nyje).
+- **Hapi tjetër:** "faqet", pra 4 nivele të pemës në një hyrje të vetme në disk. Kështu leximet për ndryshim bien nga ~5 në ~1–2, dhe pastaj matet në një server me NVMe dhe shumë bërthama.
+- **Deri atëherë:** në një server me RAM të mjaftueshëm, mënyra RAM mbetet më e mira. Mënyra disk vlen kur RAM-i është i kufizuar dhe ngarkesa më e vogël.
+
 ## Çfarë mbetet (kërkon një server të vërtetë)
 
 1. **Node mainnet ose testnet me Ziles për 72 orë:** CPU shtesë, numri real i ndryshimeve për slot, koha e nisjes nga snapshot-i i plotë.
-2. **Pemë në disk:** me ~300–370 bajt për llogari, çdo 100 milionë llogari kërkojnë ~30–37 GB RAM. Për mainnet, nyjet e poshtme duhet të ruhen në disk (p.sh. RocksDB) dhe në RAM vetëm nivelet e sipërme.
+2. **Pema në disk më e shpejtë:** faqet me 4 nivele dhe matja në NVMe (shih seksionin më lart).
 3. **Fork-u i Agave** me root-in në bank hash, dhe matja me cluster me shumë validatorë.
 4. **Aplikacioni i telefonit** dhe matja në një Android mesatar.
 5. **Rishikimi** nga një ekip validatorësh (Anza ose Firedancer).
@@ -120,5 +172,8 @@ Kodi është në këtë repo, me CI jeshile. Drafti i propozimit është te `doc
 cargo run -p zilja-bench --release -- 1000000 200 5000
 cargo run -p zilja-bench --release --bin zilja-rpc-bench -- 1000000 5000
 cargo run -p zilja-bench --release --bin zilja-stream-bench -- 1000000 300 5000
+cargo run -p zilja-bench --release --bin zilja-disk-bench -- 10000000 100 5000 /tmp/zdb 32
+cargo run -p zilja-bench --release --bin zilja-crash-test -- 12
 scripts/e2e-test-validator.sh /rruga/te/solana-release/bin
+ZILJA_DB=1 scripts/e2e-test-validator.sh /rruga/te/solana-release/bin
 ```

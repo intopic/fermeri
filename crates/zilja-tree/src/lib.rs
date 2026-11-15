@@ -253,6 +253,92 @@ impl Tree {
     }
 }
 
+/// Gjendja e ruajtur e një peme që mund të vazhdojë pas rinisjes (vetëm për pemën në disk).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resume {
+    pub slot: u64,
+    pub root: Hash,
+    pub len: usize,
+    pub complete: bool,
+    pub blockhash: Option<String>,
+}
+
+/// Përgjigja e një dëftese: sloti, root-i në atë slot, dëftesa dhe meta (nëse llogaria ekziston).
+pub type ProofAt = (u64, Hash, Proof, Option<AccountMeta>);
+
+/// Ndërfaqja e përbashkët për pemën në RAM dhe pemën në disk.
+pub trait StateTree: Send + Sync {
+    fn root(&self) -> Hash;
+    fn len(&self) -> usize;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Llogari nga snapshot-i (mund të thirret disa herë, me copa).
+    fn stage_snapshot(&mut self, slot: u64, ups: Vec<Update>);
+    /// Ndërton pemën nga llogaritë e snapshot-it.
+    fn finish_snapshot(&mut self, slot: u64, complete: bool) -> Hash;
+    /// Zbaton ndryshimet e një sloti të rrënjosur.
+    fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, blockhash: Option<String>) -> Hash;
+    /// Dëftesa në slotin e fundit (`at = None`) ose në një slot të kaluar.
+    fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, String>;
+    /// Slotet për të cilat mund të jepen dëftesa: (më i vjetri, më i riu).
+    fn provable_range(&self) -> Option<(u64, u64)>;
+    /// Gjendja e ruajtur nga një nisje e mëparshme, nëse ka.
+    fn resume_point(&self) -> Option<Resume> {
+        None
+    }
+    /// Fshin gjendjen e ruajtur (p.sh. kur zbulohet zinxhir tjetër).
+    fn invalidate(&mut self) {}
+}
+
+/// Pema në RAM, e mbështjellë për ndërfaqen [`StateTree`]. Pa histori.
+#[derive(Default)]
+pub struct MemTree {
+    pub tree: Tree,
+    slot: Option<u64>,
+    staged: Vec<Update>,
+}
+
+impl MemTree {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl StateTree for MemTree {
+    fn root(&self) -> Hash {
+        self.tree.root()
+    }
+    fn len(&self) -> usize {
+        self.tree.len()
+    }
+    fn stage_snapshot(&mut self, _slot: u64, mut ups: Vec<Update>) {
+        self.staged.append(&mut ups);
+    }
+    fn finish_snapshot(&mut self, slot: u64, _complete: bool) -> Hash {
+        self.tree = Tree::from_accounts(std::mem::take(&mut self.staged));
+        self.slot = Some(slot);
+        self.tree.root()
+    }
+    fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, _blockhash: Option<String>) -> Hash {
+        self.slot = Some(slot);
+        self.tree.apply_batch(ups)
+    }
+    fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, String> {
+        let slot = self.slot.unwrap_or(0);
+        if let Some(a) = at {
+            if a != slot {
+                return Err(format!("pema në RAM ka vetëm slotin e fundit ({slot})"));
+            }
+        }
+        let (p, m) = self.tree.prove(key);
+        Ok((slot, self.tree.root(), p, m.cloned()))
+    }
+    fn provable_range(&self) -> Option<(u64, u64)> {
+        self.slot.map(|s| (s, s))
+    }
+}
+
 /// Implementim referencë, i ngadaltë por i thjeshtë: llogarit root-in direkt nga
 /// lista e plotë. Përdoret në teste për të kontrolluar pemën.
 pub fn reference_root(accounts: &[(Key, AccountMeta)]) -> Hash {

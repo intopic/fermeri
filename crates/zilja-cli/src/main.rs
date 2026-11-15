@@ -1,7 +1,7 @@
 //! `zilja-check`: banori që kontrollon hambarin e vet.
 //!
 //! ```text
-//! zilja-check <ZILJA_URL> <pubkey> [SOLANA_RPC_URL] [--root <hex>]
+//! zilja-check <ZILJA_URL> <pubkey> [SOLANA_RPC_URL] [--root <hex>] [--slot <n>]
 //! ```
 //!
 //! 1. Merr dëftesën nga Zilja (`getAccountProof`).
@@ -38,9 +38,13 @@ fn run() -> Result<bool, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut pos = Vec::new();
     let mut root_override = None;
+    let mut at_slot: Option<u64> = None;
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--root" {
+        if args[i] == "--slot" {
+            at_slot = Some(args.get(i + 1).and_then(|v| v.parse().ok()).ok_or("--slot kërkon një numër")?);
+            i += 2;
+        } else if args[i] == "--root" {
             root_override = Some(args.get(i + 1).ok_or("--root kërkon një vlerë")?.clone());
             i += 2;
         } else {
@@ -54,7 +58,11 @@ fn run() -> Result<bool, String> {
     let (zilja, pubkey_s) = (&pos[0], &pos[1]);
     let pubkey = b58_32(pubkey_s)?;
 
-    let r = rpc(zilja, "getAccountProof", json!([pubkey_s]))?;
+    let params = match at_slot {
+        Some(s) => json!([pubkey_s, {"slot": s}]),
+        None => json!([pubkey_s]),
+    };
+    let r = rpc(zilja, "getAccountProof", params)?;
     let server_root = r["root"].as_str().ok_or("mungon root")?;
     let root_hex = root_override.as_deref().unwrap_or(server_root);
     let root = h32(root_hex)?;
@@ -92,7 +100,7 @@ fn run() -> Result<bool, String> {
         }
     };
 
-    if let (true, Some(m), Some(sol)) = (ok, &meta, pos.get(2)) {
+    if let (true, Some(m), Some(sol), None) = (ok, &meta, pos.get(2), at_slot) {
         let info = rpc(sol, "getAccountInfo", json!([pubkey_s, {"encoding": "base64", "commitment": "finalized"}]))?;
         let ctx_slot = info["context"]["slot"].as_u64().unwrap_or(0);
         match info["value"]["data"][0].as_str() {

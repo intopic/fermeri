@@ -77,7 +77,12 @@ Pas kësaj, nëse klienti merr `data` nga një RPC i zakonshëm, kontrollon
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"getAccountProof","params":["<pubkey base58>"]}
+{"jsonrpc":"2.0","id":1,"method":"getAccountProof","params":["<pubkey base58>", {"slot": 1234}]}
 ```
+
+Me pemën në disk, `slot` mund të jetë çdo slot brenda kujtesës (`provableFrom` deri te
+sloti i fundit; parazgjedhja 32 slote). Dëftesa jep gjendjen pas slotit të fundit të
+rrënjosur ≤ `slot`. Jashtë kujtesës kthehet gabim `-32602`.
 
 ```json
 {"slot": 68, "root": "<hex>", "complete": true, "pubkey": "<base58>",
@@ -91,8 +96,11 @@ Kur llogaria nuk ekziston, `account` është `null` dhe `proof` provon mospërfs
 ### `getZiljaRoot`
 
 ```json
-{"slot": 68, "root": "<hex>", "accounts": 332, "complete": true}
+{"slot": 68, "root": "<hex>", "accounts": 332, "complete": true, "provableFrom": 37}
 ```
+
+Kur zilja ndalon (boshllëk ose zinxhir tjetër pas rinisjes), çdo metodë kthen
+gabim `-32003` me arsyen, deri në rindërtimin nga snapshot-i.
 
 `complete = false` do të thotë që pema nisi nga genesis pa snapshot dhe mbulon
 vetëm llogaritë që kanë ndryshuar që atëherë.

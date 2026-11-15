@@ -1,7 +1,8 @@
 //! Serveri RPC i Ziles (JSON-RPC 2.0 mbi HTTP).
 //!
 //! Metodat:
-//! - `getAccountProof [pubkey_base58]` → dëftesa për llogarinë në slotin e fundit të rrënjosur.
+//! - `getAccountProof [pubkey_base58, {"slot": n}?]` → dëftesa në slotin e fundit të rrënjosur,
+//!   ose në një slot të kaluar brenda kujtesës (vetëm me pemën në disk).
 //! - `getZiljaRoot []` → `{slot, root, accounts, complete}`.
 //! - `getZiljaAttestation [slot?]` → `{slot, root, validator, signature}` (kur zilja firmos).
 //!
@@ -14,9 +15,9 @@ use std::thread::JoinHandle;
 use tiny_http::{Header, Method, Response, Server};
 use zilja_verifier::Key;
 
-/// Ndërton përgjigjen e `getAccountProof` nga gjendja.
-pub fn account_proof_json(st: &State, pubkey: &Key) -> Value {
-    let (proof, meta) = st.tree.prove(pubkey);
+/// Ndërton përgjigjen e `getAccountProof` nga gjendja (`at = None` = sloti i fundit).
+pub fn account_proof_json(st: &State, pubkey: &Key, at: Option<u64>) -> Result<Value, String> {
+    let (slot, root, proof, meta) = st.tree.prove_at(pubkey, at)?;
     let bytes = proof.to_bytes();
     let account = meta.map(|m| {
         json!({
@@ -27,15 +28,15 @@ pub fn account_proof_json(st: &State, pubkey: &Key) -> Value {
             "dataHash": hex::encode(m.data_hash),
         })
     });
-    json!({
-        "slot": st.slot,
-        "root": hex::encode(st.tree.root()),
+    Ok(json!({
+        "slot": slot,
+        "root": hex::encode(root),
         "complete": st.complete,
         "pubkey": bs58::encode(pubkey).into_string(),
         "account": account,
         "proof": hex::encode(&bytes),
         "proofBytes": bytes.len(),
-    })
+    }))
 }
 
 fn parse_pubkey(s: &str) -> Result<Key, String> {
@@ -54,24 +55,31 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
     let params = req.get("params").cloned().unwrap_or(json!([]));
     let st = shared.state.read().unwrap();
     if !st.ready {
-        return err(id, -32002, "zilja ende po ndërton pemën fillestare");
+        return match &st.broken {
+            Some(why) => err(id, -32003, &format!("zilja ndaloi: {why}")),
+            None => err(id, -32002, "zilja ende po ndërton pemën fillestare"),
+        };
     }
     match method {
         "getAccountProof" => {
             let Some(pk) = params.get(0).and_then(|p| p.as_str()) else {
                 return err(id, -32602, "duhet params: [pubkey]");
             };
-            match parse_pubkey(pk) {
-                Ok(k) => {
+            let at = params.get(1).and_then(|o| o.get("slot")).and_then(|s| s.as_u64());
+            match parse_pubkey(pk).and_then(|k| account_proof_json(&st, &k, at)) {
+                Ok(res) => {
                     shared.metrics.proofs_served.fetch_add(1, Ordering::Relaxed);
-                    json!({"jsonrpc": "2.0", "id": id, "result": account_proof_json(&st, &k)})
+                    json!({"jsonrpc": "2.0", "id": id, "result": res})
                 }
                 Err(e) => err(id, -32602, &e),
             }
         }
         "getZiljaRoot" => json!({
             "jsonrpc": "2.0", "id": id,
-            "result": {"slot": st.slot, "root": hex::encode(st.tree.root()), "accounts": st.tree.len(), "complete": st.complete}
+            "result": {
+                "slot": st.slot, "root": hex::encode(st.tree.root()), "accounts": st.tree.len(), "complete": st.complete,
+                "provableFrom": st.tree.provable_range().map(|r| r.0),
+            }
         }),
         "getZiljaAttestation" => {
             let Some(attester) = st.attester else {

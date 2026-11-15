@@ -6,7 +6,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde_json::{json, Value};
 use std::time::Instant;
 use zilja_node::{rpc, Shared};
-use zilja_tree::Tree;
+use zilja_tree::{StateTree, Tree};
 use zilja_verifier::{AccountMeta, Key};
 
 /// Klient HTTP minimal: e gjithë kërkesa në një write, TCP_NODELAY, `Connection: close`
@@ -40,7 +40,10 @@ fn main() {
     let shared = Shared::default();
     {
         let mut st = shared.state.write().unwrap();
-        st.tree = tree;
+        let mut mt = zilja_tree::MemTree::new();
+        mt.tree = tree;
+        mt.apply_slot(1, vec![], None);
+        st.tree = Box::new(mt);
         st.slot = 1;
         st.ready = true;
         st.complete = true;

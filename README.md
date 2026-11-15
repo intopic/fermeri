@@ -15,6 +15,7 @@
 |---|---|---|
 | Shkruesi pranë plakut | Geyser plugin | `crates/zilja-plugin` |
 | Vula e fshatit (zilja) | Root-i i pemës Merkle | `crates/zilja-tree` |
+| Tavolina dhe rafti | Pema në disk (RocksDB) | `crates/zilja-store` |
 | Regjistri i radhës së sloteve | Ndjekja e bankave, fork-eve, Rooted | `crates/zilja-node` (`tracker`) |
 | Dëftesa e hambarit | `getAccountProof` | `crates/zilja-node` (`rpc`) |
 | Banori me telefon | Verifikuesi i lehtë | `crates/zilja-verifier`, `crates/zilja-wasm`, `web/` |
@@ -40,6 +41,10 @@ solana-test-validator --geyser-plugin-config zilja.json
 node web/check.mjs http://127.0.0.1:7799 <PUBKEY>       # i njëjti kontroll në JS
 # ose hap web/index.html në shfletues
 
+# Pema në disk në vend të RAM-it: shto te zilja.json
+#   "db_path": "/var/lib/zilja/db", "history_slots": 32, "cache_depth": 20
+./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> --slot <SLOT>   # dëftesë historike
+
 # 4. A e kanë firmosur pleqtë? (shto "attest_keypair" te zilja.json)
 ./target/release/zilja-quorum http://127.0.0.1:8899 http://127.0.0.1:7799
 ```
@@ -61,6 +66,7 @@ scripts/e2e-test-validator.sh /rruga/te/solana-release/bin
 | 4. Firma e pleqve | ✅ firma jashtë protokollit + kuorum 2/3 mbi stake-un real · ⏳ fork Agave |
 | 5. Stresi dhe sulmet | ✅ fork-e, banka Dead, 50 vektorë sulmi · ⏳ ledger replay mainnet |
 | 6. Korrja | ✅ raporti dhe drafti SIMD |
+| Pema në disk | ✅ RocksDB, atomike, rinisje pa snapshot, 32 slote histori, mbrojtje nga zinxhiri i gabuar · ⚠️ ende e ngadaltë në makinë të vogël |
 
 Numrat e plotë janë te [`docs/RAPORTI.md`](docs/RAPORTI.md).
 

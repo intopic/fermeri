@@ -18,6 +18,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
         run: cargo test --workspace --all-features
+      - name: testi i rrymës që ikën (pema në disk)
+        run: cargo run -q --release -p zilja-bench --bin zilja-crash-test -- 6
       - name: verifikuesi JS kundër vektorëve të Rust
         run: |
           cargo run -q -p zilja-bench --bin zilja-vectors > web/vectors.json
@@ -42,9 +44,13 @@ jobs:
           test "$size" -lt 512000
 
   e2e:
-    name: Testi i plotë mbi solana-test-validator
+    name: Testi i plotë mbi solana-test-validator (disk=${{ matrix.db }})
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        db: ["0", "1"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -56,4 +62,4 @@ jobs:
           curl -sSL -o agave.tar.bz2 "https://github.com/anza-xyz/agave/releases/download/${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
           tar xjf agave.tar.bz2
       - name: e2e
-        run: WORK=$RUNNER_TEMP/e2e scripts/e2e-test-validator.sh "$PWD/solana-release/bin"
+        run: ZILJA_DB=${{ matrix.db }} WORK=$RUNNER_TEMP/e2e scripts/e2e-test-validator.sh "$PWD/solana-release/bin"

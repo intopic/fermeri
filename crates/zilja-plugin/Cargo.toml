@@ -11,6 +11,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 zilja-verifier = { workspace = true }
 zilja-node = { workspace = true }
+zilja-tree = { workspace = true }
+zilja-store = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }

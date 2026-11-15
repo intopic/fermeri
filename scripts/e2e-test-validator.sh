@@ -8,6 +8,7 @@
 #      pema rindërtohet me të gjitha llogaritë.
 #
 # Përdorimi: scripts/e2e-test-validator.sh [rruga/te/solana-release/bin]
+# Me ZILJA_DB=1 pema mbahet në disk (RocksDB) dhe rinisja vazhdon nga disku, pa snapshot.
 set -euo pipefail
 
 BIN="${1:-$HOME/.local/share/solana/install/active_release/bin}"
@@ -25,10 +26,15 @@ export NO_PROXY="127.0.0.1,localhost" no_proxy="127.0.0.1,localhost"
 [ -f "$LIB" ] || { echo "Mungon $LIB: cargo build --release -p zilja-plugin"; exit 2; }
 [ -x "$CHECK" ] || { echo "Mungon $CHECK: cargo build --release -p zilja-cli"; exit 2; }
 
+DBCONF=""
+if [ "${ZILJA_DB:-0}" = "1" ]; then
+  DBCONF=", \"db_path\": \"$WORK/zdb\", \"history_slots\": 256, \"cache_depth\": 4"
+fi
 cat > "$WORK/zilja.json" <<EOF
 { "libpath": "$LIB", "bind": "127.0.0.1:7799", "roots_log": "$WORK/roots.log",
-  "attest_keypair": "$LEDGER/validator-keypair.json" }
+  "attest_keypair": "$LEDGER/validator-keypair.json" $DBCONF }
 EOF
+cat "$WORK/zilja.json"
 
 VPID=""
 stop() { [ -n "$VPID" ] && kill "$VPID" 2>/dev/null && wait "$VPID" 2>/dev/null || true; VPID=""; }
@@ -103,18 +109,45 @@ zroot; echo
 echo "== Hapi 4: rinis nga ledger-i (nisje nga snapshot)"
 # Prit që të krijohet të paktën një snapshot.
 for _ in $(seq 1 120); do ls "$LEDGER"/snapshot-*.tar* >/dev/null 2>&1 && break; sleep 1; done
+BEFORE=$(zroot)
 stop
 sleep 2
 start
-STARTUP=$(metric startup_accounts)
-echo "   pema fillestare: $STARTUP llogari nga snapshot-i, në $(metric startup_build_ms) ms"
-[ "${STARTUP:-0}" -gt 0 ] || { echo "GABIM: nuk erdhën llogari nga snapshot-i"; exit 1; }
+if [ "${ZILJA_DB:-0}" = "1" ]; then
+  AFTER=$(zroot)
+  echo "   para ndalimit: $BEFORE"
+  echo "   pas rinisjes:  $AFTER"
+  [ "$(metric resumed)" = "1" ] || { echo "GABIM: zilja nuk vazhdoi nga disku"; exit 1; }
+  [ "$(metric startup_accounts)" = "0" ] || { echo "GABIM: zilja rindërtoi nga snapshot-i"; exit 1; }
+  python3 -c 'import json,sys; a=json.loads(sys.argv[1])["result"]; b=json.loads(sys.argv[2])["result"]; sys.exit(0 if a["root"]==b["root"] or b["slot"]>a["slot"] else 1)' "$BEFORE" "$AFTER" \
+    || { echo "GABIM: gjendja pas rinisjes ndryshon nga ajo para ndalimit"; exit 1; }
+  echo "   ✅ vazhdoi nga disku pa snapshot"
+else
+  STARTUP=$(metric startup_accounts)
+  echo "   pema fillestare: $STARTUP llogari nga snapshot-i, në $(metric startup_build_ms) ms"
+  [ "${STARTUP:-0}" -gt 0 ] || { echo "GABIM: nuk erdhën llogari nga snapshot-i"; exit 1; }
+fi
 SLOT=$(solana -u "$RPC" slot --commitment finalized)
 wait_rooted_past "$((SLOT + 1))"
 "$CHECK" "$ZILJA" "$FERMER" "$RPC"
 # Llogari që nuk preket më: duhet të jetë aty pas rinisjes.
 "$CHECK" "$ZILJA" "11111111111111111111111111111111" "$RPC"
 curl -s --noproxy '*' "$ZILJA/metrics" | grep -v '^#'
+if [ "${ZILJA_DB:-0}" = "1" ]; then
+  echo "== Hapi 5 (disk): dëftesë historike dhe asnjë ndalim"
+  [ "$(metric broken)" = "0" ] || { echo "GABIM: zilja ndaloi"; exit 1; }
+  [ "$(metric resume_verified)" = "1" ] || { echo "GABIM: blockhash-i pas rinisjes nuk u kontrollua"; exit 1; }
+  echo "   ✅ gjurma e zinxhirit (SlotHashes) e slotit të ruajtur u gjet pas rinisjes"
+  OLD_SLOT=$(metric last_rooted_slot)
+  solana -u "$RPC" transfer --keypair "$WORK/payer.json" "$FERMER" 0.5 --commitment finalized >/dev/null
+  SLOT=$(solana -u "$RPC" slot --commitment finalized)
+  wait_rooted_past "$SLOT"
+  "$CHECK" "$ZILJA" "$FERMER" --slot "$OLD_SLOT" | tee "$WORK/hist.txt"
+  grep -q "1750000000 lamports" "$WORK/hist.txt" || { echo "GABIM: dëftesa historike s'tregon 1.75 SOL"; exit 1; }
+  "$CHECK" "$ZILJA" "$FERMER" "$RPC" | tee "$WORK/now.txt"
+  grep -q "2250000000 lamports" "$WORK/now.txt" || { echo "GABIM: balanca e re duhet 2.25 SOL"; exit 1; }
+  echo "   ✅ sloti $OLD_SLOT: 1.75 SOL · tani: 2.25 SOL, të dyja të verifikuara"
+else
 echo "== Hapi 5: vazhdimësia: root-i i rindërtuar nga snapshot-i = root-i i ndërtuar slot pas sloti"
 python3 - "$WORK/roots.log" <<'PY'
 import sys
@@ -128,7 +161,20 @@ for line in open(sys.argv[1]):
 print(f"   slote të llogaritura dy herë: {same} identike, {diff} të ndryshme")
 sys.exit(0 if same > 0 and diff == 0 else 1)
 PY
+fi
 echo "== Hapi 6: pleqtë firmosin ziles (kuorumi > 2/3 i stake-ut nga getVoteAccounts)"
 "$ROOT/target/release/zilja-quorum" "$RPC" "$ZILJA"
+if [ "${ZILJA_DB:-0}" = "1" ]; then
+  echo "== Hapi 7 (disk): zinxhir krejt i ri (--reset) me pemën e vjetër në disk → zilja duhet të ndalojë"
+  stop
+  sleep 2
+  start --reset
+  for _ in $(seq 1 240); do [ "$(metric broken)" = "1" ] && break; sleep 1; done
+  [ "$(metric broken)" = "1" ] || { echo "GABIM: zilja nuk e kuptoi që zinxhiri ndryshoi"; exit 1; }
+  R=$(curl -s --noproxy '*' -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getZiljaRoot"}' "$ZILJA")
+  echo "   $R"
+  echo "$R" | grep -q "zilja ndaloi" || { echo "GABIM: RPC-ja duhet të refuzojë"; exit 1; }
+  echo "   ✅ zilja ndaloi dhe nuk jep vula të gabuara; disku u fshi për rindërtim"
+fi
 echo
 echo "== GJITHÇKA KALOI ✅ (roots.log: $(wc -l < "$WORK/roots.log") rreshta)"

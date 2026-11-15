@@ -1,0 +1,18 @@
+[package]
+name = "zilja-store"
+description = "Pema e Ziles në disk (RocksDB), me kujtesë të sloteve të fundit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zilja-verifier = { workspace = true }
+zilja-tree = { workspace = true }
+rayon = { workspace = true }
+log = { workspace = true }
+ahash = "0.8"
+rocksdb = { version = "0.24", default-features = false, features = ["lz4"] }
+
+[dev-dependencies]
+rand = { workspace = true }
+tempfile = "3"

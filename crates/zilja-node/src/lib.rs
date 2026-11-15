@@ -12,5 +12,5 @@ pub mod rpc;
 pub mod service;
 pub mod tracker;
 
-pub use service::{Metrics, Service, Shared, State};
+pub use service::{Metrics, Options, Service, Shared, State};
 pub use tracker::{Event, Status};

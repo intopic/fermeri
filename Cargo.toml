@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/zilja-verifier",
     "crates/zilja-tree",
+    "crates/zilja-store",
     "crates/zilja-node",
     "crates/zilja-plugin",
     "crates/zilja-wasm",
@@ -31,6 +32,7 @@ ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 zilja-verifier = { path = "crates/zilja-verifier" }
 zilja-tree = { path = "crates/zilja-tree" }
 zilja-node = { path = "crates/zilja-node" }
+zilja-store = { path = "crates/zilja-store" }
 
 [profile.release]
 lto = "thin"

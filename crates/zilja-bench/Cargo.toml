@@ -12,6 +12,7 @@ zilja-tree = { workspace = true }
 rand = { workspace = true }
 serde_json = { workspace = true }
 zilja-node = { workspace = true }
+zilja-store = { workspace = true }
 hex = { workspace = true }
 bs58 = { workspace = true }
 
@@ -30,3 +31,11 @@ path = "src/vectors.rs"
 [[bin]]
 name = "zilja-stream-bench"
 path = "src/stream_bench.rs"
+
+[[bin]]
+name = "zilja-crash-test"
+path = "src/crash_test.rs"
+
+[[bin]]
+name = "zilja-disk-bench"
+path = "src/disk_bench.rs"
