@@ -139,8 +139,16 @@ impl Tracker {
         if self.broken {
             return vec![];
         }
-        self.broken = true;
+        self.halt();
         vec![Output::Broken(why)]
+    }
+
+    /// Ndalim i përhershëm (F-05): hidhet gjithçka në pritje dhe asgjë e re nuk mbahet më.
+    pub fn halt(&mut self) {
+        self.broken = true;
+        self.banks = HashMap::new();
+        self.deferred_roots = Vec::new();
+        self.startup = Vec::new();
     }
 
     pub fn last_rooted(&self) -> Option<Slot> {
@@ -157,7 +165,14 @@ impl Tracker {
 
     pub fn handle(&mut self, ev: Event) -> Vec<Output> {
         match ev {
-            Event::Snapshot { .. } if self.resumed => vec![],
+            Event::Snapshot { .. } if self.broken => vec![],
+            // Pema në disk vazhdon: snapshot-i injorohet, përveç kur është më i ri se ajo (boshllëk).
+            Event::Snapshot { slot, .. } if self.resumed => match self.last_rooted {
+                Some(v) if slot > v => self.break_with(format!(
+                    "snapshot-i (slot {slot}) është më i ri se pema në disk (slot {v}): do të rindërtohet në nisjen e ardhshme"
+                )),
+                _ => vec![],
+            },
             Event::Snapshot { slot, pubkey, meta } => {
                 self.snapshot_slot = Some(self.snapshot_slot.map_or(slot, |s| s.max(slot)));
                 self.startup.push((slot, (pubkey, meta)));

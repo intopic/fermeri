@@ -5,6 +5,9 @@
 //! 2. asnjë slot i konfirmuar si i shkruar nuk humbi.
 //!
 //! `cargo run -p zilja-bench --release --bin zilja-crash-test -- [raunde]`
+//!
+//! `-- --snapshot [raunde]` (Safer-6): vret procesin gjatë ndërtimit nga snapshot-i. Pas
+//! rihapjes disku duhet të jetë ose bosh (ndërtim i mbetur në mes → rindërtim), ose i plotë.
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::io::{BufRead, BufReader};
@@ -20,8 +23,8 @@ fn writer(dir: &str) {
         Some(r) => r.slot + 1,
         None => {
             let mut rng = StdRng::seed_from_u64(0);
-            t.stage_snapshot(0, (0..50_000).map(|i| (key(i), Some(meta(&mut rng)))).collect());
-            t.finish_snapshot(0, true);
+            t.stage_snapshot(0, (0..50_000).map(|i| (key(i), Some(meta(&mut rng)))).collect()).unwrap();
+            t.finish_snapshot(0, true).unwrap();
             1
         }
     };
@@ -33,7 +36,7 @@ fn writer(dir: &str) {
                 (key(i), if rng.gen_bool(0.05) { None } else { Some(meta(&mut rng)) })
             })
             .collect();
-        t.apply_slot(slot, ups, Some((slot, [slot as u8; 32])));
+        t.apply_slot(slot, ups, Some((slot, [slot as u8; 32]))).unwrap();
         // Vetëm pasi shkrimi u krye: "ky slot është në disk".
         println!("{slot}");
     }
@@ -50,10 +53,54 @@ fn meta(rng: &mut StdRng) -> AccountMeta {
     AccountMeta { lamports: rng.gen_range(1..1 << 40), data_len: 165, data_hash: rng.gen(), ..Default::default() }
 }
 
+fn snap_writer(dir: &str) {
+    let mut t = DiskTree::open(dir, 16).unwrap();
+    let mut rng = StdRng::seed_from_u64(5);
+    for c in 0..40u64 {
+        t.stage_snapshot(c % 7, (0..10_000).map(|i| (key(c * 10_000 + i), Some(meta(&mut rng)))).collect()).unwrap();
+    }
+    t.finish_snapshot(7, true).unwrap();
+    println!("done");
+}
+
+fn snapshot_kills(exe: &str, rounds: usize) {
+    let mut rng = StdRng::seed_from_u64(7);
+    let (mut empty, mut full) = (0, 0);
+    for round in 1..=rounds {
+        let dir = tempdir();
+        let mut child = Command::new(exe).args(["--snap-writer", &dir]).stdout(Stdio::null()).spawn().unwrap();
+        let wait = Duration::from_millis(rng.gen_range(100..4000));
+        std::thread::sleep(wait);
+        let _ = child.kill();
+        child.wait().unwrap();
+        let t = DiskTree::open(&dir, 16).unwrap();
+        match t.resume_point() {
+            None => empty += 1,
+            Some(r) => {
+                t.verify_integrity().unwrap_or_else(|e| panic!("raundi {round}: ndërtim i dëmtuar: {e}"));
+                assert_eq!(r.len, 400_000, "raundi {round}: ndërtim i paplotë u pranua si i plotë");
+                full += 1;
+            }
+        }
+        println!("raundi {round:2}: u vra pas {:4} ms → {}", wait.as_millis(), if t.resume_point().is_some() { "i plotë ✅" } else { "bosh, do të rindërtohet ✅" });
+        drop(t);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    println!("✅ {rounds} vrasje gjatë ndërtimit: {empty} bosh, {full} të plota, asnjë gjendje gjysmake");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--writer") {
         writer(&args[2]);
+        return;
+    }
+    if args.get(1).map(String::as_str) == Some("--snap-writer") {
+        snap_writer(&args[2]);
+        return;
+    }
+    if args.get(1).map(String::as_str) == Some("--snapshot") {
+        snapshot_kills(&args[0], args.get(2).and_then(|a| a.parse().ok()).unwrap_or(6));
         return;
     }
     let rounds: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(10);
@@ -99,7 +146,9 @@ fn main() {
 }
 
 fn tempdir() -> String {
-    let d = std::env::temp_dir().join(format!("zilja-crash-{}", std::process::id()));
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let d = std::env::temp_dir().join(format!("zilja-crash-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     d.to_string_lossy().into_owned()
 }

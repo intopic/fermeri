@@ -75,12 +75,12 @@ fn main() {
                 (k, Some(meta(&mut rng)))
             })
             .collect();
-        t.stage_snapshot(0, ups);
+        t.stage_snapshot(0, ups).unwrap();
         staged += m;
     }
     let stage_s = t0.elapsed().as_secs_f64();
     let t1 = Instant::now();
-    t.finish_snapshot(0, true);
+    t.finish_snapshot(0, true).unwrap();
     let build_s = t1.elapsed().as_secs_f64();
     eprintln!("snapshot: shkrimi {stage_s:.1} s, ndërtimi {build_s:.1} s, disk {:.0} MB", dir_mb(&dir));
 
@@ -102,7 +102,7 @@ fn main() {
             })
             .collect();
         let s = Instant::now();
-        t.apply_slot(slot, ups, None);
+        t.apply_slot(slot, ups, None).unwrap();
         apply_ms.push(s.elapsed().as_secs_f64() * 1000.0);
         reads.push(t.last_disk_reads.load(Ordering::Relaxed) as f64);
     }

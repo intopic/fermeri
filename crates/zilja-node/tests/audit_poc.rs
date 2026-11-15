@@ -106,7 +106,6 @@ fn f02_snapshot_duplicates_newest_slot_must_win() {
 /// F-05. After `Broken`, the tracker keeps buffering every account write forever
 /// (Rooted is ignored, so nothing is ever pruned) inside the validator process.
 #[test]
-#[ignore = "F-05: rregullohet në Fazën 3"]
 fn f05_no_unbounded_buffering_after_broken() {
     let mut t = Tracker::new();
     // (Faza 1: Event::Block u hoq; zinxhiri i gabuar tani zbulohet nga SlotHashes.)
@@ -125,7 +124,6 @@ fn f05_no_unbounded_buffering_after_broken() {
 /// limit and no deadline. One client that announces a body and never sends it blocks
 /// every other request, including /health and /metrics.
 #[test]
-#[ignore = "F-06: rregullohet në Fazën 3"]
 fn f06_one_stalled_client_must_not_block_health() {
     use std::io::{Read, Write};
     use std::net::TcpStream;

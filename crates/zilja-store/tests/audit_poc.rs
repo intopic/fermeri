@@ -15,15 +15,14 @@ fn meta(rng: &mut StdRng) -> AccountMeta {
 /// and commits a new root; the dropped accounts then get *valid exclusion proofs*.
 /// Expected: apply_slot refuses (error / halt). This test FAILS on f59be06.
 #[test]
-#[ignore = "F-04: rregullohet në Fazën 3"]
 fn f04_unreadable_page_must_not_become_empty_subtree() {
     let dir = tempfile::tempdir().unwrap();
     let mut rng = StdRng::seed_from_u64(1);
     let accs: Vec<(Key, AccountMeta)> = (0..3000).map(|_| (rng.gen(), meta(&mut rng))).collect();
     {
         let mut t = DiskTree::open_opts(dir.path(), StoreOptions { cache_depth: 0, history: 0, ..Default::default() }).unwrap();
-        t.stage_snapshot(1, accs.iter().map(|(k, m)| (*k, Some(m.clone()))).collect());
-        t.finish_snapshot(1, true);
+        t.stage_snapshot(1, accs.iter().map(|(k, m)| (*k, Some(m.clone()))).collect()).unwrap();
+        t.finish_snapshot(1, true).unwrap();
         t.verify_integrity().unwrap();
     }
     // Damage one page below the top one (bit rot, a bad block, a short write...).
@@ -53,7 +52,8 @@ fn f04_unreadable_page_must_not_become_empty_subtree() {
         let ups: Vec<Update> = vec![(touched, Some(meta(&mut rng)))];
         t.apply_slot(2, ups, None)
     }));
-    if let Ok(root) = res {
+    // Faza 3: apply_slot kthen Result; gabimi (ose panic) është sjellja e pritur.
+    if let Ok(Ok(root)) = res {
         let (_, _, proof, m) = t.prove_at(&bystander, None).unwrap();
         let excluded = m.is_none() && verify_account(&root, &bystander, None, &proof) == Verdict::DoesNotExist;
         assert!(
@@ -78,13 +78,13 @@ fn f09_deep_twin_keys_amplify_disk_work() {
     let mut rng = StdRng::seed_from_u64(2);
     let keys: Vec<Key> = (0..50_000).map(|_| rng.gen()).collect();
     let mut t = DiskTree::open_opts(dir.path(), StoreOptions { cache_depth: 8, history: 32, ..Default::default() }).unwrap();
-    t.stage_snapshot(1, keys.iter().map(|k| (*k, Some(meta(&mut rng)))).collect());
-    t.finish_snapshot(1, true);
+    t.stage_snapshot(1, keys.iter().map(|k| (*k, Some(meta(&mut rng)))).collect()).unwrap();
+    t.finish_snapshot(1, true).unwrap();
     let n = 500;
     let run = |t: &mut DiskTree, slot: u64, ks: &[Key], rng: &mut StdRng| {
         let ups: Vec<Update> = ks.iter().map(|k| (*k, Some(meta(rng)))).collect();
         let t0 = std::time::Instant::now();
-        t.apply_slot(slot, ups, None);
+        t.apply_slot(slot, ups, None).unwrap();
         (t0.elapsed(), t.last_disk_reads.load(Ordering::Relaxed))
     };
     let (normal_t, normal_reads) = run(&mut t, 2, &keys[..n], &mut rng);
@@ -120,12 +120,12 @@ fn f09_twin_probe() {
             if mode == "snapshot" {
                 snap.extend(twins.iter().map(|k| (*k, Some(meta(&mut rng)))));
             }
-            t.stage_snapshot(1, snap);
-            t.finish_snapshot(1, true);
+            t.stage_snapshot(1, snap).unwrap();
+            t.finish_snapshot(1, true).unwrap();
             if mode == "apply" {
-                t.apply_slot(2, twins.iter().map(|k| (*k, Some(meta(&mut rng)))).collect(), None);
-                t.apply_slot(3, twins.iter().map(|k| (*k, Some(meta(&mut rng)))).collect(), None);
-                t.apply_slot(4, twins.iter().map(|k| (*k, None)).collect(), None);
+                t.apply_slot(2, twins.iter().map(|k| (*k, Some(meta(&mut rng)))).collect(), None).unwrap();
+                t.apply_slot(3, twins.iter().map(|k| (*k, Some(meta(&mut rng)))).collect(), None).unwrap();
+                t.apply_slot(4, twins.iter().map(|k| (*k, None)).collect(), None).unwrap();
             }
             t.verify_integrity().unwrap();
             println!("probe {mode} cd={cd} n={n}: ok");

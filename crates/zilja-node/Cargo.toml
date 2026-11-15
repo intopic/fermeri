@@ -15,9 +15,10 @@ serde_json = { workspace = true }
 bs58 = { workspace = true }
 hex = { workspace = true }
 log = { workspace = true }
-tiny_http = { workspace = true }
+
 
 [dev-dependencies]
 rand = { workspace = true }
 zilja-store = { workspace = true }
+rocksdb = { version = "0.24", default-features = false, features = ["lz4"] }
 tempfile = "3"

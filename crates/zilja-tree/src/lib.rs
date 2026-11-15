@@ -279,11 +279,14 @@ pub trait StateTree: Send + Sync {
     }
     /// Llogari nga snapshot-i, të gjitha nga sloti `slot` (mund të thirret disa herë, me copa).
     /// Kur e njëjta llogari vjen disa herë, fiton sloti më i ri; në të njëjtin slot, e fundit (F-02).
-    fn stage_snapshot(&mut self, slot: u64, ups: Vec<Update>);
+    ///
+    /// Çdo gabim (disk, të dhëna të dëmtuara) kthehet si `Err` dhe e ndalon ziles (F-12):
+    /// pema nuk vazhdon kurrë me një gjendje që s'është e sigurt.
+    fn stage_snapshot(&mut self, slot: u64, ups: Vec<Update>) -> Result<(), String>;
     /// Ndërton pemën nga llogaritë e snapshot-it.
-    fn finish_snapshot(&mut self, slot: u64, complete: bool) -> Hash;
+    fn finish_snapshot(&mut self, slot: u64, complete: bool) -> Result<Hash, String>;
     /// Zbaton ndryshimet e një sloti të rrënjosur.
-    fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, fingerprint: Option<Fingerprint>) -> Hash;
+    fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, fingerprint: Option<Fingerprint>) -> Result<Hash, String>;
     /// Dëftesa në slotin e fundit (`at = None`) ose në një slot të kaluar.
     fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, String>;
     /// Slotet për të cilat mund të jepen dëftesa: (më i vjetri, më i riu).
@@ -292,8 +295,9 @@ pub trait StateTree: Send + Sync {
     fn resume_point(&self) -> Option<Resume> {
         None
     }
-    /// Fshin gjendjen e ruajtur (p.sh. kur zbulohet zinxhir tjetër).
-    fn invalidate(&mut self) {}
+    /// Shënon gjendjen e ruajtur si të pavlefshme (p.sh. kur zbulohet zinxhir tjetër). Nuk fshin
+    /// gjë tani (F-13): rindërtimi bëhet në nisjen e ardhshme.
+    fn invalidate(&mut self, _why: &str) {}
 }
 
 /// Pema në RAM, e mbështjellë për ndërfaqen [`StateTree`]. Pa histori.
@@ -318,7 +322,7 @@ impl StateTree for MemTree {
     fn len(&self) -> usize {
         self.tree.len()
     }
-    fn stage_snapshot(&mut self, slot: u64, ups: Vec<Update>) {
+    fn stage_snapshot(&mut self, slot: u64, ups: Vec<Update>) -> Result<(), String> {
         for (k, m) in ups {
             match self.staged.get(&k) {
                 Some((s, _)) if *s > slot => {}
@@ -327,16 +331,17 @@ impl StateTree for MemTree {
                 }
             }
         }
+        Ok(())
     }
-    fn finish_snapshot(&mut self, slot: u64, _complete: bool) -> Hash {
+    fn finish_snapshot(&mut self, slot: u64, _complete: bool) -> Result<Hash, String> {
         let accs = std::mem::take(&mut self.staged).into_iter().filter_map(|(k, (_, m))| m.map(|m| (k, Some(m)))).collect();
         self.tree = Tree::from_accounts(accs);
         self.slot = Some(slot);
-        self.tree.root()
+        Ok(self.tree.root())
     }
-    fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, _fingerprint: Option<Fingerprint>) -> Hash {
+    fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, _fingerprint: Option<Fingerprint>) -> Result<Hash, String> {
         self.slot = Some(slot);
-        self.tree.apply_batch(ups)
+        Ok(self.tree.apply_batch(ups))
     }
     fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, String> {
         let slot = self.slot.unwrap_or(0);

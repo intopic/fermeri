@@ -83,7 +83,7 @@ fn resume_history_and_wrong_chain() {
         let mut svc = start(dir.path());
         assert!(svc.resumed);
         assert_eq!(svc.current().1, root_a);
-        svc.send(Event::Snapshot { slot: 99, pubkey: [9; 32], meta: m(1) }); // injorohet
+        svc.send(Event::Snapshot { slot: 5, pubkey: [9; 32], meta: m(1) }); // më i vjetër se disku: injorohet
         for s in 15..=25 {
             slot(&svc, s, 2, s * 10);
         }
@@ -98,7 +98,7 @@ fn resume_history_and_wrong_chain() {
         assert_eq!(proof_ok(&sh, 2, Some(22)), (22, 220));
     }
     {
-        // Zinxhir tjetër: SlotHashes i bankës pas slotit 25 ka hash-e të tjera → ndalon dhe fshin diskun.
+        // Zinxhir tjetër: SlotHashes i bankës pas slotit 25 ka hash-e të tjera → ndalon dhe e shënon diskun të pavlefshëm.
         let mut svc = start(dir.path());
         assert!(svc.resumed);
         let entries = (5..26u64).rev().map(|p| (p, [0xEE; 32])).collect();
@@ -108,8 +108,52 @@ fn resume_history_and_wrong_chain() {
         let r = rpc(&sh, r#"{"id":1,"method":"getZiljaRoot"}"#);
         assert_eq!(r["error"]["code"], -32003, "{r}");
         assert_eq!(sh.metrics.broken.load(std::sync::atomic::Ordering::Relaxed), 1);
+        // F-13: asgjë s'u fshi ende; vetëm u shënua.
+        assert!(dir.path().join("CURRENT").exists());
     }
-    // Pas ndalimit, disku është bosh: nisja tjetër do të rindërtojë nga snapshot-i.
+    // Nisja tjetër e sheh shënimin dhe e rindërton nga e para (do të vijë snapshot-i).
     let svc = start(dir.path());
     assert!(!svc.resumed);
+    drop(svc);
+    // Dhe një snapshot më i ri se pema në disk e ndalon vazhdimin.
+    {
+        let mut svc = start(dir.path());
+        svc.send(Event::Snapshot { slot: 10, pubkey: [1; 32], meta: m(100) });
+        svc.send(Event::EndOfStartup);
+        for s in 11..=12 {
+            slot(&svc, s, 2, s * 10);
+        }
+        svc.shutdown();
+    }
+    let mut svc = start(dir.path());
+    assert!(svc.resumed);
+    svc.send(Event::Snapshot { slot: 40, pubkey: [1; 32], meta: m(100) });
+    let sh = svc.shared.clone();
+    svc.shutdown();
+    assert_eq!(sh.metrics.broken.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
+/// F-13: një gjendje me version të panjohur refuzohet, nuk fshihet.
+#[test]
+fn unknown_state_version_is_refused_not_wiped() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let mut t = DiskTree::open(dir.path(), 8).unwrap();
+        use zilja_tree::StateTree;
+        t.stage_snapshot(1, vec![([1; 32], m(5))]).unwrap();
+        t.finish_snapshot(1, true).unwrap();
+    }
+    {
+        let cfs = ["nodes", "pages", "nodes_hist", "staging", "meta"];
+        let mut o = rocksdb::Options::default();
+        o.set_atomic_flush(true);
+        let db = rocksdb::DB::open_cf(&o, dir.path(), cfs).unwrap();
+        let cf = db.cf_handle("meta").unwrap();
+        let mut v = db.get_cf(cf, b"state").unwrap().unwrap();
+        v[0] = 99;
+        db.put_cf(cf, b"state", &v).unwrap();
+        db.flush().unwrap();
+    }
+    assert!(DiskTree::open(dir.path(), 8).is_err());
+    assert!(DiskTree::open(dir.path(), 8).is_err(), "gjendja duhet të jetë ende aty");
 }

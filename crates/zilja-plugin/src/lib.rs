@@ -15,8 +15,13 @@
 //!   "db_path": "/var/lib/zilja/db",
 //!   "history_slots": 32,
 //!   "cache_depth": 20,
-//!   "block_cache_mb": 512 }
+//!   "block_cache_mb": 512,
+//!   "metrics_bind": "127.0.0.1:7798",
+//!   "cors": false,
+//!   "snapshot_on_resume": false }
 //! ```
+//!
+//! RPC-ja publike duhet të qëndrojë pas një proxy (TLS, kufij kërkesash); shih `docs/OPERIMI.md`.
 
 use agave_geyser_plugin_interface::geyser_plugin_interface::{
     GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, ReplicaEntryUpdateParentInfoVersions,
@@ -54,6 +59,49 @@ pub struct Config {
     /// Cache-ja e blloqeve të RocksDB në MB. Parazgjedhja: 512.
     #[serde(default)]
     pub block_cache_mb: Option<usize>,
+    /// Porti privat për `/metrics` (F-06). Parazgjedhja: 127.0.0.1:7798.
+    #[serde(default = "default_metrics_bind")]
+    pub metrics_bind: String,
+    /// Kokat CORS në portin e RPC-së (për faqen demo në shfletues). Parazgjedhja: fikur.
+    #[serde(default)]
+    pub cors: bool,
+    /// F-13: kur operatori pret një snapshot të ri (p.sh. e shkarkoi), njoftimet e snapshot-it
+    /// mbeten të ndezura edhe kur pema në disk vazhdon. Nëse snapshot-i është më i ri se
+    /// pema, zilja ndalon dhe e rindërton në nisjen e ardhshme (dy rinisje gjithsej).
+    #[serde(default)]
+    pub snapshot_on_resume: bool,
+}
+
+fn default_metrics_bind() -> String {
+    "127.0.0.1:7798".into()
+}
+
+/// L-08: kufijtë e `cache_depth`. Nën 12 disku lexohet shumë herë për slot; mbi 24 RAM-i shkon
+/// në dhjetëra GB (~2^thellësia nyje).
+pub const CACHE_DEPTH_RANGE: std::ops::RangeInclusive<u16> = 12..=24;
+
+impl Config {
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(cd) = self.cache_depth {
+            // Vetëm testet e vogla e2e përdorin pemë të cekëta me qëllim.
+            let test_override = std::env::var_os("ZILJA_ALLOW_SMALL_CACHE_DEPTH").is_some();
+            if !CACHE_DEPTH_RANGE.contains(&cd) && !(test_override && cd <= 24) {
+                return Err(format!("cache_depth {cd} jashtë kufijve {CACHE_DEPTH_RANGE:?}"));
+            }
+        }
+        if self.history_slots.is_some_and(|h| h > 100_000) {
+            return Err("history_slots shumë i madh (> 100000)".into());
+        }
+        if self.block_cache_mb.is_some_and(|m| m == 0 || m > 1 << 20) {
+            return Err("block_cache_mb duhet në (0, 1048576]".into());
+        }
+        if self.history_slots.is_some() || self.cache_depth.is_some() || self.block_cache_mb.is_some() {
+            if self.db_path.is_none() {
+                return Err("history_slots/cache_depth/block_cache_mb kërkojnë db_path".into());
+            }
+        }
+        Ok(())
+    }
 }
 
 fn default_bind() -> String {
@@ -65,8 +113,9 @@ pub struct ZiljaPlugin {
     service: Option<Service>,
     /// Vazhdon nga pema në disk: s'ka nevojë për llogaritë e snapshot-it.
     resuming: AtomicBool,
-    // Thread-i i RPC-së jeton sa procesi; e mbajmë që të mos fshihet.
-    _rpc: Mutex<Option<std::thread::JoinHandle<()>>>,
+    snapshot_on_resume: AtomicBool,
+    /// Serverët HTTP (RPC dhe metrikat); ndalen dhe priten në `on_unload` (F-07).
+    servers: Mutex<Vec<rpc::HttpServer>>,
 }
 
 impl std::fmt::Debug for ZiljaPlugin {
@@ -174,6 +223,7 @@ impl GeyserPlugin for ZiljaPlugin {
         probe::line(&format!("on_load reload={is_reload}"));
         let text = std::fs::read_to_string(config_file)?;
         let cfg: Config = serde_json::from_str(&text).map_err(custom)?;
+        cfg.validate().map_err(custom)?;
         let signer = match &cfg.attest_keypair {
             Some(p) => Some(zilja_node::service::read_solana_keypair(p).map_err(custom)?),
             None => None,
@@ -193,15 +243,30 @@ impl GeyserPlugin for ZiljaPlugin {
         };
         let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), signer, tree }).map_err(custom)?;
         self.resuming.store(service.resumed, Ordering::Relaxed);
-        let handle = rpc::serve(&cfg.bind, service.shared.clone()).map_err(custom)?;
-        *self._rpc.lock().unwrap() = Some(handle);
+        self.snapshot_on_resume.store(cfg.snapshot_on_resume, Ordering::Relaxed);
+        let main = rpc::serve_routes(&cfg.bind, service.shared.clone(), rpc::Routes { jsonrpc: true, metrics: false, cors: cfg.cors })
+            .map_err(custom)?;
+        let metrics = rpc::serve_routes(&cfg.metrics_bind, service.shared.clone(), rpc::Routes { jsonrpc: false, metrics: true, cors: false })
+            .map_err(custom)?;
+        *self.servers.lock().unwrap() = vec![main, metrics];
         self.service = Some(service);
         log::info!("zilja: u ngarkua me konfigurimin {cfg:?}");
         Ok(())
     }
 
+    fn setup_logger(&self, logger: &'static dyn log::Log, level: log::LevelFilter) -> PluginResult<()> {
+        // F-12: pa këtë, logjet e plugin-it (përfshirë arsyen e ndalimit) nuk shfaqen kurrë.
+        let _ = log::set_logger(logger);
+        log::set_max_level(level);
+        Ok(())
+    }
+
     fn on_unload(&mut self) {
         probe::line("on_unload");
+        // F-07: ndalo serverët (dhe prit thread-et), pastaj punëtorin; asgjë nuk mbetet gjallë.
+        for mut srv in self.servers.lock().unwrap().drain(..) {
+            srv.stop();
+        }
         if let Some(mut s) = self.service.take() {
             s.shutdown();
         }
@@ -253,7 +318,7 @@ impl GeyserPlugin for ZiljaPlugin {
 
     fn account_data_snapshot_notifications_enabled(&self) -> bool {
         // Kur pema është në disk dhe vazhdon, nisja e validatorit është shumë më e shpejtë pa to.
-        !self.resuming.load(Ordering::Relaxed)
+        !self.resuming.load(Ordering::Relaxed) || self.snapshot_on_resume.load(Ordering::Relaxed)
     }
 
     // L-06 (Alpenglow): një shënues UpdateParent pastron një bank; zëvendësuesja vjen me CreatedBank.

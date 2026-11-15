@@ -42,7 +42,7 @@ fn main() {
         let mut st = shared.state.write().unwrap();
         let mut mt = zilja_tree::MemTree::new();
         mt.tree = tree;
-        mt.apply_slot(1, vec![], None);
+        mt.apply_slot(1, vec![], None).unwrap();
         st.tree = Box::new(mt);
         st.slot = 1;
         st.ready = true;

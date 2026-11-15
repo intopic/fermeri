@@ -34,8 +34,10 @@ DBCONF=""
 if [ "${ZILJA_DB:-0}" = "1" ]; then
   DBCONF=", \"db_path\": \"$WORK/zdb\", \"history_slots\": 256, \"cache_depth\": 4"
 fi
+# Pema e cekët (cache_depth 4) me qëllim, që edhe me pak llogari të punojnë faqet në disk.
+export ZILJA_ALLOW_SMALL_CACHE_DEPTH=1
 cat > "$WORK/zilja.json" <<EOF
-{ "libpath": "$LIB", "bind": "127.0.0.1:7799", "roots_log": "$WORK/roots.log",
+{ "libpath": "$LIB", "bind": "127.0.0.1:7799", "metrics_bind": "127.0.0.1:7798", "roots_log": "$WORK/roots.log",
   "attest_keypair": "$LEDGER/validator-keypair.json" $DBCONF }
 EOF
 cat "$WORK/zilja.json"
@@ -55,7 +57,21 @@ start() {
   echo "Validatori nuk u nis"; tail -50 "$LEDGER/validator.log" || true; exit 2
 }
 
-metric() { curl -s --noproxy '*' "$ZILJA/metrics" | awk -v m="zilja_$1" '$1==m {print $2}'; }
+METRICS="http://127.0.0.1:7798"
+health() { curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "$ZILJA/health"; }
+admin_rpc() { python3 - "$LEDGER/admin.rpc" "$@" <<'PY'
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.settimeout(60)
+s.sendall((json.dumps({"jsonrpc": "2.0", "id": 1, "method": sys.argv[2], "params": sys.argv[3:]}) + "\n").encode())
+buf = b""
+while True:
+    try:
+        buf += s.recv(65536); print(json.dumps(json.loads(buf))); break
+    except json.JSONDecodeError:
+        continue
+PY
+}
+metric() { curl -s --noproxy '*' "$METRICS/metrics" | awk -v m="zilja_$1" '$1==m {print $2}'; }
 zroot() { curl -s --noproxy '*' -X POST -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getZiljaRoot"}' "$ZILJA"; }
 
@@ -115,7 +131,7 @@ GOT=$(curl -s --noproxy '*' -X POST -H 'content-type: application/json' \
 [ "$GOT" = "$EXPECTED" ] || { echo "GABIM: lamports $GOT != $EXPECTED"; exit 1; }
 echo "   ✅ balanca e fermerit në zile: $GOT lamports (1.75 SOL)"
 echo "-- metrikat pas fazës së parë:"
-curl -s --noproxy '*' "$ZILJA/metrics" | grep -v '^#'
+curl -s --noproxy '*' "$METRICS/metrics" | grep -v '^#'
 zroot; echo
 
 echo "== Hapi 4: rinis nga ledger-i (nisje nga snapshot)"
@@ -165,7 +181,7 @@ wait_rooted_past "$((SLOT + 1))"
 "$CHECK" "$ZILJA" "$FERMER" "$RPC"
 # Llogari që nuk preket më: duhet të jetë aty pas rinisjes.
 "$CHECK" "$ZILJA" "11111111111111111111111111111111" "$RPC"
-curl -s --noproxy '*' "$ZILJA/metrics" | grep -v '^#'
+curl -s --noproxy '*' "$METRICS/metrics" | grep -v '^#'
 echo "== Hapi 4b: a e pa zilja ndryshimin që u ripërsërit gjatë nisjes? (F-01)"
 FIN=$(solana -u "$RPC" slot --commitment finalized)
 wait_rooted_past "$((FIN + 1))"
@@ -229,7 +245,26 @@ if [ "${ZILJA_DB:-0}" = "1" ]; then
   R=$(curl -s --noproxy '*' -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getZiljaRoot"}' "$ZILJA")
   echo "   $R"
   echo "$R" | grep -q "zilja ndaloi" || { echo "GABIM: RPC-ja duhet të refuzojë"; exit 1; }
-  echo "   ✅ zilja ndaloi dhe nuk jep vula të gabuara; disku u fshi për rindërtim"
+  [ "$(health)" = "503" ] || { echo "GABIM: /health duhet 503 pas ndalimit (F-12)"; exit 1; }
+  [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "$ZILJA/metrics")" = "404" ] || { echo "GABIM: /metrics s'duhet në portin publik"; exit 1; }
+  echo "   ✅ zilja ndaloi, nuk jep vula të gabuara, /health = 503; disku u shënua për rindërtim (F-13)"
+  echo "== Hapi 8 (disk): rinisja tjetër e rindërton pemën (pa fshirje me dorë)"
+  stop
+  sleep 2
+  start
+  [ "$(metric resumed)" = "0" ] || { echo "GABIM: pema e shënuar s'duhej të vazhdonte"; exit 1; }
+  wait_rooted_past "$(( $(solana -u "$RPC" slot --commitment finalized) + 1 ))"
+  [ "$(metric broken)" = "0" ] || { echo "GABIM: zilja ndaloi pas rindërtimit"; exit 1; }
+  [ "$(health)" = "200" ] || { echo "GABIM: /health duhet 200"; exit 1; }
+  echo "   ✅ u rindërtua vetë dhe punon"
+else
+  echo "== Hapi 7 (RAM): ringarkimi i plugin-it me admin RPC (F-07)"
+  admin_rpc reloadPlugin zilja "$WORK/zilja.json"
+  grep -q on_unload "$ZILJA_PROBE" || { echo "GABIM: on_unload nuk u thirr"; exit 1; }
+  for _ in $(seq 1 120); do [ "$(health)" = "200" ] && break; sleep 1; done
+  [ "$(health)" = "200" ] || { echo "GABIM: zilja s'u ringrit pas ringarkimit"; exit 1; }
+  kill -0 "$VPID" || { echo "GABIM: validatori ra"; exit 1; }
+  echo "   ✅ ringarkim pa rrëzim: portet u liruan dhe u rimorën, validatori vazhdon"
 fi
 echo "== Sonda: pyetjet e hapura të auditimit"
 python3 "$ROOT/scripts/probe-report.py" "$ZILJA_PROBE" || true

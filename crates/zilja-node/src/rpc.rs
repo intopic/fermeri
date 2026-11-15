@@ -10,13 +10,17 @@
 //! `lamports` dhe `dataLen` dalin si tekst dhjetor (F-08): JSON-i s'mund t'i mbajë saktë mbi 2^53.
 //! - `getZiljaAttestation [slot?]` → `{slot, root, validator, signature}` (kur zilja firmos).
 //!
-//! Rrugë GET: `/health`, `/metrics` (Prometheus).
+//! Rrugë GET: `/health` (200 vetëm kur jep dëftesa, përndryshe 503), `/metrics` (Prometheus,
+//! zakonisht në një port privat). Trupi i kërkesës ≤ 64 KB, me kohë maksimale leximi.
 
 use crate::service::{Shared, State};
 use serde_json::{json, Value};
-use std::sync::atomic::Ordering;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread::JoinHandle;
-use tiny_http::{Header, Method, Response, Server};
+use std::time::Duration;
 use zilja_verifier::Key;
 
 /// Gabim RPC: (kodi, mesazhi).
@@ -163,41 +167,195 @@ fn err(id: Value, code: i64, msg: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": msg}})
 }
 
-fn header(k: &str, v: &str) -> Header {
-    Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap()
+/// Kufijtë e serverit HTTP (F-06).
+pub const MAX_BODY: usize = 64 << 10;
+const MAX_HEADERS: usize = 16 << 10;
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
+const WORKERS: usize = 8;
+
+/// Çfarë shërben një port.
+#[derive(Clone, Copy, Debug)]
+pub struct Routes {
+    /// JSON-RPC me POST.
+    pub jsonrpc: bool,
+    /// `GET /metrics`. Parazgjedhja: në një port privat më vete.
+    pub metrics: bool,
+    /// Kokat CORS (`*`). Parazgjedhja: fikur; ndize vetëm kur faqja demo flet direkt me ziles.
+    pub cors: bool,
 }
 
-/// Nis serverin në një thread më vete.
-pub fn serve(bind: &str, shared: Shared) -> std::io::Result<JoinHandle<()>> {
-    let server = Server::http(bind).map_err(|e| std::io::Error::other(e.to_string()))?;
-    log::info!("zilja: RPC po dëgjon në http://{bind}");
-    std::thread::Builder::new().name("zilja-rpc".into()).spawn(move || {
-        for mut req in server.incoming_requests() {
-            let cors = [
-                header("Access-Control-Allow-Origin", "*"),
-                header("Access-Control-Allow-Headers", "content-type"),
-                header("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-            ];
-            let resp = match (req.method(), req.url()) {
-                (Method::Options, _) => Response::from_string(""),
-                (Method::Get, "/health") => Response::from_string("ok"),
-                (Method::Get, "/metrics") => Response::from_string(shared.metrics.prometheus())
-                    .with_header(header("Content-Type", "text/plain; version=0.0.4")),
-                (Method::Post, _) => {
-                    let mut body = String::new();
-                    let _ = std::io::Read::read_to_string(&mut req.as_reader(), &mut body);
-                    let v = handle_jsonrpc(&shared, &body);
-                    Response::from_string(v.to_string()).with_header(header("Content-Type", "application/json"))
-                }
-                _ => Response::from_string("not found").with_status_code(404),
-            };
-            let mut resp = resp;
-            for h in cors {
-                resp.add_header(h);
-            }
-            let _ = req.respond(resp);
+/// Një server HTTP që mund të ndalet dhe të pritet (F-07).
+pub struct HttpServer {
+    stop: Arc<AtomicBool>,
+    addr: SocketAddr,
+    threads: Vec<JoinHandle<()>>,
+}
+
+impl HttpServer {
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// Ndalon pranimin, pret lidhjet që po shërbehen dhe të gjithë thread-et.
+    pub fn stop(&mut self) {
+        if self.stop.swap(true, Ordering::SeqCst) {
+            return;
         }
-    })
+        // Zgjo `accept()` me një lidhje te vetja.
+        let _ = TcpStream::connect_timeout(&self.addr, Duration::from_secs(1));
+        for t in self.threads.drain(..) {
+            let _ = t.join();
+        }
+    }
+}
+
+impl Drop for HttpServer {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// JSON-RPC + /health (+ /metrics) në të njëjtin port, pa CORS.
+pub fn serve(bind: &str, shared: Shared) -> std::io::Result<HttpServer> {
+    serve_routes(bind, shared, Routes { jsonrpc: true, metrics: true, cors: false })
+}
+
+/// Nis serverin: një thread pranon lidhjet dhe disa punëtorë i shërbejnë. Çdo lidhje ka
+/// kohë maksimale leximi/shkrimi dhe kufi për trupin, ndaj një klient i ngadaltë zë
+/// vetëm një punëtor për pak sekonda dhe s'bllokon kurrë /health.
+pub fn serve_routes(bind: &str, shared: Shared, routes: Routes) -> std::io::Result<HttpServer> {
+    let listener = TcpListener::bind(bind)?;
+    let addr = listener.local_addr()?;
+    let stop = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = crossbeam_channel::bounded::<TcpStream>(WORKERS * 8);
+    let mut threads = Vec::new();
+    for i in 0..WORKERS {
+        let rx = rx.clone();
+        let sh = shared.clone();
+        threads.push(std::thread::Builder::new().name(format!("zilja-http-{i}")).spawn(move || {
+            for stream in rx.iter() {
+                let _ = handle_conn(stream, &sh, routes);
+            }
+        })?);
+    }
+    let st = stop.clone();
+    threads.push(std::thread::Builder::new().name("zilja-http-accept".into()).spawn(move || {
+        for conn in listener.incoming() {
+            if st.load(Ordering::SeqCst) {
+                break;
+            }
+            let Ok(s) = conn else { continue };
+            let _ = s.set_read_timeout(Some(IO_TIMEOUT));
+            let _ = s.set_write_timeout(Some(IO_TIMEOUT));
+            if let Err(crossbeam_channel::TrySendError::Full(mut s)) = tx.try_send(s) {
+                let _ = write_resp(&mut s, 503, "text/plain", b"busy", false);
+            }
+        }
+        // `tx` bie këtu: punëtorët mbarojnë lidhjet në radhë dhe dalin.
+    })?);
+    log::info!("zilja: HTTP po dëgjon në http://{addr} ({routes:?})");
+    Ok(HttpServer { stop, addr, threads })
+}
+
+fn write_resp(s: &mut TcpStream, code: u16, ctype: &str, body: &[u8], cors: bool) -> std::io::Result<()> {
+    let reason = match code {
+        200 => "OK",
+        204 => "No Content",
+        400 => "Bad Request",
+        404 => "Not Found",
+        411 => "Length Required",
+        413 => "Payload Too Large",
+        431 => "Request Header Fields Too Large",
+        503 => "Service Unavailable",
+        _ => "Error",
+    };
+    let mut h = format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n", body.len());
+    if cors {
+        h.push_str("Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: content-type\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
+    }
+    h.push_str("\r\n");
+    s.write_all(h.as_bytes())?;
+    s.write_all(body)?;
+    s.flush()
+}
+
+/// `/health`: 200 vetëm kur pema është gati dhe zilja s'ka ndaluar. Lexon vetëm atomike.
+fn health(shared: &Shared) -> (u16, &'static str) {
+    let m = &shared.metrics;
+    if m.broken.load(Ordering::Relaxed) == 1 || m.halted.load(Ordering::Relaxed) {
+        (503, "halted")
+    } else if m.ready.load(Ordering::Relaxed) == 1 {
+        (200, "ok")
+    } else {
+        (503, "starting")
+    }
+}
+
+fn handle_conn(mut s: TcpStream, shared: &Shared, routes: Routes) -> std::io::Result<()> {
+    // Kokat: lexo deri te rreshti bosh, jo më shumë se MAX_HEADERS.
+    let mut buf = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 4096];
+    let head_end = loop {
+        if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break p + 4;
+        }
+        if buf.len() > MAX_HEADERS {
+            return write_resp(&mut s, 431, "text/plain", b"headers too large", routes.cors);
+        }
+        let n = s.read(&mut chunk)?;
+        if n == 0 {
+            return Ok(());
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    };
+    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
+    let mut lines = head.split("\r\n");
+    let mut first = lines.next().unwrap_or("").split(' ');
+    let (method, path) = (first.next().unwrap_or(""), first.next().unwrap_or(""));
+    let mut len: Option<usize> = None;
+    for l in lines {
+        let Some((k, v)) = l.split_once(':') else { continue };
+        let k = k.trim().to_ascii_lowercase();
+        if k == "content-length" {
+            match v.trim().parse::<usize>() {
+                Ok(n) => len = Some(n),
+                Err(_) => return write_resp(&mut s, 400, "text/plain", b"bad content-length", routes.cors),
+            }
+        } else if k == "transfer-encoding" {
+            return write_resp(&mut s, 411, "text/plain", b"content-length required", routes.cors);
+        }
+    }
+    let cors = routes.cors;
+    match (method, path) {
+        ("OPTIONS", _) if cors => write_resp(&mut s, 204, "text/plain", b"", cors),
+        ("GET", "/health") => {
+            let (code, body) = health(shared);
+            write_resp(&mut s, code, "text/plain", body.as_bytes(), cors)
+        }
+        ("GET", "/metrics") if routes.metrics => {
+            write_resp(&mut s, 200, "text/plain; version=0.0.4", shared.metrics.prometheus().as_bytes(), cors)
+        }
+        ("POST", _) if routes.jsonrpc => {
+            let Some(n) = len else {
+                return write_resp(&mut s, 411, "text/plain", b"content-length required", cors);
+            };
+            if n > MAX_BODY {
+                return write_resp(&mut s, 413, "text/plain", b"body too large", cors);
+            }
+            let mut body = buf[head_end..].to_vec();
+            body.truncate(n);
+            while body.len() < n {
+                let k = s.read(&mut chunk)?;
+                if k == 0 {
+                    return Ok(());
+                }
+                body.extend_from_slice(&chunk[..k.min(n - body.len())]);
+            }
+            let v = handle_jsonrpc(shared, &String::from_utf8_lossy(&body));
+            write_resp(&mut s, 200, "application/json", v.to_string().as_bytes(), cors)
+        }
+        _ => write_resp(&mut s, 404, "text/plain", b"not found", cors),
+    }
 }
 
 #[cfg(test)]

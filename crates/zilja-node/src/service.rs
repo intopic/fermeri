@@ -7,13 +7,13 @@
 //! flet me të vetëm përmes [`StateTree`].
 
 use crate::tracker::{Event, Output, Slot, Tracker};
-use crossbeam_channel::{unbounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use ed25519_dalek::{Signer, SigningKey};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -27,6 +27,11 @@ pub const ATTEST_HISTORY: usize = 1024;
 pub const ROOT_HISTORY: usize = 1024;
 /// Llogaritë e snapshot-it i kalojmë pemës me copa të kësaj madhësie.
 const SNAPSHOT_CHUNK: usize = 1 << 16;
+/// Sa ngjarje mund të presin në kanal (F-05). Kur mbushet pas nisjes, zilja ndalon
+/// në vend që të rritë memorien e validatorit pa kufi.
+pub const QUEUE_CAP: usize = 1 << 20;
+/// Stack-u i thread-it punëtor (F-09: rrugë deri në 256 nivele rekursioni).
+const WORKER_STACK: usize = 64 << 20;
 
 /// Firma e një validatori mbi (slot, root).
 #[derive(Clone, Debug)]
@@ -91,14 +96,42 @@ pub struct Metrics {
     pub provable_from_slot: AtomicU64,
     pub resume_verified: AtomicU64,
     pub ambiguous_banks: AtomicU64,
+    /// 1 kur pema është gati dhe zilja nuk ka ndaluar (lexohet nga /health pa kyçur gjendjen).
+    pub ready: AtomicU64,
+    /// Koha (sekonda Unix) e root-it të fundit.
+    pub last_root_unix: AtomicU64,
+    /// `true` pas ndalimit: plugin-i ndalon së dërguari ngjarje (F-05).
+    pub halted: AtomicBool,
+    /// `true` pasi pema fillestare u ndërtua ose u hap nga disku: kanali s'pret më.
+    pub startup_done: AtomicBool,
+    /// `true` kur kanali u mbush (validatori shkon më shpejt se pema).
+    pub queue_overflow: AtomicBool,
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 impl Metrics {
     pub fn prometheus(&self) -> String {
+        // I-03: numrat që vetëm rriten janë `counter`, të tjerët `gauge`.
+        const COUNTERS: &[&str] = &[
+            "batches", "updates_applied", "total_apply_us", "events_received", "missing_parents",
+            "abandoned_banks", "dead_banks", "proofs_served", "ambiguous_banks",
+        ];
         let g = |n: &str, h: &str, v: &AtomicU64| {
-            format!("# HELP zilja_{n} {h}\n# TYPE zilja_{n} gauge\nzilja_{n} {}\n", v.load(Ordering::Relaxed))
+            let t = if COUNTERS.contains(&n) { "counter" } else { "gauge" };
+            let n2 = if t == "counter" { format!("{n}_total") } else { n.to_string() };
+            format!("# HELP zilja_{n2} {h}\n# TYPE zilja_{n2} {t}\nzilja_{n2} {}\n", v.load(Ordering::Relaxed))
         };
+        let last = self.last_root_unix.load(Ordering::Relaxed);
+        let age = if last == 0 { 0 } else { now_unix().saturating_sub(last) };
+        let age = format!(
+            "# HELP zilja_last_root_age_seconds Sa sekonda kanë kaluar nga root-i i fundit\n# TYPE zilja_last_root_age_seconds gauge\nzilja_last_root_age_seconds {age}\n"
+        );
         [
+            age,
+            g("ready", "1 kur zilja jep dëftesa", &self.ready),
             g("last_rooted_slot", "Sloti i fundit i aplikuar në pemë", &self.last_rooted_slot),
             g("accounts", "Numri i llogarive në pemë", &self.accounts),
             g("startup_accounts", "Llogaritë nga snapshot-i", &self.startup_accounts),
@@ -181,10 +214,12 @@ impl Service {
                 m.accounts.store(r.len as u64, Ordering::Relaxed);
                 m.last_rooted_slot.store(r.slot, Ordering::Relaxed);
                 m.complete.store(r.complete as u64, Ordering::Relaxed);
+                m.ready.store(1, Ordering::Relaxed);
+                m.startup_done.store(true, Ordering::Relaxed);
                 log::info!("zilja: vazhdon nga pema në disk, slot {}, {} llogari", r.slot, r.len);
             }
         }
-        let (tx, rx) = unbounded();
+        let (tx, rx) = bounded(QUEUE_CAP);
         let log = match opts.roots_log {
             Some(p) => Some(OpenOptions::new().create(true).append(true).open(p)?),
             None => None,
@@ -193,16 +228,28 @@ impl Service {
         let signer = opts.signer;
         let worker = std::thread::Builder::new()
             .name("zilja-worker".into())
+            .stack_size(WORKER_STACK)
             .spawn(move || worker_loop(rx, s2, log, signer, tracker))?;
         Ok(Service { shared, resumed: resume.is_some(), tx: Some(tx), worker: Some(worker) })
     }
 
+    /// Thirret nga callback-et e validatorit. Pas ndalimit nuk bën asgjë (F-05). Gjatë nisjes
+    /// pret kur kanali është plot; pas saj nuk pret kurrë: një kanal plot e ndalon ziles.
     pub fn send(&self, ev: Event) {
-        if let Some(tx) = &self.tx {
-            // Nëse punëtori ka rënë, nuk e rrëzojmë validatorin.
-            let _ = tx.send(ev);
-            self.shared.metrics.queue_len.store(tx.len() as u64, Ordering::Relaxed);
+        let m = &self.shared.metrics;
+        if m.halted.load(Ordering::Relaxed) {
+            return;
         }
+        let Some(tx) = &self.tx else { return };
+        if !m.startup_done.load(Ordering::Relaxed) {
+            let _ = tx.send(ev);
+        } else if let Err(TrySendError::Full(_)) = tx.try_send(ev) {
+            // Punëtori e kryen ndalimin; këtu vetëm ndalojmë së dërguari, pa kyçur asgjë.
+            m.ready.store(0, Ordering::Relaxed);
+            m.queue_overflow.store(true, Ordering::Relaxed);
+            m.halted.store(true, Ordering::Relaxed);
+        }
+        m.queue_len.store(tx.len() as u64, Ordering::Relaxed);
     }
 
     pub fn sender(&self) -> Option<Sender<Event>> {
@@ -262,16 +309,44 @@ fn update_range(st: &State, m: &Metrics) {
     }
 }
 
+/// Safer-1: rruga e vetme e ndalimit. E dukshme te /health, te metrikat dhe te logu.
+/// Pema në disk shënohet e pavlefshme (rindërtohet në nisjen e ardhshme), por nuk fshihet (F-13).
+fn halt(shared: &Shared, tracker: &mut Tracker, why: String) {
+    let m = &shared.metrics;
+    m.halted.store(true, Ordering::Relaxed);
+    m.ready.store(0, Ordering::Relaxed);
+    m.broken.store(1, Ordering::Relaxed);
+    tracker.halt();
+    log::error!("zilja: NDALOI: {why}. Pema u shënua e pavlefshme; rinis validatorin që zilja të rindërtohet nga snapshot-i.");
+    let mut st = shared.state.write().unwrap_or_else(|e| e.into_inner());
+    if st.broken.is_none() {
+        st.ready = false;
+        st.tree.invalidate(&why);
+        st.broken = Some(why);
+    }
+}
+
 fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signer: Option<SigningKey>, mut tracker: Tracker) {
     let m = &shared.metrics;
     let mut staged_total = 0u64;
     for ev in rx.iter() {
         m.events_received.fetch_add(1, Ordering::Relaxed);
+        if tracker.is_broken() {
+            continue; // F-05/Faster-4: asnjë punë pas ndalimit
+        }
+        if m.queue_overflow.load(Ordering::Relaxed) {
+            halt(&shared, &mut tracker, "kanali i ngjarjeve u mbush: pema mbeti pas validatorit".into());
+            continue;
+        }
         let outs = tracker.handle(ev);
         // Snapshot-i kalon te pema me copa, që të mos mbahet i gjithi në RAM.
         if let Some(chunk) = tracker.take_startup_chunk(SNAPSHOT_CHUNK) {
             staged_total += chunk.len() as u64;
-            stage_by_slot(&mut *shared.state.write().unwrap().tree, chunk);
+            let r = stage_by_slot(&mut *shared.state.write().unwrap().tree, chunk);
+            if let Err(e) = r {
+                halt(&shared, &mut tracker, e);
+                continue;
+            }
         }
         for out in outs {
             match out {
@@ -279,16 +354,24 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
                     let n = staged_total + accounts.len() as u64;
                     let t0 = Instant::now();
                     let complete = tracker.complete();
-                    let (root, len) = {
+                    let res = {
                         let mut st = shared.state.write().unwrap();
-                        stage_by_slot(&mut *st.tree, accounts);
-                        let root = st.tree.finish_snapshot(slot, complete);
-                        st.slot = slot;
-                        st.ready = true;
-                        st.complete = complete;
-                        sign_root(&mut st, &signer, slot, root);
-                        update_range(&st, m);
-                        (root, st.tree.len())
+                        let r = stage_by_slot(&mut *st.tree, accounts).and_then(|_| st.tree.finish_snapshot(slot, complete));
+                        r.map(|root| {
+                            st.slot = slot;
+                            st.ready = true;
+                            st.complete = complete;
+                            sign_root(&mut st, &signer, slot, root);
+                            update_range(&st, m);
+                            (root, st.tree.len())
+                        })
+                    };
+                    let (root, len) = match res {
+                        Ok(x) => x,
+                        Err(e) => {
+                            halt(&shared, &mut tracker, format!("ndërtimi nga snapshot-i dështoi: {e}"));
+                            break;
+                        }
                     };
                     let ms = t0.elapsed().as_millis() as u64;
                     m.startup_accounts.store(n, Ordering::Relaxed);
@@ -296,20 +379,31 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
                     m.complete.store(complete as u64, Ordering::Relaxed);
                     m.accounts.store(len as u64, Ordering::Relaxed);
                     m.last_rooted_slot.store(slot, Ordering::Relaxed);
+                    m.last_root_unix.store(now_unix(), Ordering::Relaxed);
+                    m.ready.store(1, Ordering::Relaxed);
+                    m.startup_done.store(true, Ordering::Relaxed);
                     log::info!("zilja: pema fillestare me {n} llogari u ndërtua në {ms} ms, slot {slot}");
                     write_root(&mut log, slot, &root);
                 }
                 Output::Rooted { slot, slots_in_batch: _, updates, fingerprint } => {
                     let n = updates.len() as u64;
                     let t0 = Instant::now();
-                    let (root, len) = {
+                    let res = {
                         let mut st = shared.state.write().unwrap();
-                        let root = st.tree.apply_slot(slot, updates, fingerprint);
-                        st.slot = slot;
-                        st.ready = true;
-                        sign_root(&mut st, &signer, slot, root);
-                        update_range(&st, m);
-                        (root, st.tree.len())
+                        st.tree.apply_slot(slot, updates, fingerprint).map(|root| {
+                            st.slot = slot;
+                            st.ready = true;
+                            sign_root(&mut st, &signer, slot, root);
+                            update_range(&st, m);
+                            (root, st.tree.len())
+                        })
+                    };
+                    let (root, len) = match res {
+                        Ok(x) => x,
+                        Err(e) => {
+                            halt(&shared, &mut tracker, e);
+                            break;
+                        }
                     };
                     let us = t0.elapsed().as_micros() as u64;
                     m.batches.fetch_add(1, Ordering::Relaxed);
@@ -320,15 +414,13 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
                     m.total_apply_us.fetch_add(us, Ordering::Relaxed);
                     m.accounts.store(len as u64, Ordering::Relaxed);
                     m.last_rooted_slot.store(slot, Ordering::Relaxed);
+                    m.last_root_unix.store(now_unix(), Ordering::Relaxed);
+                    m.ready.store(1, Ordering::Relaxed);
                     write_root(&mut log, slot, &root);
                 }
                 Output::Broken(why) => {
-                    log::error!("zilja: NDALOI: {why}. Pema në disk u fshi; rinis validatorin që zilja të rindërtohet nga snapshot-i.");
-                    let mut st = shared.state.write().unwrap();
-                    st.ready = false;
-                    st.broken = Some(why);
-                    st.tree.invalidate();
-                    m.broken.store(1, Ordering::Relaxed);
+                    halt(&shared, &mut tracker, why);
+                    break;
                 }
             }
         }
@@ -342,14 +434,15 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
 }
 
 /// Llogaritë e snapshot-it, të grupuara sipas slotit të versionit, në radhën e mbërritjes.
-fn stage_by_slot(tree: &mut dyn StateTree, chunk: Vec<(Slot, zilja_tree::Update)>) {
+fn stage_by_slot(tree: &mut dyn StateTree, chunk: Vec<(Slot, zilja_tree::Update)>) -> Result<(), String> {
     let mut by_slot: BTreeMap<Slot, Vec<zilja_tree::Update>> = BTreeMap::new();
     for (s, u) in chunk {
         by_slot.entry(s).or_default().push(u);
     }
     for (s, ups) in by_slot {
-        tree.stage_snapshot(s, ups);
+        tree.stage_snapshot(s, ups)?;
     }
+    Ok(())
 }
 
 fn write_root(log: &mut Option<File>, slot: Slot, root: &Hash) {

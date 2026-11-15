@@ -59,8 +59,8 @@ fn equivalence(cache_depth: u16) {
     // Snapshot-i fillestar.
     let snap = random_batch(&mut rng, &mut keys, 3000);
     let snap: Vec<Update> = snap.into_iter().filter(|(_, m)| m.is_some()).collect();
-    disk.stage_snapshot(100, snap.clone());
-    disk.finish_snapshot(100, true);
+    disk.stage_snapshot(100, snap.clone()).unwrap();
+    disk.finish_snapshot(100, true).unwrap();
     let mut mem = Tree::from_accounts(snap);
     assert_eq!(disk.root(), mem.root());
     assert_eq!(disk.len(), mem.len());
@@ -73,7 +73,7 @@ fn equivalence(cache_depth: u16) {
         slot += 1 + (round % 3);
         let n = rng.gen_range(1..300);
         let batch = random_batch(&mut rng, &mut keys, n);
-        disk.apply_slot(slot, batch.clone(), Some((slot, [slot as u8; 32])));
+        disk.apply_slot(slot, batch.clone(), Some((slot, [slot as u8; 32]))).unwrap();
         mem.apply_batch(batch);
         assert_eq!(disk.root(), mem.root(), "slot {slot}");
         assert_eq!(disk.len(), mem.len(), "slot {slot}");
@@ -106,10 +106,10 @@ fn reopen_keeps_state_cache_and_history() {
     let mut past = BTreeMap::new();
     {
         let mut disk = DiskTree::open_opts(dir.path(), StoreOptions { history: 16, cache_depth: 3, ..Default::default() }).unwrap();
-        disk.finish_snapshot(1, false); // nisje nga genesis, pa llogari
+        disk.finish_snapshot(1, false).unwrap(); // nisje nga genesis, pa llogari
         for slot in 2..30 {
             let b = random_batch(&mut rng, &mut keys, 200);
-            disk.apply_slot(slot, b.clone(), Some((slot, [slot as u8; 32])));
+            disk.apply_slot(slot, b.clone(), Some((slot, [slot as u8; 32]))).unwrap();
             mem.apply_batch(b);
             past.insert(slot, mem.clone());
         }
@@ -136,7 +136,7 @@ fn reopen_keeps_state_cache_and_history() {
     let mut disk = disk;
     for slot in 30..40 {
         let b = random_batch(&mut rng, &mut keys, 200);
-        disk.apply_slot(slot, b.clone(), None);
+        disk.apply_slot(slot, b.clone(), None).unwrap();
         mem.apply_batch(b);
         past.insert(slot, mem.clone());
     }
@@ -157,10 +157,10 @@ fn snapshot_with_buckets_duplicates_and_rebuild() {
     // Copa, me një llogari që del dy herë (e fundit fiton) dhe një fshirje.
     let mut dup = accs[5].clone();
     dup.1 = Some(meta(&mut rng));
-    disk.stage_snapshot(50, accs[..10_000].to_vec());
-    disk.stage_snapshot(50, accs[10_000..].to_vec());
-    disk.stage_snapshot(50, vec![dup.clone(), (accs[7].0, None)]);
-    disk.finish_snapshot(50, true);
+    disk.stage_snapshot(50, accs[..10_000].to_vec()).unwrap();
+    disk.stage_snapshot(50, accs[10_000..].to_vec()).unwrap();
+    disk.stage_snapshot(50, vec![dup.clone(), (accs[7].0, None)]).unwrap();
+    disk.finish_snapshot(50, true).unwrap();
     let mut expect = accs.clone();
     expect.push(dup);
     expect.push((accs[7].0, None));
@@ -171,8 +171,8 @@ fn snapshot_with_buckets_duplicates_and_rebuild() {
 
     // Një snapshot i ri fshin gjendjen e vjetër.
     let accs2: Vec<Update> = (0..500).map(|_| (rng.gen(), Some(meta(&mut rng)))).collect();
-    disk.stage_snapshot(90, accs2.clone());
-    disk.finish_snapshot(90, true);
+    disk.stage_snapshot(90, accs2.clone()).unwrap();
+    disk.finish_snapshot(90, true).unwrap();
     assert_eq!(disk.root(), Tree::from_accounts(accs2).root());
     assert_eq!(disk.len(), 500);
     disk.verify_integrity().unwrap();
@@ -184,13 +184,13 @@ fn archive_stays_bounded() {
     let mut rng = StdRng::seed_from_u64(14);
     let mut disk = DiskTree::open_opts(dir.path(), StoreOptions { history: 4, cache_depth: 2, ..Default::default() }).unwrap();
     let keys: Vec<Key> = (0..200).map(|_| rng.gen()).collect();
-    disk.stage_snapshot(0, keys.iter().map(|k| (*k, Some(meta(&mut rng)))).collect());
-    disk.finish_snapshot(0, true);
+    disk.stage_snapshot(0, keys.iter().map(|k| (*k, Some(meta(&mut rng)))).collect()).unwrap();
+    disk.finish_snapshot(0, true).unwrap();
     let mut sizes = Vec::new();
     for slot in 1..=200u64 {
         // Të njëjtat llogari ndryshojnë pa pushim: arkiva s'duhet të rritet pa fund.
         let b: Vec<Update> = keys.iter().take(50).map(|k| (*k, Some(meta(&mut rng)))).collect();
-        disk.apply_slot(slot, b, None);
+        disk.apply_slot(slot, b, None).unwrap();
         disk.compact_history();
         sizes.push(disk.debug_hist_entries());
     }
@@ -209,13 +209,57 @@ fn snapshot_newest_version_wins_on_disk_and_in_ram() {
     let mut ram = zilja_tree::MemTree::new();
     let m = |l: u64| Some(AccountMeta { lamports: l, ..Default::default() });
     for t in [&mut disk as &mut dyn StateTree, &mut ram] {
-        t.stage_snapshot(20, vec![([7; 32], m(200)), ([8; 32], None)]);
-        t.stage_snapshot(10, vec![([7; 32], m(100)), ([8; 32], m(5)), ([9; 32], m(9))]);
-        t.stage_snapshot(20, vec![([9; 32], m(90))]);
-        t.finish_snapshot(20, true);
+        t.stage_snapshot(20, vec![([7; 32], m(200)), ([8; 32], None)]).unwrap();
+        t.stage_snapshot(10, vec![([7; 32], m(100)), ([8; 32], m(5)), ([9; 32], m(9))]).unwrap();
+        t.stage_snapshot(20, vec![([9; 32], m(90))]).unwrap();
+        t.finish_snapshot(20, true).unwrap();
     }
     let want = Tree::from_accounts(vec![([7; 32], m(200)), ([9; 32], m(90))]);
     assert_eq!(disk.root(), want.root());
     assert_eq!(ram.root(), want.root());
     assert_eq!(disk.len(), 2);
+}
+
+/// Safer-6: lexime që dështojnë rastësisht. Çdo `apply_slot` ose kthen gabim, ose jep
+/// saktësisht root-in e pemës referencë; pas një gabimi, disku i rihapur është i paprekur
+/// (në slotin e fundit të suksesshëm) dhe vazhdon saktë.
+#[test]
+fn injected_read_faults_never_produce_a_wrong_root() {
+    let mut rng = StdRng::seed_from_u64(66);
+    for round in 0..6u64 {
+        let dir = tempfile::tempdir().unwrap();
+        let keys: Vec<Key> = (0..4000).map(|_| rng.gen()).collect();
+        let mut mem = Tree::from_accounts(keys.iter().map(|k| (*k, Some(meta(&mut rng)))).collect());
+        let mut disk = DiskTree::open_opts(dir.path(), StoreOptions { history: 0, cache_depth: 4, ..Default::default() }).unwrap();
+        disk.stage_snapshot(1, mem_accounts(&mem, &keys)).unwrap();
+        disk.finish_snapshot(1, true).unwrap();
+        assert_eq!(disk.root(), mem.root());
+        disk.inject_read_faults(7 + round * 13);
+        let mut errors = 0;
+        for slot in 2..40u64 {
+            let ups: Vec<Update> = (0..rng.gen_range(1..60))
+                .map(|_| (keys[rng.gen_range(0..keys.len())], if rng.gen_bool(0.1) { None } else { Some(meta(&mut rng)) }))
+                .collect();
+            match disk.apply_slot(slot, ups.clone(), None) {
+                Ok(root) => {
+                    mem.apply_batch(ups);
+                    assert_eq!(root, mem.root(), "round {round} slot {slot}: root i gabuar pa gabim");
+                }
+                Err(_) => {
+                    errors += 1;
+                    // Zilja do të ndalonte këtu; rihap diskun pa gabime dhe vazhdo nga ai.
+                    drop(disk);
+                    disk = DiskTree::open_opts(dir.path(), StoreOptions { history: 0, cache_depth: 4, ..Default::default() }).unwrap();
+                    assert_eq!(disk.root(), mem.root(), "round {round}: disku ndryshoi nga një slot i dështuar");
+                    disk.verify_integrity().unwrap();
+                    disk.inject_read_faults(7 + round * 13);
+                }
+            }
+        }
+        assert!(errors > 0, "round {round}: asnjë gabim i injektuar s'u pa");
+    }
+}
+
+fn mem_accounts(mem: &Tree, keys: &[Key]) -> Vec<Update> {
+    keys.iter().filter_map(|k| mem.get(k).map(|m| (*k, Some(m.clone())))).collect()
 }

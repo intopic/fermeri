@@ -245,12 +245,12 @@ fn run(seed: u64, cfg: Cfg) -> Result<(), String> {
             match out {
                 Output::Startup { slot, accounts } => {
                     for (s, u) in accounts {
-                        mt.stage_snapshot(s, vec![u]);
+                        mt.stage_snapshot(s, vec![u]).unwrap();
                     }
-                    mt.finish_snapshot(slot, true);
+                    mt.finish_snapshot(slot, true).unwrap();
                 }
                 Output::Rooted { slot, updates, fingerprint, .. } => {
-                    mt.apply_slot(slot, updates, fingerprint);
+                    mt.apply_slot(slot, updates, fingerprint).unwrap();
                 }
                 Output::Broken(why) => return Err(format!("seed {seed}: ndaloi pa boshllëk: {why}")),
             }

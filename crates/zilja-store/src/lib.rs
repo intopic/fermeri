@@ -53,6 +53,8 @@ const CF_NODES: &str = "nodes";
 const CF_PAGES: &str = "pages";
 const CF_HIST: &str = "nodes_hist";
 const CF_STAGING: &str = "staging";
+/// Çelësi në `meta` që shënon gjendjen si të pavlefshme (rindërtohet në nisjen e ardhshme).
+const INVALID_KEY: &[u8] = b"invalid";
 const CF_META: &str = "meta";
 const STATE_KEY: &[u8] = b"state";
 
@@ -440,6 +442,9 @@ pub struct DiskTree {
     durable: bool,
     /// Faqet e lexuara paraprakisht për slotin që po zbatohet.
     prefetched: HashMap<PKey, Option<(u64, Page)>>,
+    /// Testet (Safer-6): kur > 0, çdo lexim i n-të i një faqeje "dështon".
+    fault_every: AtomicU64,
+    fault_count: AtomicU64,
 }
 
 fn cf_names() -> [&'static str; 5] {
@@ -464,40 +469,38 @@ impl Default for StoreOptions {
     }
 }
 
-fn db_options(cache_mb: usize, cutoff: Arc<AtomicU64>) -> (Options, Vec<ColumnFamilyDescriptor>) {
+fn cf_options(name: &str, cache: &Cache, cutoff: Arc<AtomicU64>) -> Options {
+    let mut bo = BlockBasedOptions::default();
+    bo.set_block_cache(cache);
+    bo.set_bloom_filter(10.0, false);
+    bo.set_cache_index_and_filter_blocks(true);
+    let mut o = Options::default();
+    o.set_block_based_table_factory(&bo);
+    // LZ4: hash-et nuk ngjeshen, por meta-t dhe versionet po (~40% më pak disk në matje).
+    o.set_compression_type(rocksdb::DBCompressionType::Lz4);
+    o.set_write_buffer_size(64 << 20);
+    if name == CF_HIST {
+        o.set_compaction_filter("zilja-expire", move |_lvl, _k, v| {
+            let expired = v.len() >= 8 && u64::from_be_bytes(v[..8].try_into().unwrap()) <= cutoff.load(Ordering::Relaxed);
+            if expired {
+                Decision::Remove
+            } else {
+                Decision::Keep
+            }
+        });
+    }
+    o
+}
+
+fn db_options(cache_mb: usize, cutoff: Arc<AtomicU64>) -> (Options, Vec<ColumnFamilyDescriptor>, Cache) {
     let mut opts = Options::default();
     opts.create_if_missing(true);
     opts.create_missing_column_families(true);
     opts.set_atomic_flush(true);
     opts.increase_parallelism(std::thread::available_parallelism().map(|n| n.get() as i32).unwrap_or(2));
     let cache = Cache::new_lru_cache(cache_mb << 20);
-    let cfs = cf_names()
-        .iter()
-        .map(|name| {
-            let mut bo = BlockBasedOptions::default();
-            bo.set_block_cache(&cache);
-            bo.set_bloom_filter(10.0, false);
-            bo.set_cache_index_and_filter_blocks(true);
-            let mut o = Options::default();
-            o.set_block_based_table_factory(&bo);
-            // LZ4: hash-et nuk ngjeshen, por meta-t dhe versionet po (~40% më pak disk në matje).
-            o.set_compression_type(rocksdb::DBCompressionType::Lz4);
-            o.set_write_buffer_size(64 << 20);
-            if *name == CF_HIST {
-                let c = cutoff.clone();
-                o.set_compaction_filter("zilja-expire", move |_lvl, _k, v| {
-                    let expired = v.len() >= 8 && u64::from_be_bytes(v[..8].try_into().unwrap()) <= c.load(Ordering::Relaxed);
-                    if expired {
-                        Decision::Remove
-                    } else {
-                        Decision::Keep
-                    }
-                });
-            }
-            ColumnFamilyDescriptor::new(*name, o)
-        })
-        .collect();
-    (opts, cfs)
+    let cfs = cf_names().iter().map(|name| ColumnFamilyDescriptor::new(*name, cf_options(name, &cache, cutoff.clone()))).collect();
+    (opts, cfs, cache)
 }
 
 impl DiskTree {
@@ -508,12 +511,32 @@ impl DiskTree {
     pub fn open_opts(path: impl AsRef<Path>, o: StoreOptions) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
         let cutoff = Arc::new(AtomicU64::new(0));
-        let (opts, cfs) = db_options(o.block_cache_mb, cutoff.clone());
-        let db = DB::open_cf_descriptors(&opts, &path, cfs).map_err(|e| e.to_string())?;
-        let state = db
-            .get_cf(db.cf_handle(CF_META).unwrap(), STATE_KEY)
-            .map_err(|e| e.to_string())?
-            .and_then(|b| State::dec(&b));
+        let (opts, cfs, cache) = db_options(o.block_cache_mb, cutoff.clone());
+        let mut db = DB::open_cf_descriptors(&opts, &path, cfs).map_err(|e| e.to_string())?;
+        let meta = db.cf_handle(CF_META).ok_or("mungon CF meta")?;
+        if let Some(why) = db.get_cf(meta, INVALID_KEY).map_err(|e| e.to_string())? {
+            // F-13 + Simpler-7: gjendja u shënua e pavlefshme në nisjen e kaluar: rindërtim i pastër.
+            log::warn!("zilja-store: pema u shënua e pavlefshme ({}); po rindërtohet nga e para", String::from_utf8_lossy(&why));
+            for name in cf_names() {
+                db.drop_cf(name).map_err(|e| e.to_string())?;
+                db.create_cf(name, &cf_options(name, &cache, cutoff.clone())).map_err(|e| e.to_string())?;
+            }
+        }
+        let raw = db.get_cf(db.cf_handle(CF_META).ok_or("mungon CF meta")?, STATE_KEY).map_err(|e| e.to_string())?;
+        let state = match raw {
+            None => None,
+            Some(b) => match State::dec(&b) {
+                Some(st) => Some(st),
+                // F-13: kurrë mos fshi diçka që s'e kuptojmë.
+                None => {
+                    return Err(format!(
+                        "gjendja në {} ka version të panjohur ({}): kjo zile s'e njeh; fshije dosjen me dorë për ta rindërtuar",
+                        path.display(),
+                        b.first().copied().unwrap_or(0)
+                    ))
+                }
+            },
+        };
         let mut t = DiskTree {
             db,
             path,
@@ -529,6 +552,8 @@ impl DiskTree {
             last_disk_reads: AtomicU64::new(0),
             durable: o.durable,
             prefetched: HashMap::default(),
+            fault_every: AtomicU64::new(0),
+            fault_count: AtomicU64::new(0),
         };
         match &t.state {
             // Ndërtim i mbetur në mes, ose disk i ri: nis nga e para.
@@ -542,6 +567,35 @@ impl DiskTree {
             }
         }
         Ok(t)
+    }
+
+    /// Vetëm për teste: çdo lexim i `n`-të i një faqeje nga disku kthehet si i palexueshëm (0 = fikur).
+    #[doc(hidden)]
+    pub fn inject_read_faults(&self, n: u64) {
+        self.fault_every.store(n, Ordering::Relaxed);
+        self.fault_count.store(0, Ordering::Relaxed);
+    }
+
+    fn fault(&self) -> bool {
+        let n = self.fault_every.load(Ordering::Relaxed);
+        n > 0 && (self.fault_count.fetch_add(1, Ordering::Relaxed) + 1) % n == 0
+    }
+
+    /// F-04: nyja në `p` që prindi e shënon si `rf`. Kur prindi thotë "jo bosh", nyja duhet të
+    /// lexohet dhe hash-i i saj duhet të jetë ai i prindit; përndryshe gabim, kurrë "bosh".
+    fn read_expected(&self, p: &NPath, rf: Ref) -> Result<Option<(u64, Node)>, String> {
+        if rf.kind == Kind::Empty {
+            return Ok(None);
+        }
+        match self.read_latest(p) {
+            None => Err(format!("nyja në thellësinë {} mungon ose s'lexohet nga disku", p.depth)),
+            Some((v, n)) => {
+                if n.to_ref() != rf {
+                    return Err(format!("nyja në thellësinë {} nuk përputhet me hash-in e prindit", p.depth));
+                }
+                Ok(Some((v, n)))
+            }
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -654,6 +708,9 @@ impl DiskTree {
             return hit.clone();
         }
         self.last_disk_reads.fetch_add(1, Ordering::Relaxed);
+        if self.fault() {
+            return None;
+        }
         let v = self.db.get_pinned_cf(self.cf(CF_PAGES), root.enc()).ok()??;
         dec_page_val(&v)
     }
@@ -726,7 +783,7 @@ impl DiskTree {
                         let cf = db.cf_handle(CF_PAGES).unwrap();
                         db.batched_multi_get_cf(cf, chunk.iter(), true)
                             .into_iter()
-                            .map(|r| r.ok().flatten().and_then(|v| dec_page_val(&v)))
+                            .map(|r| if self.fault() { None } else { r.ok().flatten().and_then(|v| dec_page_val(&v)) })
                             .collect::<Vec<_>>()
                     })
                     .collect()
@@ -839,8 +896,8 @@ impl DiskTree {
         old: Option<(u64, Node)>,
         ups: &[(Key, Option<AccountMeta>)],
         out: &mut Vec<NodeW>,
-    ) -> (Option<Node>, i64) {
-        match old.map(|o| o.1) {
+    ) -> Result<(Option<Node>, i64), String> {
+        Ok(match old.map(|o| o.1) {
             None => {
                 let delta = ups.iter().filter(|(_, m)| m.is_some()).count() as i64;
                 (self.build(p, ups, out), delta)
@@ -866,21 +923,22 @@ impl DiskTree {
                 let i = ups.partition_point(|(k, _)| bit(k, p.depth as usize) == 0);
                 let (u0, u1) = ups.split_at(i);
                 type Side = (bool, Option<Node>, Option<(u64, Node)>, Vec<NodeW>, i64);
-                let side = |b: u8, u: &[(Key, Option<AccountMeta>)], rf: Ref| -> Side {
+                let side = |b: u8, u: &[(Key, Option<AccountMeta>)], rf: Ref| -> Result<Side, String> {
                     let mut o = Vec::new();
                     if u.is_empty() {
-                        return (false, None, None, o, 0);
+                        return Ok((false, None, None, o, 0));
                     }
                     let cp = p.child(b);
-                    let old_c = if rf.kind == Kind::Empty { None } else { self.read_latest(&cp) };
-                    let (res, d) = self.apply(cp, old_c.clone(), u, &mut o);
-                    (true, res, old_c, o, d)
+                    let old_c = self.read_expected(&cp, rf)?;
+                    let (res, d) = self.apply(cp, old_c.clone(), u, &mut o)?;
+                    Ok((true, res, old_c, o, d))
                 };
                 let (s0, s1) = if ups.len() > PAR_THRESHOLD {
                     rayon::join(|| side(0, u0, l), || side(1, u1, r))
                 } else {
                     (side(0, u0, l), side(1, u1, r))
                 };
+                let (s0, s1) = (s0?, s1?);
                 let (ch0, n0, old0, o0, d0) = s0;
                 let (ch1, n1, old1, o1, d1) = s1;
                 out.extend(o0);
@@ -904,10 +962,11 @@ impl DiskTree {
                         let li = if k0 == Kind::Leaf { 0 } else { 1 };
                         let (ch, n, old, cp) = std::mem::replace(&mut sides[li], (false, None, None, cp0));
                         let (leaf, old_place) = if ch {
-                            (n.unwrap(), old)
+                            (n.ok_or("gjethja e re mungon")?, old)
                         } else {
-                            let o = self.read_latest(&cp);
-                            (o.as_ref().expect("gjethja e pandryshuar mungon").1.clone(), o)
+                            let rf = if li == 0 { l } else { r };
+                            let o = self.read_expected(&cp, rf)?;
+                            (o.as_ref().ok_or("gjethja e pandryshuar mungon")?.1.clone(), o)
                         };
                         emit(out, cp, None, old_place);
                         let (che, _, olde, cpe) = std::mem::replace(&mut sides[1 - li], (false, None, None, cp0));
@@ -930,7 +989,7 @@ impl DiskTree {
                 };
                 (node, d0 + d1)
             }
-        }
+        })
     }
 
     /// Kalon ndryshimet në `batch` (disk) dhe në cache/unazë (RAM).
@@ -1160,10 +1219,10 @@ impl StateTree for DiskTree {
         self.state.as_ref().map_or(0, |s| s.len as usize)
     }
 
-    fn stage_snapshot(&mut self, slot: u64, ups: Vec<Update>) {
+    fn stage_snapshot(&mut self, slot: u64, ups: Vec<Update>) -> Result<(), String> {
         if self.staged == 0 && self.state.is_some() {
             // Ndërtim i ri: hidh gjendjen e vjetër.
-            let _ = self.clear();
+            self.clear()?;
         }
         // F-02: validatori dërgon çdo version të ruajtur, në radhë të çfarëdoshme. Fiton sloti më i ri;
         // llogaritë e mbyllura ruhen si varre deri në `finish_snapshot`, që një kopje e vjetër të mos ringjallet.
@@ -1188,28 +1247,28 @@ impl StateTree for DiskTree {
             n += 1;
         }
         self.staged += n;
-        if let Err(e) = self.write(batch) {
-            log::error!("zilja-store: shkrimi i snapshot-it dështoi: {e}");
-        }
+        self.write(batch).map_err(|e| format!("shkrimi i snapshot-it dështoi: {e}"))
     }
 
-    fn finish_snapshot(&mut self, slot: u64, complete: bool) -> Hash {
+    fn finish_snapshot(&mut self, slot: u64, complete: bool) -> Result<Hash, String> {
         if self.staged == 0 && self.state.is_some() {
-            let _ = self.clear();
+            self.clear()?;
         }
-        let len = self
-            .db
-            .iterator_cf(self.cf(CF_STAGING), IteratorMode::Start)
-            .filter(|r| r.as_ref().is_ok_and(|(_, v)| v.get(8) == Some(&1)))
-            .count() as u64;
+        let mut len = 0u64;
+        for item in self.db.iterator_cf(self.cf(CF_STAGING), IteratorMode::Start) {
+            let (_, v) = item.map_err(|e| format!("leximi i staging-ut dështoi: {e}"))?;
+            if v.get(8) == Some(&1) {
+                len += 1;
+            }
+        }
         let mut bucket_depth = 0u16;
         // Kovat nuk shkojnë më thellë se cache-ja, që çdo faqe të jetë e tëra brenda një kove.
         while (len >> bucket_depth) > self.bucket_target && bucket_depth < 16.min(self.cache_depth) {
             bucket_depth += 1;
         }
-        let root = self.build_bucketed(NPath::root(), bucket_depth, slot).expect("ndërtimi nga snapshot-i dështoi");
+        let root = self.build_bucketed(NPath::root(), bucket_depth, slot).map_err(|e| format!("ndërtimi nga snapshot-i dështoi: {e}"))?;
         if let Some(n) = &root {
-            self.persist_snapshot(vec![(NPath::root(), n.clone())], slot).expect("shkrimi i rrënjës dështoi");
+            self.persist_snapshot(vec![(NPath::root(), n.clone())], slot)?;
         }
         let mut batch = WriteBatch::default();
         batch.delete_range_cf(self.cf(CF_STAGING), [].as_slice(), [0xffu8; 64].as_slice());
@@ -1222,15 +1281,15 @@ impl StateTree for DiskTree {
             cache_depth: self.cache_depth,
             fingerprint: None,
         };
-        self.commit_state(&mut batch, st).expect("shkrimi i gjendjes dështoi");
+        self.commit_state(&mut batch, st)?;
         self.db.compact_range_cf(self.cf(CF_STAGING), None::<&[u8]>, None::<&[u8]>);
         self.staged = 0;
-        self.rebuild_cache().expect("cache");
+        self.rebuild_cache()?;
         self.trim_history(slot);
-        self.root()
+        Ok(self.root())
     }
 
-    fn apply_slot(&mut self, slot: u64, mut ups: Vec<Update>, fingerprint: Option<Fingerprint>) -> Hash {
+    fn apply_slot(&mut self, slot: u64, mut ups: Vec<Update>, fingerprint: Option<Fingerprint>) -> Result<Hash, String> {
         let prof = std::env::var_os("ZILJA_PROFILE").is_some();
         let t0 = std::time::Instant::now();
         normalize_updates(&mut ups);
@@ -1252,11 +1311,24 @@ impl StateTree for DiskTree {
         let mut batch = WriteBatch::default();
         let mut out = Vec::new();
         let root_path = NPath::root();
-        let old_root = self.read_latest(&root_path);
+        let old_root = match self.read_expected(&root_path, prev.root) {
+            Ok(r) => r,
+            Err(e) => {
+                self.prefetched.clear();
+                return Err(e);
+            }
+        };
         let (new_root, delta) = if ups.is_empty() {
             (old_root.clone().map(|o| o.1), 0)
         } else {
-            self.apply(root_path, old_root.clone(), &ups, &mut out)
+            match self.apply(root_path, old_root.clone(), &ups, &mut out) {
+                Ok(r) => r,
+                Err(e) => {
+                    // Asgjë nuk u shkrua: gjendja në disk mbetet ajo e slotit të mëparshëm.
+                    self.prefetched.clear();
+                    return Err(format!("sloti {slot}: {e}"));
+                }
+            }
         };
         emit(&mut out, root_path, new_root.clone(), old_root);
         let t_tree = t0.elapsed();
@@ -1274,7 +1346,7 @@ impl StateTree for DiskTree {
             cache_depth: self.cache_depth,
             fingerprint,
         };
-        self.commit_state(&mut batch, st).expect("shkrimi i slotit dështoi");
+        self.commit_state(&mut batch, st).map_err(|e| format!("shkrimi i slotit {slot} dështoi: {e}"))?;
         self.trim_history(slot);
         if prof {
             eprintln!(
@@ -1286,7 +1358,7 @@ impl StateTree for DiskTree {
                 self.last_disk_reads.load(Ordering::Relaxed)
             );
         }
-        self.root()
+        Ok(self.root())
     }
 
     fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, String> {
@@ -1316,7 +1388,12 @@ impl StateTree for DiskTree {
                     node = if next.kind == Kind::Empty {
                         None
                     } else {
-                        Some(self.read_at(&p, v)?.ok_or("nyje që mungon në disk")?)
+                        // F-04: një fëmijë që prindi e shënon jo-bosh duhet të jetë aty dhe të përputhet.
+                        let n = self.read_at(&p, v)?.ok_or("nyje që mungon në disk")?;
+                        if n.to_ref() != next {
+                            return Err("nyje në disk që nuk përputhet me hash-in e prindit".into());
+                        }
+                        Some(n)
                     };
                 }
             }
@@ -1340,8 +1417,14 @@ impl StateTree for DiskTree {
         })
     }
 
-    fn invalidate(&mut self) {
-        let _ = self.clear();
+    fn invalidate(&mut self, why: &str) {
+        // F-13: asgjë nuk fshihet tani. Shënimi në `meta` bën që nisja e ardhshme ta rindërtojë.
+        let mut b = WriteBatch::default();
+        b.put_cf(self.cf(CF_META), INVALID_KEY, why.as_bytes());
+        if let Err(e) = self.write(b) {
+            log::error!("zilja-store: shënimi 'i pavlefshëm' dështoi: {e}");
+        }
+        let _ = self.db.flush_cf(self.cf(CF_META));
     }
 }
 
