@@ -1,23 +1,26 @@
 //! # zilja-store: pema e Ziles në disk
 //!
 //! **Tavolina dhe rafti.** Nivelet e sipërme të pemës (`cache_depth`) jetojnë vetëm
-//! në RAM. Në RocksDB shkruhen **gjethet** (me meta-n e llogarisë brenda) dhe
-//! **nyjet e brendshme poshtë cache-së**. Kur hapet disku, nivelet e sipërme
-//! rillogariten nga shtresa e poshtme dhe krahasohen me root-in e ruajtur.
+//! në RAM. Poshtë tyre, pema ruhet në RocksDB me **faqe**: çdo faqe mban 4 nivele
+//! (deri në 15 nyje, gjethe ose të brendshme) dhe lexohet/shkruhet si një hyrje e
+//! vetme. Kështu një ndryshim kërkon ~1–2 lexime nga disku në vend të një leximi për
+//! çdo nivel. Gjethet mbi `cache_depth` (të rralla) ruhen më vete. Kur hapet disku,
+//! nivelet e sipërme rillogariten nga rrënjët e faqeve dhe krahasohen me root-in e ruajtur.
 //!
 //! **Shkrim atomik.** Gjithë ndryshimet e një sloti dhe gjendja e re shkruhen me
 //! një `WriteBatch`. Pas një ndërprerjeje mbetet gjendja e plotë e slotit të
 //! mëparshëm, kurrë gjysmë-gjendje.
 //!
-//! **Kujtesa e sloteve.** Kur një nyje e poshtme zëvendësohet, versioni i vjetër
-//! kalon në arkivë (`nodes_hist`, çelësi `rruga ‖ versioni`, vlera
-//! `skadon_në ‖ nyja`). Kompaktimi i RocksDB fshin vetë hyrjet që kanë skaduar.
+//! **Kujtesa e sloteve.** Kur një faqe ndryshon, versioni i vjetër kalon në arkivë
+//! (`nodes_hist`, çelësi `rrënja_e_faqes ‖ versioni`, vlera `skadon_në ‖ faqja`).
+//! Kompaktimi i RocksDB fshin vetë hyrjet që kanë skaduar.
 //! Për nivelet e sipërme, vlerat e vjetra mbahen në RAM për `history` slotet e fundit.
 //!
 //! | CF | çelësi | vlera |
 //! |---|---|---|
-//! | `nodes` | rruga (34) | versioni ‖ nyja |
-//! | `nodes_hist` | rruga ‖ versioni | skadon_në ‖ nyja |
+//! | `nodes` | rruga (34) | versioni ‖ nyja (vetëm gjethe mbi `cache_depth`) |
+//! | `pages` | rrënja e faqes (34) | versioni ‖ faqja |
+//! | `nodes_hist` | rrënja e faqes ‖ versioni | skadon_në ‖ faqja |
 //! | `staging` | pubkey | meta (vetëm gjatë ndërtimit nga snapshot-i) |
 //! | `meta` | `state` | gjendja e fundit e shkruar |
 
@@ -42,7 +45,12 @@ const PAR_THRESHOLD: usize = 512;
 /// Llogari për kovë gjatë ndërtimit nga snapshot-i.
 const BUCKET_TARGET: u64 = 1 << 20;
 
+/// Lartësia e një faqeje: 4 nivele, deri në 15 nyje.
+pub const PAGE_H: u16 = 4;
+const PAGE_SLOTS: usize = (1 << PAGE_H) - 1;
+
 const CF_NODES: &str = "nodes";
+const CF_PAGES: &str = "pages";
 const CF_HIST: &str = "nodes_hist";
 const CF_STAGING: &str = "staging";
 const CF_META: &str = "meta";
@@ -85,6 +93,17 @@ impl NPath {
         k[34..].copy_from_slice(&v.to_be_bytes());
         k
     }
+    /// E njëjta rrugë, e shkurtuar në thellësinë `d`.
+    fn truncate(&self, d: u16) -> Self {
+        let mut bits = [0u8; 32];
+        let full = (d / 8) as usize;
+        bits[..full].copy_from_slice(&self.bits[..full]);
+        let rem = d % 8;
+        if rem > 0 {
+            bits[full] = self.bits[full] & (0xffu8 << (8 - rem));
+        }
+        NPath { depth: d, bits }
+    }
     /// A ndodhet çelësi brenda kësaj rruge?
     fn contains(&self, key: &Key) -> bool {
         let d = self.depth as usize;
@@ -122,13 +141,27 @@ struct Ref {
 
 const EMPTY_REF: Ref = Ref { kind: Kind::Empty, hash: EMPTY };
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Debug)]
 struct LeafData {
     key: Key,
     meta: AccountMeta,
-    /// `meta.value_hash()`, i ruajtur që të mos rillogaritet.
-    vh: Hash,
+    /// `meta.value_hash()`, i llogaritur vetëm kur duhet (shumica e gjetheve të lexuara
+    /// nga disku s'kanë nevojë për të).
+    vh: std::sync::OnceLock<Hash>,
 }
+
+impl LeafData {
+    fn vh(&self) -> Hash {
+        *self.vh.get_or_init(|| self.meta.value_hash())
+    }
+}
+
+impl PartialEq for LeafData {
+    fn eq(&self, o: &Self) -> bool {
+        self.key == o.key && self.meta == o.meta
+    }
+}
+impl Eq for LeafData {}
 
 /// Gjethja mbahet në kuti, që nyja e brendshme (shumica në cache) të zërë pak RAM.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -139,12 +172,11 @@ enum Node {
 
 impl Node {
     fn leaf(key: Key, meta: AccountMeta) -> Self {
-        let vh = meta.value_hash();
-        Node::Leaf(Box::new(LeafData { key, meta, vh }))
+        Node::Leaf(Box::new(LeafData { key, meta, vh: std::sync::OnceLock::new() }))
     }
     fn hash(&self) -> Hash {
         match self {
-            Node::Leaf(d) => leaf_hash(&d.key, &d.vh),
+            Node::Leaf(d) => leaf_hash(&d.key, &d.vh()),
             Node::Internal { l, r } => internal_hash(&l.hash, &r.hash),
         }
     }
@@ -156,9 +188,24 @@ impl Node {
         Ref { kind, hash: self.hash() }
     }
     fn enc(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(114);
+        self.enc_into(&mut v);
+        v
+    }
+    fn enc_into(&self, v: &mut Vec<u8>) {
         match self {
-            Node::Leaf(d) => [&[1u8][..], &d.key, &enc_meta(&d.meta)].concat(),
-            Node::Internal { l, r } => [&[2u8][..], &[l.kind as u8], &l.hash, &[r.kind as u8], &r.hash].concat(),
+            Node::Leaf(d) => {
+                v.push(1);
+                v.extend_from_slice(&d.key);
+                v.extend_from_slice(&enc_meta(&d.meta));
+            }
+            Node::Internal { l, r } => {
+                v.push(2);
+                v.push(l.kind as u8);
+                v.extend_from_slice(&l.hash);
+                v.push(r.kind as u8);
+                v.extend_from_slice(&r.hash);
+            }
         }
     }
     fn dec(b: &[u8]) -> Option<Node> {
@@ -172,6 +219,75 @@ impl Node {
             _ => None,
         }
     }
+}
+
+/// Një faqe: nënpema me lartësi `PAGE_H` nën rrënjën e saj, në renditje "heap":
+/// pozicioni 0 = rrënja, fëmijët e `i` janë `2i+1` (majtas) dhe `2i+2` (djathtas).
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Page {
+    slots: [Option<Node>; PAGE_SLOTS],
+}
+
+impl Page {
+    fn new() -> Self {
+        Page { slots: std::array::from_fn(|_| None) }
+    }
+    fn is_empty(&self) -> bool {
+        self.slots.iter().all(Option::is_none)
+    }
+    /// `bitmap u16 LE ‖ nyjet e pranishme njëra pas tjetrës`
+    fn enc(&self) -> Vec<u8> {
+        self.enc_with_ver(None)
+    }
+    /// `[versioni ‖] bitmap ‖ nyjet`, në një buffer të vetëm.
+    fn enc_with_ver(&self, ver: Option<u64>) -> Vec<u8> {
+        let mut out = Vec::with_capacity(10 + PAGE_SLOTS * 80);
+        if let Some(v) = ver {
+            out.extend_from_slice(&v.to_be_bytes());
+        }
+        let at = out.len();
+        out.extend_from_slice(&[0, 0]);
+        let mut bm: u16 = 0;
+        for (i, s) in self.slots.iter().enumerate() {
+            if let Some(n) = s {
+                bm |= 1 << i;
+                n.enc_into(&mut out);
+            }
+        }
+        out[at..at + 2].copy_from_slice(&bm.to_le_bytes());
+        out
+    }
+    fn dec(b: &[u8]) -> Option<Page> {
+        let bm = u16::from_le_bytes(b.get(..2)?.try_into().ok()?);
+        let mut pos = 2;
+        let mut pg = Page::new();
+        for i in 0..PAGE_SLOTS {
+            if bm >> i & 1 == 1 {
+                let len = match b.get(pos)? {
+                    1 => 33 + META_LEN,
+                    2 => 67,
+                    _ => return None,
+                };
+                pg.slots[i] = Some(Node::dec(b.get(pos..pos + len)?)?);
+                pos += len;
+            }
+        }
+        (pos == b.len()).then_some(pg)
+    }
+}
+
+fn dec_page_val(v: &[u8]) -> Option<(u64, Page)> {
+    let (ver, body) = split_u64(v)?;
+    Some((ver, Page::dec(body)?))
+}
+
+/// Rrënja e faqes (në thellësinë `pd`) dhe pozicioni i `p` brenda saj.
+fn page_pos(p: &NPath, pd: u16) -> (NPath, usize) {
+    let mut x = 0usize;
+    for i in pd..p.depth {
+        x = (x << 1) | bit(&p.bits, i as usize) as usize;
+    }
+    (p.truncate(pd), (1usize << (p.depth - pd)) - 1 + x)
 }
 
 fn ref_of(n: &Option<Node>) -> Ref {
@@ -245,7 +361,7 @@ struct State {
 
 impl State {
     fn enc(&self) -> Vec<u8> {
-        let mut v = vec![2u8];
+        let mut v = vec![3u8];
         v.extend_from_slice(&self.version.to_le_bytes());
         v.push(self.root.kind as u8);
         v.extend_from_slice(&self.root.hash);
@@ -259,7 +375,7 @@ impl State {
         v
     }
     fn dec(b: &[u8]) -> Option<State> {
-        if b.len() < 61 || b[0] != 2 {
+        if b.len() < 61 || b[0] != 3 {
             return None;
         }
         Some(State {
@@ -299,12 +415,12 @@ pub struct DiskTree {
     /// Matje: sa nyje u lexuan nga disku në slotin e fundit.
     pub last_disk_reads: AtomicU64,
     durable: bool,
-    /// Nyjet e poshtme të lexuara paraprakisht për slotin që po zbatohet.
-    prefetched: HashMap<PKey, Option<(u64, Node)>>,
+    /// Faqet e lexuara paraprakisht për slotin që po zbatohet.
+    prefetched: HashMap<PKey, Option<(u64, Page)>>,
 }
 
-fn cf_names() -> [&'static str; 4] {
-    [CF_NODES, CF_HIST, CF_STAGING, CF_META]
+fn cf_names() -> [&'static str; 5] {
+    [CF_NODES, CF_PAGES, CF_HIST, CF_STAGING, CF_META]
 }
 
 /// Opsionet e hapjes.
@@ -453,18 +569,27 @@ impl DiskTree {
         let st = self.state.clone().ok_or("pa gjendje")?;
         let cd = self.cache_depth;
         let mut layer: HashMap<PKey, Node> = HashMap::default();
+        // Gjethet e cekëta.
         for item in self.db.iterator_cf(self.cf(CF_NODES), IteratorMode::Start) {
             let (k, v) = item.map_err(|e| e.to_string())?;
             let p = NPath::dec(&k).ok_or("çelës i dëmtuar")?;
-            if p.depth > cd {
-                break;
-            }
             let (_, body) = split_u64(&v).ok_or("vlerë e dëmtuar")?;
             let n = Node::dec(body).ok_or("nyje e dëmtuar")?;
-            if p.depth < cd && !n.is_leaf() {
-                continue; // nivelet e sipërme të brendshme s'ruhen në disk
+            if p.depth < cd && n.is_leaf() {
+                layer.insert(p.enc(), n);
             }
-            layer.insert(p.enc(), n);
+        }
+        // Rrënjët e faqeve në thellësinë `cd` (renditen të parat, sepse çelësi nis me thellësinë).
+        for item in self.db.iterator_cf(self.cf(CF_PAGES), IteratorMode::Start) {
+            let (k, v) = item.map_err(|e| e.to_string())?;
+            let p = NPath::dec(&k).ok_or("çelës i dëmtuar")?;
+            if p.depth != cd {
+                break;
+            }
+            let (_, pg) = dec_page_val(&v).ok_or("faqe e dëmtuar")?;
+            if let Some(n) = &pg.slots[0] {
+                layer.insert(p.enc(), n.clone());
+            }
         }
         self.cache.clear();
         let mut computed = Vec::new();
@@ -486,18 +611,55 @@ impl DiskTree {
         if p.depth < self.cache_depth {
             return self.cache.get(&p.enc()).cloned();
         }
-        let k = p.enc();
-        if let Some(hit) = self.prefetched.get(&k) {
+        let (root, idx) = page_pos(p, self.page_depth(p.depth));
+        if let Some(hit) = self.prefetched.get(&root.enc()) {
+            return hit.as_ref().and_then(|(ver, pg)| pg.slots[idx].clone().map(|n| (*ver, n)));
+        }
+        let (ver, pg) = self.page_latest(&root)?;
+        pg.slots[idx].clone().map(|n| (ver, n))
+    }
+
+    /// Thellësia e rrënjës së faqes që përmban një nyje në thellësinë `depth` (≥ cache_depth).
+    fn page_depth(&self, depth: u16) -> u16 {
+        let cd = self.cache_depth;
+        cd + ((depth - cd) / PAGE_H) * PAGE_H
+    }
+
+    /// Faqja e tanishme me rrënjë `root`.
+    fn page_latest(&self, root: &NPath) -> Option<(u64, Page)> {
+        if let Some(hit) = self.prefetched.get(&root.enc()) {
             return hit.clone();
         }
         self.last_disk_reads.fetch_add(1, Ordering::Relaxed);
-        let v = self.db.get_pinned_cf(self.cf(CF_NODES), k).ok()??;
-        let (ver, body) = split_u64(&v)?;
-        Some((ver, Node::dec(body)?))
+        let v = self.db.get_pinned_cf(self.cf(CF_PAGES), root.enc()).ok()??;
+        dec_page_val(&v)
     }
 
-    /// Lexon paraprakisht, nivel pas niveli dhe me një kërkesë të grupuar për nivel,
-    /// nyjet e poshtme që do t'i duhen zbatimit të `ups` (të renditura).
+    /// Faqja me rrënjë `root` siç ishte në versionin `v`.
+    fn page_at(&self, root: &NPath, v: u64) -> Result<Option<Page>, String> {
+        if let Some((ver, pg)) = self.page_latest(root) {
+            if ver <= v {
+                return Ok(Some(pg));
+            }
+        }
+        let mut it = self.db.raw_iterator_cf(self.cf(CF_HIST));
+        it.seek_for_prev(root.enc_ver(v));
+        if it.valid() {
+            if let (Some(k), Some(val)) = (it.key(), it.value()) {
+                if k.starts_with(&root.enc()) {
+                    let (drop_at, body) = split_u64(val).ok_or("arkivë e dëmtuar")?;
+                    // E vlefshme vetëm nëse ishte ende aty në v.
+                    if drop_at > v {
+                        return Ok(Some(Page::dec(body).ok_or("arkivë e dëmtuar")?));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Lexon paraprakisht, rresht pas rreshti faqesh dhe me një kërkesë të grupuar për
+    /// rresht, faqet që do t'i duhen zbatimit të `ups` (të renditura).
     fn prefetch(&mut self, ups: &[(Key, Option<AccountMeta>)]) {
         self.prefetched.clear();
         let cd = self.cache_depth;
@@ -534,38 +696,45 @@ impl DiskTree {
             self.last_disk_reads.fetch_add(keys.len() as u64, Ordering::Relaxed);
             // Copa paralele: RocksDB lejon lexime nga disa thread-e njëherësh.
             let db = &self.db;
-            let res: Vec<Option<(u64, Node)>> = {
+            let res: Vec<Option<(u64, Page)>> = {
                 use rayon::prelude::*;
-                keys.par_chunks(512)
+                keys.par_chunks(256)
                     .flat_map_iter(|chunk| {
-                        let cf = db.cf_handle(CF_NODES).unwrap();
+                        let cf = db.cf_handle(CF_PAGES).unwrap();
                         db.batched_multi_get_cf(cf, chunk.iter(), true)
                             .into_iter()
-                            .map(|r| {
-                                r.ok().flatten().and_then(|v| {
-                                    let (ver, body) = split_u64(&v)?;
-                                    Some((ver, Node::dec(body)?))
-                                })
-                            })
+                            .map(|r| r.ok().flatten().and_then(|v| dec_page_val(&v)))
                             .collect::<Vec<_>>()
                     })
                     .collect()
             };
-            let mut next = Vec::new();
-            for ((p, k), val) in frontier.iter().zip(keys.iter()).zip(res) {
-                if let Some((_, Node::Internal { l, r })) = &val {
-                    // Fëmijët që kanë ndryshime: çelësat në këtë rrugë, sipas bit-it të radhës.
-                    let lo = ups.partition_point(|(key, _)| key < &p.bits);
+            let mut next: Vec<NPath> = Vec::new();
+            for ((root, k), val) in frontier.iter().zip(keys.iter()).zip(res) {
+                if let Some((_, pg)) = &val {
+                    // Për çdo çelës në këtë faqe: zbrit brenda faqes; nëse rruga del poshtë saj,
+                    // faqja fëmijë duhet në rreshtin e ardhshëm.
+                    let lo = ups.partition_point(|(key, _)| key < &root.bits);
                     let mut hi = lo;
-                    while hi < ups.len() && p.contains(&ups[hi].0) {
+                    while hi < ups.len() && root.contains(&ups[hi].0) {
                         hi += 1;
                     }
-                    let mid = lo + ups[lo..hi].partition_point(|(key, _)| bit(key, p.depth as usize) == 0);
-                    if mid > lo && l.kind != Kind::Empty {
-                        next.push(p.child(0));
-                    }
-                    if hi > mid && r.kind != Kind::Empty {
-                        next.push(p.child(1));
+                    for (key, _) in &ups[lo..hi] {
+                        let (mut idx, mut d) = (0usize, root.depth);
+                        while let Some(Node::Internal { l, r }) = &pg.slots[idx] {
+                            let b = bit(key, d as usize);
+                            if (if b == 0 { l } else { r }).kind == Kind::Empty {
+                                break;
+                            }
+                            if d + 1 == root.depth + PAGE_H {
+                                let cp = NPath { depth: d + 1, bits: *key }.truncate(d + 1);
+                                if next.last() != Some(&cp) {
+                                    next.push(cp);
+                                }
+                                break;
+                            }
+                            idx = 2 * idx + 1 + b as usize;
+                            d += 1;
+                        }
                     }
                 }
                 self.prefetched.insert(*k, val);
@@ -576,13 +745,13 @@ impl DiskTree {
 
     /// Nyja në `p` siç ishte në versionin `v`.
     fn read_at(&self, p: &NPath, v: u64) -> Result<Option<Node>, String> {
-        let latest = self.read_latest(p);
-        if let Some((ver, n)) = &latest {
-            if *ver <= v {
-                return Ok(Some(n.clone()));
-            }
-        }
         if p.depth < self.cache_depth {
+            let latest = self.read_latest(p);
+            if let Some((ver, n)) = &latest {
+                if *ver <= v {
+                    return Ok(Some(n.clone()));
+                }
+            }
             // Vlera para ndryshimit të parë pas v.
             for (s, diff) in &self.ring {
                 if *s > v {
@@ -596,20 +765,8 @@ impl DiskTree {
                 Some(_) => Err(format!("niveli i sipërm i slotit {v} nuk është më në kujtesë")),
             };
         }
-        let mut it = self.db.raw_iterator_cf(self.cf(CF_HIST));
-        it.seek_for_prev(p.enc_ver(v));
-        if it.valid() {
-            if let (Some(k), Some(val)) = (it.key(), it.value()) {
-                if k.starts_with(&p.enc()) {
-                    let (drop_at, body) = split_u64(val).ok_or("arkivë e dëmtuar")?;
-                    // E vlefshme vetëm nëse ishte ende aty në v.
-                    if drop_at > v {
-                        return Ok(Some(Node::dec(body).ok_or("arkivë e dëmtuar")?));
-                    }
-                }
-            }
-        }
-        Ok(None)
+        let (root, idx) = page_pos(p, self.page_depth(p.depth));
+        Ok(self.page_at(&root, v)?.and_then(|pg| pg.slots[idx].clone()))
     }
 
     // ------------------------------------------------------------ algoritmi
@@ -760,6 +917,8 @@ impl DiskTree {
         let mut diff: HashMap<PKey, Option<(u64, Node)>> = HashMap::default();
         let nodes = self.db.cf_handle(CF_NODES).unwrap();
         let hcf = self.db.cf_handle(CF_HIST).unwrap();
+        let pcf = self.db.cf_handle(CF_PAGES).unwrap();
+        let mut pages: HashMap<PKey, (NPath, Vec<(usize, Option<Node>)>)> = HashMap::default();
         for w in ws {
             let key = w.path.enc();
             if w.path.depth < cd {
@@ -770,10 +929,12 @@ impl DiskTree {
                     _ if was_leaf => batch.delete_cf(nodes, key),
                     _ => {}
                 }
+                let w = w;
+                let NodeW { new, old, .. } = w;
                 if hist {
-                    diff.insert(key, w.old.clone());
+                    diff.insert(key, old);
                 }
-                match w.new {
+                match new {
                     Some(n) => {
                         self.cache.insert(key, (v, n));
                     }
@@ -782,14 +943,33 @@ impl DiskTree {
                     }
                 }
             } else {
-                match &w.new {
-                    Some(n) => batch.put_cf(nodes, key, with_u64(v, &n.enc())),
-                    None => batch.delete_cf(nodes, key),
-                }
-                if hist {
-                    if let Some((ov, on)) = &w.old {
-                        batch.put_cf(hcf, w.path.enc_ver(*ov), with_u64(v, &on.enc()));
-                    }
+                let pd = cd + ((w.path.depth - cd) / PAGE_H) * PAGE_H;
+                let (root, idx) = page_pos(&w.path, pd);
+                pages.entry(root.enc()).or_insert_with(|| (root, Vec::new())).1.push((idx, w.new));
+            }
+        }
+        // Një shkrim për çdo faqe që ndryshoi; faqja e vjetër kalon në arkivë.
+        for (k, (root, changes)) in pages {
+            // Faqja e lexuar paraprakisht nuk duhet më: merre pa e kopjuar.
+            let old = match self.prefetched.remove(&k) {
+                Some(o) => o,
+                None => self.page_latest(&root),
+            };
+            let mut np = old.as_ref().map_or_else(Page::new, |o| o.1.clone());
+            for (idx, n) in changes {
+                np.slots[idx] = n;
+            }
+            if old.as_ref().map(|o| &o.1) == Some(&np) {
+                continue;
+            }
+            if np.is_empty() {
+                batch.delete_cf(pcf, k);
+            } else {
+                batch.put_cf(pcf, k, np.enc_with_ver(Some(v)));
+            }
+            if hist {
+                if let Some((ov, op)) = &old {
+                    batch.put_cf(hcf, root.enc_ver(*ov), op.enc_with_ver(Some(v)));
                 }
             }
         }
@@ -825,6 +1005,15 @@ impl DiskTree {
                 accs.push((d.key, d.meta));
             }
         }
+        for item in self.db.iterator_cf(self.cf(CF_PAGES), IteratorMode::Start) {
+            let (_, v) = item.map_err(|e| e.to_string())?;
+            let (_, pg) = dec_page_val(&v).ok_or("faqe e dëmtuar")?;
+            for n in pg.slots.into_iter().flatten() {
+                if let Node::Leaf(d) = n {
+                    accs.push((d.key, d.meta));
+                }
+            }
+        }
         let expect = zilja_tree::reference_root(&accs);
         if expect != self.root() {
             return Err(format!("root-i i ruajtur {} != root-i nga gjethet {}", hx(&self.root()), hx(&expect)));
@@ -847,12 +1036,36 @@ impl DiskTree {
 
     // ------------------------------------------------------------ snapshot
 
-    fn build_bucketed(&self, p: NPath, bucket_depth: u16, slot: u64) -> Result<Option<Node>, String> {
-        let persist = |batch: &mut WriteBatch, path: &NPath, n: &Node| {
-            if path.depth >= self.cache_depth || n.is_leaf() {
-                batch.put_cf(self.cf(CF_NODES), path.enc(), with_u64(slot, &n.enc()));
+    /// Shkruan nyjet përfundimtare të ndërtimit nga snapshot-i: nyjet poshtë cache-së në
+    /// faqe (të bashkuara me atë që është tashmë në disk), gjethet e cekëta më vete.
+    fn persist_snapshot(&self, items: Vec<(NPath, Node)>, slot: u64) -> Result<(), String> {
+        let cd = self.cache_depth;
+        let mut batch = WriteBatch::default();
+        let mut pages: HashMap<PKey, (NPath, Vec<(usize, Node)>)> = HashMap::default();
+        for (p, n) in items {
+            if p.depth >= cd {
+                let (root, idx) = page_pos(&p, self.page_depth(p.depth));
+                pages.entry(root.enc()).or_insert_with(|| (root, Vec::new())).1.push((idx, n));
+            } else if n.is_leaf() {
+                batch.put_cf(self.cf(CF_NODES), p.enc(), with_u64(slot, &n.enc()));
             }
-        };
+        }
+        for (k, (_, items)) in pages {
+            let mut pg = self
+                .db
+                .get_pinned_cf(self.cf(CF_PAGES), k)
+                .map_err(|e| e.to_string())?
+                .and_then(|v| dec_page_val(&v))
+                .map_or_else(Page::new, |o| o.1);
+            for (idx, n) in items {
+                pg.slots[idx] = Some(n);
+            }
+            batch.put_cf(self.cf(CF_PAGES), k, with_u64(slot, &pg.enc()));
+        }
+        self.write(batch)
+    }
+
+    fn build_bucketed(&self, p: NPath, bucket_depth: u16, slot: u64) -> Result<Option<Node>, String> {
         if p.depth == bucket_depth {
             let mut ups = Vec::new();
             let mut it = self.db.raw_iterator_cf(self.cf(CF_STAGING));
@@ -867,31 +1080,23 @@ impl DiskTree {
             }
             let mut out = Vec::new();
             let res = self.build(p, &ups, &mut out);
-            let mut batch = WriteBatch::default();
-            for w in out {
-                if let Some(n) = &w.new {
-                    persist(&mut batch, &w.path, n);
-                }
-            }
-            self.write(batch)?;
+            self.persist_snapshot(out.into_iter().filter_map(|w| w.new.map(|n| (w.path, n))).collect(), slot)?;
             return Ok(res);
         }
         let c0 = self.build_bucketed(p.child(0), bucket_depth, slot)?;
         let c1 = self.build_bucketed(p.child(1), bucket_depth, slot)?;
-        let mut batch = WriteBatch::default();
         let res = match (&c0, &c1) {
             (None, None) => None,
             (Some(n @ Node::Leaf(_)), None) | (None, Some(n @ Node::Leaf(_))) => Some(n.clone()),
             _ => {
-                for (b, c) in [(0u8, &c0), (1u8, &c1)] {
-                    if let Some(n) = c {
-                        persist(&mut batch, &p.child(b), n);
-                    }
-                }
+                let kids = [(0u8, &c0), (1u8, &c1)]
+                    .into_iter()
+                    .filter_map(|(b, c)| c.clone().map(|n| (p.child(b), n)))
+                    .collect();
+                self.persist_snapshot(kids, slot)?;
                 Some(Node::Internal { l: ref_of(&c0), r: ref_of(&c1) })
             }
         };
-        self.write(batch)?;
         Ok(res)
     }
 }
@@ -954,16 +1159,15 @@ impl StateTree for DiskTree {
         }
         let len = self.db.iterator_cf(self.cf(CF_STAGING), IteratorMode::Start).count() as u64;
         let mut bucket_depth = 0u16;
-        while (len >> bucket_depth) > self.bucket_target && bucket_depth < 16 {
+        // Kovat nuk shkojnë më thellë se cache-ja, që çdo faqe të jetë e tëra brenda një kove.
+        while (len >> bucket_depth) > self.bucket_target && bucket_depth < 16.min(self.cache_depth) {
             bucket_depth += 1;
         }
         let root = self.build_bucketed(NPath::root(), bucket_depth, slot).expect("ndërtimi nga snapshot-i dështoi");
-        let mut batch = WriteBatch::default();
         if let Some(n) = &root {
-            if self.cache_depth == 0 || n.is_leaf() {
-                batch.put_cf(self.cf(CF_NODES), NPath::root().enc(), with_u64(slot, &n.enc()));
-            }
+            self.persist_snapshot(vec![(NPath::root(), n.clone())], slot).expect("shkrimi i rrënjës dështoi");
         }
+        let mut batch = WriteBatch::default();
         batch.delete_range_cf(self.cf(CF_STAGING), [].as_slice(), [0xffu8; 64].as_slice());
         let st = State {
             version: slot,
@@ -1056,8 +1260,9 @@ impl StateTree for DiskTree {
             match node {
                 None => return Ok((v, root, Proof { siblings, leaf: None }, None)),
                 Some(Node::Leaf(d)) => {
+                    let vh = d.vh();
                     let m = (d.key == *key).then_some(d.meta);
-                    return Ok((v, root, Proof { siblings, leaf: Some((d.key, d.vh)) }, m));
+                    return Ok((v, root, Proof { siblings, leaf: Some((d.key, vh)) }, m));
                 }
                 Some(Node::Internal { l, r }) => {
                     let b = bit(key, p.depth as usize);
@@ -1093,5 +1298,42 @@ impl StateTree for DiskTree {
 
     fn invalidate(&mut self) {
         let _ = self.clear();
+    }
+}
+
+#[cfg(test)]
+mod page_tests {
+    use super::*;
+
+    #[test]
+    fn page_positions_are_heap_ordered() {
+        let mut key = [0u8; 32];
+        key[0] = 0b1011_0000; // bit-ët 1,0,1,1
+        let pd = 0;
+        let at = |d: u16| page_pos(&NPath { depth: d, bits: key }.truncate(d), pd).1;
+        assert_eq!(at(0), 0);
+        assert_eq!(at(1), 2); // djathtas
+        assert_eq!(at(2), 2 * 2 + 1); // pastaj majtas
+        assert_eq!(at(3), 2 * 5 + 2); // pastaj djathtas
+        assert_eq!(page_pos(&NPath { depth: 3, bits: key }.truncate(3), 0).0, NPath::root());
+        // Faqja tjetër nis në thellësinë 4, me rrënjë = rruga e shkurtuar.
+        let p4 = NPath { depth: 5, bits: key }.truncate(5);
+        let (root, idx) = page_pos(&p4, 4);
+        assert_eq!(root, NPath { depth: 4, bits: key }.truncate(4));
+        assert_eq!(idx, 1); // bit-i 4 i çelësit = 0 → majtas
+    }
+
+    #[test]
+    fn page_roundtrip() {
+        let mut pg = Page::new();
+        assert!(pg.is_empty());
+        pg.slots[0] = Some(Node::Internal { l: Ref { kind: Kind::Leaf, hash: [1; 32] }, r: EMPTY_REF });
+        pg.slots[1] = Some(Node::leaf([9; 32], AccountMeta { lamports: 7, ..Default::default() }));
+        pg.slots[14] = Some(Node::Internal { l: EMPTY_REF, r: Ref { kind: Kind::Internal, hash: [2; 32] } });
+        let b = pg.enc();
+        assert_eq!(b.len(), 2 + 67 + 114 + 67);
+        assert_eq!(Page::dec(&b), Some(pg));
+        assert!(Page::dec(&b[..b.len() - 1]).is_none());
+        assert!(Page::dec(&[b.clone(), vec![0]].concat()).is_none());
     }
 }

@@ -66,7 +66,7 @@ scripts/e2e-test-validator.sh /rruga/te/solana-release/bin
 | 4. Firma e pleqve | ✅ firma jashtë protokollit + kuorum 2/3 mbi stake-un real · ⏳ fork Agave |
 | 5. Stresi dhe sulmet | ✅ fork-e, banka Dead, 50 vektorë sulmi · ⏳ ledger replay mainnet |
 | 6. Korrja | ✅ raporti dhe drafti SIMD |
-| Pema në disk | ✅ RocksDB, atomike, rinisje pa snapshot, 32 slote histori, mbrojtje nga zinxhiri i gabuar · ⚠️ ende e ngadaltë në makinë të vogël |
+| Pema në disk | ✅ RocksDB me faqe 4-nivelëshe, atomike, rinisje pa snapshot, 32 slote histori, mbrojtje nga zinxhiri i gabuar · ⚠️ ~315 ms/slot me 10M llogari në 2 bërthama |
 
 Numrat e plotë janë te [`docs/RAPORTI.md`](docs/RAPORTI.md).
 

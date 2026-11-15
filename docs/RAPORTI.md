@@ -106,14 +106,14 @@ falsifikuara ose të dyfishta.
 
 Kodi është në këtë repo, me CI jeshile. Drafti i propozimit është te `docs/SIMD-DRAFT.md`.
 
-## Pema në disk (RocksDB) ✅ e saktë · ⚠️ ende e ngadaltë në makinë të vogël
+## Pema në disk (RocksDB) ✅ e saktë · ⚠️ afër kufirit në makinë të vogël
 
 **Si funksionon:** nivelet e sipërme të pemës (`cache_depth`, parazgjedhja 20)
-jetojnë vetëm në RAM. Në disk shkruhen gjethet (me meta-n e llogarisë brenda) dhe
-nyjet poshtë cache-së. Çdo slot shkruhet me **një `WriteBatch` atomik**. Kur hapet
-disku, nivelet e sipërme rillogariten nga shtresa e poshtme dhe krahasohen me
-root-in e ruajtur. Nyjet e lexuara nga disku merren nivel pas niveli, me kërkesa të
-grupuara (multi-get) në paralel.
+jetojnë vetëm në RAM. Poshtë tyre, pema ruhet me **faqe**: çdo faqe mban 4 nivele
+(deri në 15 nyje) dhe lexohet ose shkruhet si një hyrje e vetme. Çdo slot shkruhet
+me **një `WriteBatch` atomik**. Kur hapet disku, nivelet e sipërme rillogariten nga
+rrënjët e faqeve dhe krahasohen me root-in e ruajtur. Faqet që duhen merren rresht
+pas rreshti, me kërkesa të grupuara (multi-get) në paralel.
 
 **Kujtesa e sloteve: 32 slote (~13 s).** Fillimisht propozova 256, por matjet
 treguan që historia e niveleve të sipërme kushton ~45 mijë hyrje për slot në RAM.
@@ -151,11 +151,28 @@ nisja tjetër ta rindërtojë.
 
 \* Përfshin cache-në e RocksDB (256 MB) dhe listën e çelësave të vetë testit (~320 MB).
 
+**Faqet** (10M llogari, cache 20, 5 000 ndryshime për slot, e njëjta makinë):
+
+| | Nyje një nga një | Faqe me 4 nivele |
+|---|---|---|
+| Lexime nga disku për slot | 27 300 | **9 000** (3× më pak) |
+| Koha e leximit | ~250 ms | ~100 ms |
+| Operacione shkrimi për slot | 55 000 | **17 600** |
+| Përditësimi p50 / p99 | 406 / 575 ms | **~315 / 420–620 ms** |
+| Disku | 229 B/llogari | 235 B/llogari |
+| 1M llogari, p50 | 164 ms | 146 ms |
+
+Provova edhe cache 16 dhe 12: RAM-i bie (65 mijë dhe 4 mijë nyje), por leximet
+rriten dhe përditësimi ngadalësohet (389 dhe 466 ms). Thellësia 20 mbetet më e mira.
+Koha që mbetet (~100 ms lexim, ~55 ms pemë, ~60 ms përgatitje faqesh, ~30–70 ms
+shkrim) është kryesisht CPU. Në këtë makinë me 2 bërthama, kompaktimi i RocksDB në
+sfond konkurron për të njëjtat bërthama, prandaj p99 ka zhurmë.
+
 **Përfundimi i ndershëm:**
-- Disku është **i saktë dhe i sigurt**, por në këtë makinë është 13–18 herë më i ngadaltë se RAM-i. Me 10M llogari kalon kufirin e 400 ms të një sloti.
-- Kufiri vjen nga ~5 lexime të rastësishme nga disku për çdo ndryshim, me ~10 µs secili në një disk virtual me 2 bërthama.
+- Disku është **i saktë dhe i sigurt**. Me faqet, në këtë makinë është ~14 herë më i ngadaltë se RAM-i (315 ms kundrejt 22 ms me 10M llogari). Me p50 qëndron brenda 400 ms, por p99 ndonjëherë e kalon.
+- Para faqeve, kufiri ishin ~5 lexime të rastësishme për çdo ndryshim. Tani janë ~1.8, dhe pjesa më e madhe e kohës është CPU, që shpejtohet me më shumë bërthama.
 - Me 10M llogari, disku kursen pak RAM. Kursimi i madh del në shkallë mainnet: pema në RAM rritet ~300 B për llogari (~30 GB për 100M), kurse me diskun RAM-i rritet pak (cache-ja është ~2^`cache_depth` nyje).
-- **Hapi tjetër:** "faqet", pra 4 nivele të pemës në një hyrje të vetme në disk. Kështu leximet për ndryshim bien nga ~5 në ~1–2, dhe pastaj matet në një server me NVMe dhe shumë bërthama.
+- **Hapi tjetër:** matja në një server të vërtetë (NVMe, 16+ bërthama, cache më e madhe e RocksDB) me 100M+ llogari. Kjo s'mund të bëhet në këtë makinë.
 - **Deri atëherë:** në një server me RAM të mjaftueshëm, mënyra RAM mbetet më e mira. Mënyra disk vlen kur RAM-i është i kufizuar dhe ngarkesa më e vogël.
 
 ## Çfarë mbetet (kërkon një server të vërtetë)
