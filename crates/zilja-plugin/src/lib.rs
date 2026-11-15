@@ -10,7 +10,8 @@
 //! ```json
 //! { "libpath": "/rruga/libzilja_plugin.so",
 //!   "bind": "127.0.0.1:7799",
-//!   "roots_log": "/var/lib/zilja/roots.log" }
+//!   "roots_log": "/var/lib/zilja/roots.log",
+//!   "attest_keypair": "/rruga/validator-keypair.json" }
 //! ```
 
 use agave_geyser_plugin_interface::geyser_plugin_interface::{
@@ -28,6 +29,9 @@ pub struct Config {
     pub bind: String,
     #[serde(default)]
     pub roots_log: Option<PathBuf>,
+    /// Faza 4: keypair Solana (p.sh. identiteti i validatorit) që firmos çdo root.
+    #[serde(default)]
+    pub attest_keypair: Option<PathBuf>,
 }
 
 fn default_bind() -> String {
@@ -127,7 +131,11 @@ impl GeyserPlugin for ZiljaPlugin {
     fn on_load(&mut self, config_file: &str, _is_reload: bool) -> PluginResult<()> {
         let text = std::fs::read_to_string(config_file)?;
         let cfg: Config = serde_json::from_str(&text).map_err(custom)?;
-        let service = Service::start(cfg.roots_log.clone()).map_err(custom)?;
+        let signer = match &cfg.attest_keypair {
+            Some(p) => Some(zilja_node::service::read_solana_keypair(p).map_err(custom)?),
+            None => None,
+        };
+        let service = Service::start_with(cfg.roots_log.clone(), signer).map_err(custom)?;
         let handle = rpc::serve(&cfg.bind, service.shared.clone()).map_err(custom)?;
         *self._rpc.lock().unwrap() = Some(handle);
         self.service = Some(service);

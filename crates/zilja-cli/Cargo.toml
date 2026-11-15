@@ -9,8 +9,12 @@ license.workspace = true
 name = "zilja-check"
 path = "src/main.rs"
 
+[[bin]]
+name = "zilja-quorum"
+path = "src/quorum.rs"
+
 [dependencies]
-zilja-verifier = { workspace = true }
+zilja-verifier = { workspace = true, features = ["attest"] }
 serde_json = { workspace = true }
 bs58 = { workspace = true }
 hex = { workspace = true }

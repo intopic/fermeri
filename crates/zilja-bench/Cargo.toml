@@ -26,3 +26,7 @@ path = "src/rpc_bench.rs"
 [[bin]]
 name = "zilja-vectors"
 path = "src/vectors.rs"
+
+[[bin]]
+name = "zilja-stream-bench"
+path = "src/stream_bench.rs"

@@ -6,7 +6,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-zilja-verifier = { workspace = true }
+zilja-verifier = { workspace = true, features = ["attest"] }
+ed25519-dalek = { workspace = true }
 zilja-tree = { workspace = true }
 crossbeam-channel = { workspace = true }
 serde = { workspace = true }

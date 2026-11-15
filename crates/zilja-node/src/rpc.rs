@@ -2,7 +2,8 @@
 //!
 //! Metodat:
 //! - `getAccountProof [pubkey_base58]` → dëftesa për llogarinë në slotin e fundit të rrënjosur.
-//! - `getZiljaRoot []` → `{slot, root, accounts}`.
+//! - `getZiljaRoot []` → `{slot, root, accounts, complete}`.
+//! - `getZiljaAttestation [slot?]` → `{slot, root, validator, signature}` (kur zilja firmos).
 //!
 //! Rrugë GET: `/health`, `/metrics` (Prometheus).
 
@@ -72,6 +73,25 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
             "jsonrpc": "2.0", "id": id,
             "result": {"slot": st.slot, "root": hex::encode(st.tree.root()), "accounts": st.tree.len(), "complete": st.complete}
         }),
+        "getZiljaAttestation" => {
+            let Some(attester) = st.attester else {
+                return err(id, -32004, "kjo zile nuk firmos (mungon attest_keypair)");
+            };
+            let wanted = params.get(0).and_then(|p| p.as_u64());
+            let found = match wanted {
+                Some(s) => st.attestations.get(&s).map(|a| (s, a)),
+                None => st.attestations.iter().next_back().map(|(s, a)| (*s, a)),
+            };
+            match found {
+                Some((slot, a)) => json!({"jsonrpc": "2.0", "id": id, "result": {
+                    "slot": slot,
+                    "root": hex::encode(a.root),
+                    "validator": bs58::encode(attester).into_string(),
+                    "signature": hex::encode(a.signature),
+                }}),
+                None => err(id, -32005, "s'ka firmë për këtë slot"),
+            }
+        }
         _ => err(id, -32601, "metodë e panjohur"),
     }
 }
@@ -175,11 +195,58 @@ mod tests {
         assert_eq!(verify_account(&root, &[3u8; 32], None, &proof), Verdict::DoesNotExist);
 
         // Gabimet.
+        // Kjo zile nuk firmos.
+        assert_eq!(handle_jsonrpc(&shared, r#"{"id":1,"method":"getZiljaAttestation"}"#)["error"]["code"], -32004);
+
         assert_eq!(handle_jsonrpc(&shared, "jo json")["error"]["code"], -32700);
         assert_eq!(handle_jsonrpc(&shared, r#"{"id":1,"method":"x"}"#)["error"]["code"], -32601);
         assert_eq!(
             handle_jsonrpc(&shared, r#"{"id":1,"method":"getAccountProof","params":["0OIl"]}"#)["error"]["code"],
             -32602
         );
+    }
+}
+
+#[cfg(test)]
+mod attest_tests {
+    use super::*;
+    use crate::service::Service;
+    use crate::tracker::{Event, Status};
+    use ed25519_dalek::SigningKey;
+    use zilja_verifier::attest::{verify_quorum, Attestation, StakeTable};
+    use zilja_verifier::AccountMeta;
+
+    #[test]
+    fn signed_roots_reach_quorum() {
+        let keys: Vec<SigningKey> = (1u8..=4).map(|i| SigningKey::from_bytes(&[i; 32])).collect();
+        let mut shareds = Vec::new();
+        for k in &keys {
+            let mut svc = Service::start_with(None, Some(k.clone())).unwrap();
+            // Të gjitha zilet shohin të njëjtin zinxhir: duhet të dalë i njëjti root.
+            svc.send(Event::Snapshot { slot: 1, pubkey: [7; 32], meta: Some(AccountMeta { lamports: 5, ..Default::default() }) });
+            svc.send(Event::EndOfStartup);
+            svc.send(Event::Status { slot: 2, parent: Some(1), bank_id: Some(9), status: Status::CreatedBank });
+            svc.send(Event::Account { slot: 2, bank_id: 9, pubkey: [8; 32], write_version: 1, meta: Some(AccountMeta { lamports: 6, ..Default::default() }) });
+            svc.send(Event::Status { slot: 2, parent: Some(1), bank_id: Some(9), status: Status::Rooted });
+            let sh = svc.shared.clone();
+            svc.shutdown();
+            shareds.push(sh);
+        }
+        let mut atts = Vec::new();
+        let mut root = None;
+        for sh in &shareds {
+            let r = handle_jsonrpc(sh, r#"{"id":1,"method":"getZiljaAttestation","params":[2]}"#)["result"].clone();
+            let rt: [u8; 32] = hex::decode(r["root"].as_str().unwrap()).unwrap().try_into().unwrap();
+            assert!(root.is_none() || root == Some(rt));
+            root = Some(rt);
+            atts.push(Attestation {
+                validator: bs58::decode(r["validator"].as_str().unwrap()).into_vec().unwrap().try_into().unwrap(),
+                signature: hex::decode(r["signature"].as_str().unwrap()).unwrap().try_into().unwrap(),
+            });
+        }
+        let table = StakeTable { entries: keys.iter().map(|k| (k.verifying_key().to_bytes(), 10)).collect() };
+        let root = root.unwrap();
+        assert!(verify_quorum(2, &root, &atts, &table).reached);
+        assert!(!verify_quorum(2, &root, &atts[..2], &table).reached);
     }
 }

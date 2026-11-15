@@ -12,8 +12,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::Instant;
+use ed25519_dalek::{Signer, SigningKey};
+use std::collections::BTreeMap;
 use zilja_tree::Tree;
+use zilja_verifier::attest::attest_message;
 use zilja_verifier::Hash;
+
+/// Sa slote të fundit mbahen me firmë (që disa zile të krahasohen në të njëjtin slot).
+pub const ATTEST_HISTORY: usize = 1024;
+
+/// Firma e një validatori mbi (slot, root).
+#[derive(Clone, Debug)]
+pub struct SignedRoot {
+    pub root: Hash,
+    pub signature: [u8; 64],
+}
 
 /// Gjendja që lexon RPC-ja: pema dhe sloti që i përket root-it të saj.
 #[derive(Default)]
@@ -23,6 +36,10 @@ pub struct State {
     pub ready: bool,
     /// `true` kur pema mbulon çdo llogari (nisje nga snapshot).
     pub complete: bool,
+    /// Çelësi publik i validatorit që firmos (nëse është konfiguruar).
+    pub attester: Option<[u8; 32]>,
+    /// Root-et e firmosura të sloteve të fundit.
+    pub attestations: BTreeMap<Slot, SignedRoot>,
 }
 
 #[derive(Default)]
@@ -90,7 +107,13 @@ pub struct Service {
 impl Service {
     /// Nis punëtorin. `roots_log`: skedari ku shkruhet `slot root_hex` për çdo slot të rrënjosur.
     pub fn start(roots_log: Option<PathBuf>) -> std::io::Result<Self> {
+        Self::start_with(roots_log, None)
+    }
+
+    /// Si `start`, por me një çelës që firmos çdo root (Faza 4: "pleqtë firmosin ziles").
+    pub fn start_with(roots_log: Option<PathBuf>, signer: Option<SigningKey>) -> std::io::Result<Self> {
         let shared = Shared::default();
+        shared.state.write().unwrap().attester = signer.as_ref().map(|k| k.verifying_key().to_bytes());
         let (tx, rx) = unbounded();
         let log = match roots_log {
             Some(p) => Some(OpenOptions::new().create(true).append(true).open(p)?),
@@ -99,7 +122,7 @@ impl Service {
         let s2 = shared.clone();
         let worker = std::thread::Builder::new()
             .name("zilja-worker".into())
-            .spawn(move || worker_loop(rx, s2, log))?;
+            .spawn(move || worker_loop(rx, s2, log, signer))?;
         Ok(Service { shared, tx: Some(tx), worker: Some(worker) })
     }
 
@@ -135,7 +158,29 @@ impl Drop for Service {
     }
 }
 
-fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>) {
+fn sign_root(st: &mut State, signer: &Option<SigningKey>, slot: Slot, root: Hash) {
+    if let Some(k) = signer {
+        let signature = k.sign(&attest_message(slot, &root)).to_bytes();
+        st.attestations.insert(slot, SignedRoot { root, signature });
+        while st.attestations.len() > ATTEST_HISTORY {
+            st.attestations.pop_first();
+        }
+    }
+}
+
+/// Lexon një keypair Solana (JSON me 64 numra, si `validator-keypair.json`).
+pub fn read_solana_keypair(path: &std::path::Path) -> std::io::Result<SigningKey> {
+    let text = std::fs::read_to_string(path)?;
+    let bytes: Vec<u8> = serde_json::from_str(&text).map_err(std::io::Error::other)?;
+    let secret: [u8; 32] = bytes.get(..32).and_then(|b| b.try_into().ok()).ok_or_else(|| std::io::Error::other("keypair i pavlefshëm"))?;
+    let key = SigningKey::from_bytes(&secret);
+    if bytes.len() == 64 && bytes[32..] != key.verifying_key().to_bytes() {
+        return Err(std::io::Error::other("çelësi publik nuk përputhet me sekretin"));
+    }
+    Ok(key)
+}
+
+fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signer: Option<SigningKey>) {
     let mut tracker = Tracker::new();
     let m = &shared.metrics;
     for ev in rx.iter() {
@@ -159,6 +204,7 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>) {
                         st.slot = slot;
                         st.ready = true;
                         st.complete = tracker.complete();
+                        sign_root(&mut st, &signer, slot, root);
                     }
                     log::info!("zilja: pema fillestare me {n} llogari u ndërtua në {ms} ms, slot {slot}");
                     write_root(&mut log, slot, &root);
@@ -171,6 +217,7 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>) {
                         let root = st.tree.apply_batch(updates);
                         st.slot = slot;
                         st.ready = true;
+                        sign_root(&mut st, &signer, slot, root);
                         (root, st.tree.len())
                     };
                     let us = t0.elapsed().as_micros() as u64;

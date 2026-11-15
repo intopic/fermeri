@@ -26,7 +26,8 @@ export NO_PROXY="127.0.0.1,localhost" no_proxy="127.0.0.1,localhost"
 [ -x "$CHECK" ] || { echo "Mungon $CHECK: cargo build --release -p zilja-cli"; exit 2; }
 
 cat > "$WORK/zilja.json" <<EOF
-{ "libpath": "$LIB", "bind": "127.0.0.1:7799", "roots_log": "$WORK/roots.log" }
+{ "libpath": "$LIB", "bind": "127.0.0.1:7799", "roots_log": "$WORK/roots.log",
+  "attest_keypair": "$LEDGER/validator-keypair.json" }
 EOF
 
 VPID=""
@@ -127,5 +128,7 @@ for line in open(sys.argv[1]):
 print(f"   slote të llogaritura dy herë: {same} identike, {diff} të ndryshme")
 sys.exit(0 if same > 0 and diff == 0 else 1)
 PY
+echo "== Hapi 6: pleqtë firmosin ziles (kuorumi > 2/3 i stake-ut nga getVoteAccounts)"
+"$ROOT/target/release/zilja-quorum" "$RPC" "$ZILJA"
 echo
 echo "== GJITHÇKA KALOI ✅ (roots.log: $(wc -l < "$WORK/roots.log") rreshta)"

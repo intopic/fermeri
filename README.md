@@ -37,6 +37,11 @@ solana-test-validator --geyser-plugin-config zilja.json
 
 # 3. Verifiko një llogari si banor
 ./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899
+node web/check.mjs http://127.0.0.1:7799 <PUBKEY>       # i njëjti kontroll në JS
+# ose hap web/index.html në shfletues
+
+# 4. A e kanë firmosur pleqtë? (shto "attest_keypair" te zilja.json)
+./target/release/zilja-quorum http://127.0.0.1:8899 http://127.0.0.1:7799
 ```
 
 Testi i plotë automatik (validator i vërtetë, transferime, rinisje nga snapshot):
@@ -44,6 +49,20 @@ Testi i plotë automatik (validator i vërtetë, transferime, rinisje nga snapsh
 ```bash
 scripts/e2e-test-validator.sh /rruga/te/solana-release/bin
 ```
+
+## Statusi
+
+| Faza | Statusi |
+|---|---|
+| 0. Përgatitja | ✅ workspace, CI, plugin mbi `solana-test-validator` · ⏳ node testnet 24 orë |
+| 1. Zilja jashtë zinxhirit | ✅ pema + plugin; root-i nga snapshot-i = root-i slot pas sloti |
+| 2. Dëftesat | ✅ ~0.7–1 KB, RPC 0.1 ms me 1M llogari |
+| 3. Verifikuesi | ✅ Rust, WASM 64 KB, JS 5 KB, faqja demo · ⏳ aplikacion telefoni |
+| 4. Firma e pleqve | ✅ firma jashtë protokollit + kuorum 2/3 mbi stake-un real · ⏳ fork Agave |
+| 5. Stresi dhe sulmet | ✅ fork-e, banka Dead, 50 vektorë sulmi · ⏳ ledger replay mainnet |
+| 6. Korrja | ✅ raporti dhe drafti SIMD |
+
+Numrat e plotë janë te [`docs/RAPORTI.md`](docs/RAPORTI.md).
 
 ## Dokumentet
 
