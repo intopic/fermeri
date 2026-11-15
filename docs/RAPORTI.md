@@ -175,6 +175,19 @@ sfond konkurron për të njëjtat bërthama, prandaj p99 ka zhurmë.
 - **Hapi tjetër:** matja në një server të vërtetë (NVMe, 16+ bërthama, cache më e madhe e RocksDB) me 100M+ llogari. Kjo s'mund të bëhet në këtë makinë.
 - **Deri atëherë:** në një server me RAM të mjaftueshëm, mënyra RAM mbetet më e mira. Mënyra disk vlen kur RAM-i është i kufizuar dhe ngarkesa më e vogël.
 
+## SDK për kuletat (`sdk/js`, paketa `zilja-verify`) ✅
+
+- Një thirrje e vetme, `ZiljaClient.verifyAccount(pubkey)`, që:
+  - verifikon dëftesën;
+  - krahason root-in mes disa zileve në të njëjtin slot;
+  - sipas dëshirës, kontrollon kuorumin e validatorëve (> 2/3 e stake-ut);
+  - krahason `lamports` dhe hash-in e të dhënave me RPC-në e zakonshme.
+- Tre nivele besimi, `single` → `agreement` → `quorum`, me `minTrust` për të kërkuar një nivel minimal. Dy zile që japin root të ndryshëm japin `invalid`.
+- Pa varësi (vetëm WebCrypto, edhe Ed25519), 8.7 KB e paketuar, tipe TypeScript të kontrolluara me `strict`.
+- Teste: 110 vektorë dëftesash dhe 8 vektorë firmash, të njëjtë me Rust bajt për bajt, plus 12 teste të klientit me zile të simuluara. Testi mbi validatorin e vërtetë: `single`, `quorum` (100% e stake-ut), dhe `minTrust=agreement` me një zile, që refuzohet siç duhet.
+- CI kontrollon që vektorët në repo janë pikërisht ata që gjeneron Rust.
+- **Kufizim:** me `quorum`, tabela e stake-ut i besohet `solanaRpc`-së. Light client-i me checkpoint është shtyrë për më vonë.
+
 ## Çfarë mbetet (kërkon një server të vërtetë)
 
 1. **Node mainnet ose testnet me Ziles për 72 orë:** CPU shtesë, numri real i ndryshimeve për slot, koha e nisjes nga snapshot-i i plotë.

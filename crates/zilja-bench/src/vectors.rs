@@ -86,5 +86,56 @@ fn main() {
             "rast i papritur: {c}"
         );
     }
-    println!("{}", serde_json::to_string_pretty(&json!({"version": 1, "cases": cases})).unwrap());
+    println!("{}", serde_json::to_string_pretty(&json!({"version": 1, "cases": cases, "attest": attest_vectors()})).unwrap());
+}
+
+/// Vektorë për firmat e validatorëve: 10 validatorë me çelësa të njohur dhe stake të ndryshëm.
+fn attest_vectors() -> Value {
+    use ed25519_dalek::{Signer, SigningKey};
+    use zilja_verifier::attest::{attest_message, verify_quorum, Attestation, StakeTable};
+    let keys: Vec<SigningKey> = (1u8..=10).map(|i| SigningKey::from_bytes(&[i; 32])).collect();
+    let stakes: Vec<u64> = (1..=10).map(|i| i * 1_000_000_000).collect(); // 1..10 SOL, gjithsej 55
+    let table = StakeTable { entries: keys.iter().zip(&stakes).map(|(k, s)| (k.verifying_key().to_bytes(), *s)).collect() };
+    let sign = |k: &SigningKey, slot: u64, root: &[u8; 32]| Attestation {
+        validator: k.verifying_key().to_bytes(),
+        signature: k.sign(&attest_message(slot, root)).to_bytes(),
+    };
+    let enc = |atts: &[Attestation]| -> Value {
+        atts.iter()
+            .map(|a| json!({"validator": bs58::encode(a.validator).into_string(), "signature": hex::encode(a.signature)}))
+            .collect()
+    };
+    let root = [7u8; 32];
+    let slot = 123_456u64;
+    let mut cases = Vec::new();
+    let mut add = |name: &str, s: u64, r: &[u8; 32], atts: Vec<Attestation>| {
+        let rep = verify_quorum(s, r, &atts, &table);
+        cases.push(json!({
+            "name": name, "slot": s, "root": hex::encode(r), "atts": enc(&atts),
+            "expectReached": rep.reached, "expectAttested": rep.attested_stake.to_string(),
+        }));
+    };
+    // 7 më të mëdhenjtë: 4+..+10 = 49/55 → po.
+    add("quorum_reached", slot, &root, keys[3..].iter().map(|k| sign(k, slot, &root)).collect());
+    // 5 më të mëdhenjtë: 6+..+10 = 40/55 = 72.7% → po. 4 më të mëdhenjtë: 34/55 = 61.8% → jo.
+    add("quorum_reached_by_stake_not_count", slot, &root, keys[5..].iter().map(|k| sign(k, slot, &root)).collect());
+    add("not_enough_stake", slot, &root, keys[6..].iter().map(|k| sign(k, slot, &root)).collect());
+    // Firma për root tjetër / slot tjetër.
+    add("wrong_root", slot, &[8u8; 32], keys[3..].iter().map(|k| sign(k, slot, &root)).collect());
+    add("wrong_slot", slot + 1, &root, keys[3..].iter().map(|k| sign(k, slot, &root)).collect());
+    // I njëjti validator shumë herë.
+    add("duplicates", slot, &root, (0..10).map(|_| sign(&keys[9], slot, &root)).collect());
+    // Validatorë jashtë tabelës.
+    let strangers: Vec<SigningKey> = (50u8..60).map(|i| SigningKey::from_bytes(&[i; 32])).collect();
+    add("strangers", slot, &root, strangers.iter().map(|k| sign(k, slot, &root)).collect());
+    // Firmë e prishur.
+    let mut bad: Vec<Attestation> = keys[3..].iter().map(|k| sign(k, slot, &root)).collect();
+    for a in bad.iter_mut().take(3) {
+        a.signature[0] ^= 1;
+    }
+    add("corrupted_signatures", slot, &root, bad);
+    json!({
+        "table": table.entries.iter().map(|(k, s)| json!([bs58::encode(k).into_string(), s.to_string()])).collect::<Vec<_>>(),
+        "cases": cases,
+    })
 }

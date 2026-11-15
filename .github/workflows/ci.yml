@@ -22,10 +22,15 @@ jobs:
         run: cargo test --workspace --all-features
       - name: testi i rrymës që ikën (pema në disk)
         run: cargo run -q --release -p zilja-bench --bin zilja-crash-test -- 6
-      - name: verifikuesi JS kundër vektorëve të Rust
+      - name: vektorët në repo = vektorët që gjeneron Rust
         run: |
-          cargo run -q -p zilja-bench --bin zilja-vectors > web/vectors.json
-          node web/test.mjs web/vectors.json
+          cargo run -q -p zilja-bench --bin zilja-vectors > sdk/js/test/vectors.json
+          git diff --exit-code sdk/js/test/vectors.json
+      - name: SDK zilja-verify (npm test + pack)
+        working-directory: sdk/js
+        run: |
+          npm test
+          npm pack --dry-run
 
   wasm:
     name: Verifikuesi WASM (madhësia)

@@ -75,7 +75,7 @@ mod tests {
     /// I njëjti skedar vektorësh që kalon edhe verifikuesi JS.
     #[test]
     fn passes_shared_vectors() {
-        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/vectors.json")).unwrap();
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../sdk/js/test/vectors.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         let cases = v["cases"].as_array().unwrap();
         for c in cases {

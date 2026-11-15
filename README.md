@@ -19,6 +19,7 @@
 | Regjistri i radhës së sloteve | Ndjekja e bankave, fork-eve, Rooted | `crates/zilja-node` (`tracker`) |
 | Dëftesa e hambarit | `getAccountProof` | `crates/zilja-node` (`rpc`) |
 | Banori me telefon | Verifikuesi i lehtë | `crates/zilja-verifier`, `crates/zilja-wasm`, `web/` |
+| Kuleta që e tregon "✅" | SDK npm `zilja-verify` | `sdk/js` |
 | Banori në terminal | CLI | `crates/zilja-cli` (`zilja-check`) |
 | Pleqtë firmosin ziles | Kuorumi > 2/3 stake | `zilja-verifier` me `--features attest` |
 
@@ -66,9 +67,21 @@ scripts/e2e-test-validator.sh /rruga/te/solana-release/bin
 | 4. Firma e pleqve | ✅ firma jashtë protokollit + kuorum 2/3 mbi stake-un real · ⏳ fork Agave |
 | 5. Stresi dhe sulmet | ✅ fork-e, banka Dead, 50 vektorë sulmi · ⏳ ledger replay mainnet |
 | 6. Korrja | ✅ raporti dhe drafti SIMD |
+| SDK për kuletat | ✅ `zilja-verify` (npm, pa varësi): dëftesa + krahasim zilesh + kuorum + krahasim të dhënash · ⏳ e pa publikuar në npm |
+| Light client me checkpoint | ⏳ e shtyrë (dega lokale `pika-3-light-client`) |
 | Pema në disk | ✅ RocksDB me faqe 4-nivelëshe, atomike, rinisje pa snapshot, 32 slote histori, mbrojtje nga zinxhiri i gabuar · ⚠️ ~315 ms/slot me 10M llogari në 2 bërthama |
 
 Numrat e plotë janë te [`docs/RAPORTI.md`](docs/RAPORTI.md).
+
+## Për kuletat: `zilja-verify`
+
+```js
+import { ZiljaClient } from "zilja-verify";
+const zilja = new ZiljaClient({ endpoints: ["https://zilja-1.example", "https://zilja-2.example"], minTrust: "agreement" });
+const r = await zilja.verifyAccount(pubkey);   // r.ok, r.verdict, r.account.lamports, r.trust
+```
+
+Pa varësi, 8.7 KB e paketuar, me tipe TypeScript. Shih [`sdk/js/README.md`](sdk/js/README.md).
 
 ## Dokumentet
 

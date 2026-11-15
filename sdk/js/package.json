@@ -1,0 +1,42 @@
+{
+  "name": "zilja-verify",
+  "version": "0.1.0",
+  "description": "Verifiko llogaritë Solana kundër Ziles (vulë globale e gjendjes), pa i besuar RPC-së. Pa varësi.",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./verifier": "./src/verifier.js"
+  },
+  "files": [
+    "src",
+    "index.d.ts",
+    "README.md",
+    "examples"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node test/verifier.test.mjs && node test/attest.test.mjs && node test/client.test.mjs"
+  },
+  "keywords": [
+    "solana",
+    "light-client",
+    "merkle",
+    "proof",
+    "wallet",
+    "verifiable-rpc"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/intopic/fermeri.git",
+    "directory": "sdk/js"
+  }
+}

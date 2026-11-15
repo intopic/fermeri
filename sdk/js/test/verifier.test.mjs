@@ -1,7 +1,7 @@
 // Kalon verifikuesin JS nëpër vektorët e gjeneruar nga Rust.
-//   node web/test.mjs web/vectors.json
+//   node test/verifier.test.mjs [vectors.json]
 import { readFileSync } from "node:fs";
-import { verifyAccount, dataMatches, bytesToHex, sha256 } from "./zilja-verifier.js";
+import { verifyAccount, dataMatches, bytesToHex, sha256 } from "../src/verifier.js";
 
 const file = process.argv[2] ?? new URL("./vectors.json", import.meta.url);
 const { cases } = JSON.parse(readFileSync(file, "utf8"));

@@ -89,6 +89,13 @@ echo "== Hapi 3: banori verifikon"
 echo "-- i njëjti kontroll me verifikuesin JavaScript (kodi i faqes demo):"
 node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC"
 node "$ROOT/web/check.mjs" "$ZILJA" "$NOBODY"
+echo "-- SDK zilja-verify (paketa npm):"
+node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --rpc "$RPC"
+node "$ROOT/sdk/js/examples/verify.mjs" "$NOBODY" --zilja "$ZILJA"
+if node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --min-trust agreement >/dev/null; then
+  echo "GABIM: me një zile të vetme, minTrust=agreement s'duhet të kalojë"; exit 1
+fi
+echo "   ✅ SDK: minTrust=agreement me një zile refuzohet siç duhet"
 echo "-- root i rremë duhet të refuzohet:"
 if "$CHECK" "$ZILJA" "$FERMER" --root "$(printf 'ab%.0s' $(seq 1 32))"; then
   echo "GABIM: root i rremë u pranua"; exit 1
@@ -164,6 +171,8 @@ PY
 fi
 echo "== Hapi 6: pleqtë firmosin ziles (kuorumi > 2/3 i stake-ut nga getVoteAccounts)"
 "$ROOT/target/release/zilja-quorum" "$RPC" "$ZILJA"
+echo "-- SDK me kuorum (minTrust=quorum):"
+node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --rpc "$RPC" --quorum --min-trust quorum
 if [ "${ZILJA_DB:-0}" = "1" ]; then
   echo "== Hapi 7 (disk): zinxhir krejt i ri (--reset) me pemën e vjetër në disk → zilja duhet të ndalojë"
   stop
