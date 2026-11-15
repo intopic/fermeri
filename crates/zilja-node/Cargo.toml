@@ -1,0 +1,20 @@
+[package]
+name = "zilja-node"
+description = "Logjika e Ziles pa validator: ndjekja e sloteve dhe fork-eve, përditësimi i pemës, RPC i dëftesave"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zilja-verifier = { workspace = true }
+zilja-tree = { workspace = true }
+crossbeam-channel = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bs58 = { workspace = true }
+hex = { workspace = true }
+log = { workspace = true }
+tiny_http = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

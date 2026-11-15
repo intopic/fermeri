@@ -1,0 +1,13 @@
+[package]
+name = "zilja-bench"
+description = "Matjet e Ziles me llogari sintetike"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+zilja-verifier = { workspace = true }
+zilja-tree = { workspace = true }
+rand = { workspace = true }
+serde_json = { workspace = true }

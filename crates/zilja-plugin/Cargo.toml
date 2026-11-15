@@ -1,0 +1,19 @@
+[package]
+name = "zilja-plugin"
+description = "Geyser plugin i Ziles për validatorin Agave"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+zilja-verifier = { workspace = true }
+zilja-node = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+# KUJDES: versioni i ndërfaqes duhet të përputhet me versionin e validatorit
+# (plugin-i ngarkohet si trait object). Ky është testuar me Agave 4.3.2.
+agave-geyser-plugin-interface = "=4.3.2"

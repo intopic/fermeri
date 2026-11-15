@@ -1,0 +1,13 @@
+[package]
+name = "zilja-tree"
+description = "Pema Merkle e Ziles: vula globale e gjendjes, e përditësuar me grupe ndryshimesh"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+zilja-verifier = { workspace = true }
+rayon = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

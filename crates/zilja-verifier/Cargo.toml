@@ -1,0 +1,19 @@
+[package]
+name = "zilja-verifier"
+description = "Verifikuesi i lehtë i dëftesave të Ziles (light-client proof verifier)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true, optional = true }
+
+[features]
+default = []
+# Faza 4: verifikimi i firmave të validatorëve mbi root-in (attestations)
+attest = ["dep:ed25519-dalek"]
+
+[dev-dependencies]
+rand = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }

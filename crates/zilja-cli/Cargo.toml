@@ -1,0 +1,18 @@
+[package]
+name = "zilja-cli"
+description = "Banori: verifikon një llogari Solana kundër Ziles, pa i besuar RPC-së"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "zilja-check"
+path = "src/main.rs"
+
+[dependencies]
+zilja-verifier = { workspace = true }
+serde_json = { workspace = true }
+bs58 = { workspace = true }
+hex = { workspace = true }
+ureq = { version = "2", default-features = false, features = ["json"] }
+base64 = "0.22"

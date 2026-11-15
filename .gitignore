@@ -1,0 +1,5 @@
+/target
+**/*.rs.bk
+/web/pkg
+*.log
+.DS_Store
