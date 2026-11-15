@@ -1,7 +1,7 @@
 // Verifikuesi i Ziles në JavaScript, pa varësi (WebCrypto). Funksionon në
 // shfletues dhe në Node ≥ 18. Ndjek saktë docs/SPEC.md.
 //
-//   import { verifyAccount } from "./zilja-verifier.js";
+//   import { verifyAccount } from "zilja-verify";
 //   const v = await verifyAccount(rootHex, pubkeyB58, account /* ose null */, proofHex);
 //   // v = "exists" | "does_not_exist" | "invalid"
 
@@ -148,9 +148,15 @@ export function parseProof(bytes) {
   const depth = d[0] | (d[1] << 8);
   if (depth > 256) throw new Error("shumë e thellë");
   const bitmap = take(Math.ceil(depth / 8));
+  // Kanonike (Safer-3): pa bit-e mbushëse, dhe asnjë vëlla "jo-bosh" që është bosh.
+  if (depth % 8 && bitmap[depth >> 3] & (0xff >> depth % 8)) throw new Error("bitmap jo kanonik");
   const siblings = [];
   for (let i = 0; i < depth; i++) {
-    siblings.push((bitmap[i >> 3] >> (7 - (i & 7))) & 1 ? take(32) : EMPTY);
+    if ((bitmap[i >> 3] >> (7 - (i & 7))) & 1) {
+      const h = take(32);
+      if (eq(h, EMPTY)) throw new Error("vëlla bosh i shënuar si jo-bosh");
+      siblings.push(h);
+    } else siblings.push(EMPTY);
   }
   const flag = take(1)[0];
   let leaf = null;

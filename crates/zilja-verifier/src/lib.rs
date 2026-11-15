@@ -141,6 +141,9 @@ pub enum ProofError {
     TooDeep,
     TrailingBytes,
     BadLeafFlag(u8),
+    /// Bit-e mbushëse në bitmap, ose një vëlla "jo-bosh" që është bosh: e njëjta dëftesë do të
+    /// kishte dy kodime (u gjet nga fuzz-i, Safer-3).
+    NonCanonical,
 }
 
 impl core::fmt::Display for ProofError {
@@ -151,6 +154,7 @@ impl core::fmt::Display for ProofError {
             ProofError::TooDeep => write!(f, "dëftesa është më e thellë se 256"),
             ProofError::TrailingBytes => write!(f, "bajte të tepërta në fund të dëftesës"),
             ProofError::BadLeafFlag(v) => write!(f, "flamur i pavlefshëm gjetheje: {v}"),
+            ProofError::NonCanonical => write!(f, "kodim jo kanonik i dëftesës"),
         }
     }
 }
@@ -253,10 +257,17 @@ impl Proof {
             return Err(ProofError::TooDeep);
         }
         let bitmap = r.take(depth.div_ceil(8))?.to_vec();
+        if depth % 8 != 0 && bitmap[depth / 8] & (0xFF >> (depth % 8)) != 0 {
+            return Err(ProofError::NonCanonical);
+        }
         let mut siblings = Vec::with_capacity(depth);
         for i in 0..depth {
             if (bitmap[i / 8] >> (7 - (i % 8))) & 1 == 1 {
-                siblings.push(r.hash()?);
+                let h = r.hash()?;
+                if h == EMPTY {
+                    return Err(ProofError::NonCanonical);
+                }
+                siblings.push(h);
             } else {
                 siblings.push(EMPTY);
             }

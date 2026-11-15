@@ -92,13 +92,18 @@ where
 }
 
 /// Ndërton një nënpemë nga e para (lista e renditur, pa dyfishime).
+/// Llogaritë e gjalla (pa varre), të renditura.
+fn live(ups: &[Update]) -> Vec<Update> {
+    ups.iter().filter(|(_, m)| m.is_some()).cloned().collect()
+}
+
+/// Ndërton një nënpemë nga llogari të gjalla (pa varre: ato hiqen një herë, para rekursionit).
 fn build(depth: usize, ups: &[Update]) -> Node {
-    let live = ups.iter().filter(|(_, m)| m.is_some()).count();
-    match live {
+    match ups.len() {
         0 => Node::Empty,
         1 => {
-            let (k, m) = ups.iter().find(|(_, m)| m.is_some()).unwrap();
-            Node::Leaf(Box::new(LeafNode::new(*k, m.clone().unwrap())))
+            let (k, m) = &ups[0];
+            Node::Leaf(Box::new(LeafNode::new(*k, m.clone().expect("build merr vetëm llogari të gjalla"))))
         }
         _ => {
             let (l, r) = split(ups, depth);
@@ -112,22 +117,34 @@ fn build(depth: usize, ups: &[Update]) -> Node {
     }
 }
 
-fn apply(node: Node, depth: usize, ups: &[Update]) -> Node {
+/// Zbaton ndryshimet; kthen nyjen e re dhe ndryshimin në numrin e llogarive.
+fn apply(node: Node, depth: usize, ups: &[Update]) -> (Node, isize) {
     if ups.is_empty() {
-        return node;
+        return (node, 0);
     }
     match node {
-        Node::Empty => build(depth, ups),
+        Node::Empty => {
+            let l = live(ups);
+            let n = l.len() as isize;
+            (build(depth, &l), n)
+        }
         Node::Leaf(leaf) => {
             // Gjethja ekzistuese bashkohet me ndryshimet (nëse nuk mbishkruhet prej tyre).
             match ups.binary_search_by(|(k, _)| k.cmp(&leaf.key)) {
-                Ok(_) => build(depth, ups),
+                Ok(_) => {
+                    let l = live(ups);
+                    let n = l.len() as isize - 1;
+                    (build(depth, &l), n)
+                }
                 Err(pos) => {
                     let mut merged = Vec::with_capacity(ups.len() + 1);
-                    merged.extend_from_slice(&ups[..pos]);
+                    merged.extend(ups[..pos].iter().filter(|(_, m)| m.is_some()).cloned());
+                    let added = merged.len() as isize;
                     merged.push((leaf.key, Some(leaf.meta)));
-                    merged.extend_from_slice(&ups[pos..]);
-                    build(depth, &merged)
+                    let before = merged.len();
+                    merged.extend(ups[pos..].iter().filter(|(_, m)| m.is_some()).cloned());
+                    let added = added + (merged.len() - before) as isize;
+                    (build(depth, &merged), added)
                 }
             }
         }
@@ -135,12 +152,12 @@ fn apply(node: Node, depth: usize, ups: &[Update]) -> Node {
             let (l, r) = split(ups, depth);
             let left = std::mem::take(&mut inner.left);
             let right = std::mem::take(&mut inner.right);
-            let (ln, rn) = par_or_seq(
+            let ((ln, d0), (rn, d1)) = par_or_seq(
                 ups.len() > PAR_THRESHOLD,
                 || apply(left, depth + 1, l),
                 || apply(right, depth + 1, r),
             );
-            join(ln, rn)
+            (join(ln, rn), d0 + d1)
         }
     }
 }
@@ -173,7 +190,8 @@ impl Tree {
     /// Ndërton pemën nga një listë llogarish (p.sh. snapshot-i).
     pub fn from_accounts(mut ups: Vec<Update>) -> Self {
         normalize_updates(&mut ups);
-        let len = ups.iter().filter(|(_, m)| m.is_some()).count();
+        ups.retain(|(_, m)| m.is_some());
+        let len = ups.len();
         Tree { root: build(0, &ups), len }
     }
 
@@ -194,18 +212,10 @@ impl Tree {
     /// Zbaton një grup ndryshimesh dhe kthen root-in e ri.
     pub fn apply_batch(&mut self, mut ups: Vec<Update>) -> Hash {
         normalize_updates(&mut ups);
-        // Numërimi i llogarive: kontrollo cilat ekzistonin para ndryshimit.
-        let mut delta: isize = 0;
-        for (k, m) in &ups {
-            let existed = self.get(k).is_some();
-            match (existed, m.is_some()) {
-                (false, true) => delta += 1,
-                (true, false) => delta -= 1,
-                _ => {}
-            }
-        }
+        // Faster-2: numërimi del nga vetë zbatimi, pa një `get` për çdo ndryshim.
         let root = std::mem::take(&mut self.root);
-        self.root = apply(root, 0, &ups);
+        let (root, delta) = apply(root, 0, &ups);
+        self.root = root;
         self.len = (self.len as isize + delta) as usize;
         self.root()
     }
@@ -253,6 +263,9 @@ impl Tree {
     }
 }
 
+/// Puna e përgatitur nga `StateTree::prepare_slot`, e çdo peme sipas llojit të saj.
+pub type Prepared = Box<dyn std::any::Any + Send>;
+
 /// Gjurma e zinxhirit: (slot, bank_hash) e slotit të fundit të rrënjosur, nga SlotHashes.
 pub type Fingerprint = (u64, [u8; 32]);
 
@@ -287,6 +300,16 @@ pub trait StateTree: Send + Sync {
     fn finish_snapshot(&mut self, slot: u64, complete: bool) -> Result<Hash, String>;
     /// Zbaton ndryshimet e një sloti të rrënjosur.
     fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, fingerprint: Option<Fingerprint>) -> Result<Hash, String>;
+    /// Faster-1: pjesa e rëndë e `apply_slot` (leximet dhe llogaritja), vetëm me `&self`, që
+    /// dëftesat të shërbehen ndërkohë. Parazgjedhja s'bën gjë dhe e lë punën te `commit_slot`.
+    fn prepare_slot(&self, _slot: u64, ups: Vec<Update>, fingerprint: Option<Fingerprint>) -> Result<Prepared, String> {
+        Ok(Box::new((ups, fingerprint)))
+    }
+    /// Shkruan atë që përgatiti `prepare_slot`. Asgjë tjetër s'duhet të ndryshojë pemën mes tyre.
+    fn commit_slot(&mut self, slot: u64, p: Prepared) -> Result<Hash, String> {
+        let (ups, fp) = *p.downcast::<(Vec<Update>, Option<Fingerprint>)>().map_err(|_| "commit_slot: përgatitje e gabuar")?;
+        self.apply_slot(slot, ups, fp)
+    }
     /// Dëftesa në slotin e fundit (`at = None`) ose në një slot të kaluar.
     fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, String>;
     /// Slotet për të cilat mund të jepen dëftesa: (më i vjetri, më i riu).

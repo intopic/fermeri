@@ -263,3 +263,29 @@ fn injected_read_faults_never_produce_a_wrong_root() {
 fn mem_accounts(mem: &Tree, keys: &[Key]) -> Vec<Update> {
     keys.iter().filter_map(|k| mem.get(k).map(|m| (*k, Some(m.clone())))).collect()
 }
+
+/// Faster-1: mes `prepare_slot` dhe `commit_slot`, dëftesat japin ende gjendjen e mëparshme,
+/// saktë; pas commit-it, të renë.
+#[test]
+fn proofs_during_prepare_see_the_committed_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rng = StdRng::seed_from_u64(77);
+    let keys: Vec<Key> = (0..3000).map(|_| rng.gen()).collect();
+    let mut mem = Tree::from_accounts(keys.iter().map(|k| (*k, Some(meta(&mut rng)))).collect());
+    let mut disk = DiskTree::open_opts(dir.path(), StoreOptions { history: 4, cache_depth: 4, ..Default::default() }).unwrap();
+    disk.stage_snapshot(1, mem_accounts(&mem, &keys)).unwrap();
+    disk.finish_snapshot(1, true).unwrap();
+    for slot in 2..10u64 {
+        let ups: Vec<Update> = (0..200).map(|_| (keys[rng.gen_range(0..keys.len())], Some(meta(&mut rng)))).collect();
+        let p = disk.prepare_slot(slot, ups.clone(), None).unwrap();
+        for k in keys.iter().take(50) {
+            check_proof(&disk, &mem, k, None);
+        }
+        disk.commit_slot(slot, p).unwrap();
+        mem.apply_batch(ups);
+        assert_eq!(disk.root(), mem.root());
+        for k in keys.iter().take(50) {
+            check_proof(&disk, &mem, k, None);
+        }
+    }
+}

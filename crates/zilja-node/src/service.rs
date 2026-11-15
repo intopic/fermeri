@@ -406,9 +406,12 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
                     let updates: Vec<zilja_tree::Update> = updates.into_iter().map(|(k, m)| (tree_key(&k), m)).collect();
                     let n = updates.len() as u64;
                     let t0 = Instant::now();
+                    // Faster-1: leximet dhe llogaritja nën kyçin e leximit (dëftesat vazhdojnë);
+                    // vetëm shkrimi i shkurtër nën kyçin e shkrimit. Vetëm ky thread e ndryshon pemën.
+                    let prepared = shared.state.read().unwrap().tree.prepare_slot(slot, updates, fingerprint);
                     let res = {
                         let mut st = shared.state.write().unwrap();
-                        st.tree.apply_slot(slot, updates, fingerprint).map(|root| {
+                        prepared.and_then(|p| st.tree.commit_slot(slot, p)).map(|root| {
                             st.slot = slot;
                             st.ready = true;
                             sign_root(&mut st, &mut signer, m, slot, root);

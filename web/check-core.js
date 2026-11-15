@@ -1,5 +1,5 @@
 // Logjika e banorit, e përbashkët për faqen demo dhe për Node (web/check.mjs).
-import { verifyAccount, dataMatches } from "./zilja-verifier.js";
+import { verifyAccount, dataMatches } from "../sdk/js/src/index.js";
 
 async function rpc(url, method, params = []) {
   const r = await fetch(url, {

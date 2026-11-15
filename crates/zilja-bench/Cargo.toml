@@ -34,6 +34,10 @@ name = "zilja-wire-vectors"
 path = "src/wire_vectors.rs"
 
 [[bin]]
+name = "zilja-fuzz"
+path = "src/fuzz.rs"
+
+[[bin]]
 name = "zilja-stream-bench"
 path = "src/stream_bench.rs"
 

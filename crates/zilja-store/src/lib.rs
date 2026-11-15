@@ -127,11 +127,21 @@ enum Kind {
     Internal = 2,
 }
 
-fn kind_of(b: u8) -> Kind {
+/// Vetëm 0, 1, 2: çdo vlerë tjetër është e dëmtuar (Safer-3: dekodim kanonik).
+fn kind_of(b: u8) -> Option<Kind> {
     match b {
-        0 => Kind::Empty,
-        1 => Kind::Leaf,
-        _ => Kind::Internal,
+        0 => Some(Kind::Empty),
+        1 => Some(Kind::Leaf),
+        2 => Some(Kind::Internal),
+        _ => None,
+    }
+}
+
+fn bool_of(b: u8) -> Option<bool> {
+    match b {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
     }
 }
 
@@ -215,8 +225,8 @@ impl Node {
         match b.first()? {
             1 if b.len() == 33 + META_LEN => Some(Node::leaf(h(&b[1..33]), dec_meta(&b[33..])?)),
             2 if b.len() == 67 => Some(Node::Internal {
-                l: Ref { kind: kind_of(b[1]), hash: h(&b[2..34]) },
-                r: Ref { kind: kind_of(b[34]), hash: h(&b[35..67]) },
+                l: Ref { kind: kind_of(b[1])?, hash: h(&b[2..34]) },
+                r: Ref { kind: kind_of(b[34])?, hash: h(&b[35..67]) },
             }),
             _ => None,
         }
@@ -261,6 +271,9 @@ impl Page {
     }
     fn dec(b: &[u8]) -> Option<Page> {
         let bm = u16::from_le_bytes(b.get(..2)?.try_into().ok()?);
+        if bm >> PAGE_SLOTS != 0 {
+            return None; // bit-e përtej vendeve të faqes: kodim jo kanonik (Safer-3)
+        }
         let mut pos = 2;
         let mut pg = Page::new();
         for i in 0..PAGE_SLOTS {
@@ -276,6 +289,38 @@ impl Page {
         }
         (pos == b.len()).then_some(pg)
     }
+}
+
+/// Safer-3 (fuzz): dekodon bajte arbitrare si faqe, gjendje dhe vlerë staging-u. S'duhet të bjerë
+/// kurrë, dhe çdo gjë që dekodohet duhet të rikodohet njësoj. Kthen sa nga të tria u dekoduan.
+#[doc(hidden)]
+pub fn fuzz_decode(b: &[u8]) -> usize {
+    let mut n = 0;
+    if let Some(pg) = Page::dec(b) {
+        assert_eq!(pg.enc(), b, "faqja nuk rikodohet njësoj");
+        n += 1;
+    }
+    if let Some(st) = State::dec(b) {
+        assert_eq!(st.enc(), b, "gjendja nuk rikodohet njësoj");
+        n += 1;
+    }
+    if let Some((slot, m)) = dec_staged(b) {
+        assert_eq!(enc_staged(slot, &m), b, "staging nuk rikodohet njësoj");
+        n += 1;
+    }
+    n
+}
+
+/// Safer-3: koduesit e vërtetë, për të krijuar hyrje fillestare (seeds) për fuzz-in.
+#[doc(hidden)]
+pub fn fuzz_seeds(rng_bytes: &[u8]) -> Vec<Vec<u8>> {
+    let take = |i: usize| -> [u8; 32] { std::array::from_fn(|j| rng_bytes.get((i * 32 + j) % rng_bytes.len().max(1)).copied().unwrap_or(0)) };
+    let m = AccountMeta { lamports: 5, owner: take(1), executable: true, data_len: 9, data_hash: take(2) };
+    let mut pg = Page::new();
+    pg.slots[0] = Some(Node::Internal { l: Ref { kind: Kind::Leaf, hash: take(3) }, r: Ref { kind: Kind::Internal, hash: take(4) } });
+    pg.slots[1] = Some(Node::leaf(take(5), m.clone()));
+    let st = State { version: 7, root: Ref { kind: Kind::Internal, hash: take(6) }, len: 3, complete: true, base: 1, cache_depth: 20, fingerprint: Some((6, take(7))) };
+    vec![pg.enc(), st.enc(), enc_staged(3, &Some(m)), enc_staged(4, &None)]
 }
 
 fn dec_page_val(v: &[u8]) -> Option<(u64, Page)> {
@@ -337,7 +382,7 @@ fn dec_meta(b: &[u8]) -> Option<AccountMeta> {
     Some(AccountMeta {
         lamports: u64::from_le_bytes(b[..8].try_into().unwrap()),
         owner: b[8..40].try_into().unwrap(),
-        executable: b[40] == 1,
+        executable: bool_of(b[40])?,
         data_len: u64::from_le_bytes(b[41..49].try_into().unwrap()),
         data_hash: b[49..81].try_into().unwrap(),
     })
@@ -405,14 +450,23 @@ impl State {
         }
         Some(State {
             version: u64::from_le_bytes(b[1..9].try_into().ok()?),
-            root: Ref { kind: kind_of(b[9]), hash: b[10..42].try_into().ok()? },
+            root: Ref { kind: kind_of(b[9])?, hash: b[10..42].try_into().ok()? },
             len: u64::from_le_bytes(b[42..50].try_into().ok()?),
-            complete: b[50] == 1,
+            complete: bool_of(b[50])?,
             base: u64::from_le_bytes(b[51..59].try_into().ok()?),
             cache_depth: u16::from_le_bytes(b[59..61].try_into().ok()?),
             fingerprint: (b.len() == 101).then(|| (u64::from_le_bytes(b[61..69].try_into().unwrap()), b[69..101].try_into().unwrap())),
         })
     }
+}
+
+/// Rezultati i `prepare_slot`: nyjet e reja dhe gjendja, gati për t'u shkruar.
+struct DiskPrepared {
+    slot: u64,
+    out: Vec<NodeW>,
+    st: State,
+    t_pre: std::time::Duration,
+    t_tree: std::time::Duration,
 }
 
 /// Ndryshimet e niveleve të sipërme në një slot: vlerat e vjetra, për dëftesat historike.
@@ -442,8 +496,12 @@ pub struct DiskTree {
     durable: bool,
     sync_every: u64,
     commits: u64,
+    /// `ZILJA_PROFILE` lexohet një herë, në hapje (Simpler-6).
+    profile: bool,
     /// Faqet e lexuara paraprakisht për slotin që po zbatohet.
-    prefetched: HashMap<PKey, Option<(u64, Page)>>,
+    /// Faster-1: pas një `RwLock`, që `prepare_slot` të punojë me `&self` (nën kyçin e leximit të
+    /// shërbimit, pa bllokuar dëftesat). Faqet aty janë faqe të gjendjes së fundit të shkruar.
+    prefetched: std::sync::RwLock<HashMap<PKey, Option<(u64, Page)>>>,
     /// Testet (Safer-6): kur > 0, çdo lexim i n-të i një faqeje "dështon".
     fault_every: AtomicU64,
     fault_count: AtomicU64,
@@ -560,7 +618,8 @@ impl DiskTree {
             durable: o.durable,
             sync_every: o.sync_every,
             commits: 0,
-            prefetched: HashMap::default(),
+            profile: std::env::var_os("ZILJA_PROFILE").is_some(),
+            prefetched: std::sync::RwLock::new(HashMap::default()),
             fault_every: AtomicU64::new(0),
             fault_count: AtomicU64::new(0),
         };
@@ -698,7 +757,7 @@ impl DiskTree {
             return self.cache.get(&p.enc()).cloned();
         }
         let (root, idx) = page_pos(p, self.page_depth(p.depth));
-        if let Some(hit) = self.prefetched.get(&root.enc()) {
+        if let Some(hit) = self.prefetched.read().unwrap().get(&root.enc()) {
             return hit.as_ref().and_then(|(ver, pg)| pg.slots[idx].clone().map(|n| (*ver, n)));
         }
         let (ver, pg) = self.page_latest(&root)?;
@@ -713,7 +772,7 @@ impl DiskTree {
 
     /// Faqja e tanishme me rrënjë `root`.
     fn page_latest(&self, root: &NPath) -> Option<(u64, Page)> {
-        if let Some(hit) = self.prefetched.get(&root.enc()) {
+        if let Some(hit) = self.prefetched.read().unwrap().get(&root.enc()) {
             return hit.clone();
         }
         self.last_disk_reads.fetch_add(1, Ordering::Relaxed);
@@ -749,8 +808,8 @@ impl DiskTree {
 
     /// Lexon paraprakisht, rresht pas rreshti faqesh dhe me një kërkesë të grupuar për
     /// rresht, faqet që do t'i duhen zbatimit të `ups` (të renditura).
-    fn prefetch(&mut self, ups: &[(Key, Option<AccountMeta>)]) {
-        self.prefetched.clear();
+    fn prefetch(&self, ups: &[(Key, Option<AccountMeta>)]) {
+        self.prefetched.write().unwrap().clear();
         let cd = self.cache_depth;
         // Rrugët në nivelin `cd` që kanë ndonjë ndryshim, vetëm ku prindi në cache tregon një fëmijë jo-bosh.
         let mut frontier: Vec<NPath> = Vec::new();
@@ -826,7 +885,7 @@ impl DiskTree {
                         }
                     }
                 }
-                self.prefetched.insert(*k, val);
+                self.prefetched.write().unwrap().insert(*k, val);
             }
             frontier = next;
         }
@@ -861,13 +920,13 @@ impl DiskTree {
     // ------------------------------------------------------------ algoritmi
 
     /// Ndërton një nënpemë të re në `p` (poshtë `p` nuk ka asgjë). Nuk shkruan vetë `p`.
+    /// `ups` përmban vetëm llogari të gjalla (Faster-2: varret hiqen një herë, nga thirrësi).
     fn build(&self, p: NPath, ups: &[(Key, Option<AccountMeta>)], out: &mut Vec<NodeW>) -> Option<Node> {
-        let live = ups.iter().filter(|(_, v)| v.is_some()).count();
-        match live {
+        match ups.len() {
             0 => None,
             1 => {
-                let (k, v) = ups.iter().find(|(_, v)| v.is_some()).unwrap();
-                Some(Node::leaf(*k, v.clone().unwrap()))
+                let (k, v) = &ups[0];
+                Some(Node::leaf(*k, v.clone()?))
             }
             _ => {
                 let i = ups.partition_point(|(k, _)| bit(k, p.depth as usize) == 0);
@@ -908,23 +967,25 @@ impl DiskTree {
     ) -> Result<(Option<Node>, i64), String> {
         Ok(match old.map(|o| o.1) {
             None => {
-                let delta = ups.iter().filter(|(_, m)| m.is_some()).count() as i64;
-                (self.build(p, ups, out), delta)
+                let live: Vec<_> = ups.iter().filter(|(_, m)| m.is_some()).cloned().collect();
+                let delta = live.len() as i64;
+                (self.build(p, &live, out), delta)
             }
             Some(Node::Leaf(d)) => {
                 let LeafData { key, meta, .. } = *d;
-                let others = ups.iter().filter(|(k, m)| *k != key && m.is_some()).count() as i64;
                 match ups.binary_search_by(|(k, _)| k.cmp(&key)) {
-                    Ok(i) => {
-                        let removed = if ups[i].1.is_none() { 1 } else { 0 };
-                        (self.build(p, ups, out), others - removed)
+                    Ok(_) => {
+                        let live: Vec<_> = ups.iter().filter(|(_, m)| m.is_some()).cloned().collect();
+                        let delta = live.len() as i64 - 1;
+                        (self.build(p, &live, out), delta)
                     }
                     Err(pos) => {
                         let mut merged = Vec::with_capacity(ups.len() + 1);
-                        merged.extend_from_slice(&ups[..pos]);
+                        merged.extend(ups[..pos].iter().filter(|(_, m)| m.is_some()).cloned());
                         merged.push((key, Some(meta)));
-                        merged.extend_from_slice(&ups[pos..]);
-                        (self.build(p, &merged, out), others)
+                        merged.extend(ups[pos..].iter().filter(|(_, m)| m.is_some()).cloned());
+                        let delta = merged.len() as i64 - 1;
+                        (self.build(p, &merged, out), delta)
                     }
                 }
             }
@@ -1042,7 +1103,8 @@ impl DiskTree {
         // Një shkrim për çdo faqe që ndryshoi; faqja e vjetër kalon në arkivë.
         for (k, (root, changes)) in pages {
             // Faqja e lexuar paraprakisht nuk duhet më: merre pa e kopjuar.
-            let old = match self.prefetched.remove(&k) {
+            let pre = self.prefetched.get_mut().unwrap().remove(&k);
+            let old = match pre {
                 Some(o) => o,
                 None => self.page_latest(&root),
             };
@@ -1305,8 +1367,13 @@ impl StateTree for DiskTree {
         Ok(self.root())
     }
 
-    fn apply_slot(&mut self, slot: u64, mut ups: Vec<Update>, fingerprint: Option<Fingerprint>) -> Result<Hash, String> {
-        let prof = std::env::var_os("ZILJA_PROFILE").is_some();
+    fn apply_slot(&mut self, slot: u64, ups: Vec<Update>, fingerprint: Option<Fingerprint>) -> Result<Hash, String> {
+        let p = self.prepare_slot(slot, ups, fingerprint)?;
+        self.commit_slot(slot, p)
+    }
+
+    /// Faster-1: leximet dhe llogaritja e nyjeve të reja, pa ndryshuar asgjë (`&self`).
+    fn prepare_slot(&self, slot: u64, mut ups: Vec<Update>, fingerprint: Option<Fingerprint>) -> Result<zilja_tree::Prepared, String> {
         let t0 = std::time::Instant::now();
         normalize_updates(&mut ups);
         self.last_disk_reads.store(0, Ordering::Relaxed);
@@ -1319,40 +1386,27 @@ impl StateTree for DiskTree {
             cache_depth: self.cache_depth,
             fingerprint: None,
         });
-        if self.state.is_none() {
-            self.cache_since = slot;
-        }
         self.prefetch(&ups);
         let t_pre = t0.elapsed();
-        let mut batch = WriteBatch::default();
         let mut out = Vec::new();
         let root_path = NPath::root();
-        let old_root = match self.read_expected(&root_path, prev.root) {
+        let res = self.read_expected(&root_path, prev.root).and_then(|old_root| {
+            let (new_root, delta) = if ups.is_empty() {
+                (old_root.clone().map(|o| o.1), 0)
+            } else {
+                self.apply(root_path, old_root.clone(), &ups, &mut out).map_err(|e| format!("sloti {slot}: {e}"))?
+            };
+            emit(&mut out, root_path, new_root.clone(), old_root);
+            Ok((new_root, delta))
+        });
+        let (new_root, delta) = match res {
             Ok(r) => r,
             Err(e) => {
-                self.prefetched.clear();
+                // Asgjë nuk u shkrua: gjendja në disk mbetet ajo e slotit të mëparshëm.
+                self.prefetched.write().unwrap().clear();
                 return Err(e);
             }
         };
-        let (new_root, delta) = if ups.is_empty() {
-            (old_root.clone().map(|o| o.1), 0)
-        } else {
-            match self.apply(root_path, old_root.clone(), &ups, &mut out) {
-                Ok(r) => r,
-                Err(e) => {
-                    // Asgjë nuk u shkrua: gjendja në disk mbetet ajo e slotit të mëparshëm.
-                    self.prefetched.clear();
-                    return Err(format!("sloti {slot}: {e}"));
-                }
-            }
-        };
-        emit(&mut out, root_path, new_root.clone(), old_root);
-        let t_tree = t0.elapsed();
-        let nw = out.len();
-        self.write_nodes(&mut batch, slot, out);
-        self.prefetched.clear();
-        let t_batch = t0.elapsed();
-        let ops = batch.len();
         let st = State {
             version: slot,
             root: ref_of(&new_root),
@@ -1362,14 +1416,33 @@ impl StateTree for DiskTree {
             cache_depth: self.cache_depth,
             fingerprint,
         };
-        self.commit_state(&mut batch, st).map_err(|e| format!("shkrimi i slotit {slot} dështoi: {e}"))?;
+        Ok(Box::new(DiskPrepared { slot, out, st, t_pre, t_tree: t0.elapsed() }))
+    }
+
+    /// Shkrimi: nyjet në një `WriteBatch` atomik, cache-ja, gjendja. I shkurtër.
+    fn commit_slot(&mut self, slot: u64, p: zilja_tree::Prepared) -> Result<Hash, String> {
+        let p = *p.downcast::<DiskPrepared>().map_err(|_| "commit_slot: përgatitje e një peme tjetër")?;
+        if p.slot != slot {
+            return Err(format!("commit_slot: përgatitja ishte për slotin {}", p.slot));
+        }
+        let t0 = std::time::Instant::now();
+        if self.state.is_none() {
+            self.cache_since = slot;
+        }
+        let mut batch = WriteBatch::default();
+        let nw = p.out.len();
+        self.write_nodes(&mut batch, slot, p.out);
+        self.prefetched.get_mut().unwrap().clear();
+        let t_batch = t0.elapsed();
+        let ops = batch.len();
+        self.commit_state(&mut batch, p.st).map_err(|e| format!("shkrimi i slotit {slot} dështoi: {e}"))?;
         self.trim_history(slot);
-        if prof {
+        if self.profile {
             eprintln!(
                 "slot {slot}: leximi {:?}, pema {:?}, batch {:?}, shkrimi {:?} | {nw} nyje, {ops} ops, {} lexime",
-                t_pre,
-                t_tree - t_pre,
-                t_batch - t_tree,
+                p.t_pre,
+                p.t_tree - p.t_pre,
+                t_batch,
                 t0.elapsed() - t_batch,
                 self.last_disk_reads.load(Ordering::Relaxed)
             );
