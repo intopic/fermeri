@@ -4805,7 +4805,7 @@ dependencies = [
 
 [[package]]
 name = "zilja-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bs58",
  "ed25519-dalek",
@@ -4820,7 +4820,7 @@ dependencies = [
 
 [[package]]
 name = "zilja-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "bs58",
@@ -4833,7 +4833,7 @@ dependencies = [
 
 [[package]]
 name = "zilja-node"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bs58",
  "crossbeam-channel",
@@ -4852,7 +4852,7 @@ dependencies = [
 
 [[package]]
 name = "zilja-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "agave-geyser-plugin-interface",
  "bs58",
@@ -4868,7 +4868,7 @@ dependencies = [
 
 [[package]]
 name = "zilja-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ahash",
  "log",
@@ -4882,7 +4882,7 @@ dependencies = [
 
 [[package]]
 name = "zilja-tree"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rand 0.8.8",
  "rayon",
@@ -4891,7 +4891,7 @@ dependencies = [
 
 [[package]]
 name = "zilja-verifier"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "rand 0.8.8",
@@ -4900,7 +4900,7 @@ dependencies = [
 
 [[package]]
 name = "zilja-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bs58",
  "hex",

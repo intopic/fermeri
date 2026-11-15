@@ -1,6 +1,6 @@
 {
   "name": "zilja-verify",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Verifiko llogaritë Solana kundër Ziles (vulë globale e gjendjes), pa i besuar RPC-së. Pa varësi.",
   "type": "module",
   "main": "./src/index.js",

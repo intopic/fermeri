@@ -188,6 +188,21 @@ sfond konkurron për të njëjtat bërthama, prandaj p99 ka zhurmë.
 - CI kontrollon që vektorët në repo janë pikërisht ata që gjeneron Rust.
 - **Kufizim:** me `quorum`, tabela e stake-ut i besohet `solanaRpc`-së. Light client-i me checkpoint është shtyrë për më vonë.
 
+## Pas auditimit (v0.2.0) ✅
+
+Auditimi i `f59be06` gjeti 2 gjetje kritike, 3 të larta, 8 mesatare, 9 të ulëta dhe 6
+informative. Të gjitha u rregulluan në gjashtë faza, secila me CI jeshile përfshirë e2e mbi
+validatorin. Hollësitë janë te [`AUDIT-FIXES.md`](AUDIT-FIXES.md). Numrat që ndryshuan:
+
+| Matja | Para | Pas |
+|---|---|---|
+| Rinisje me slote të ripërsëritura (e2e) | 0.123 SOL humbën (F-01) | zilja = RPC |
+| Testi model i tracker-it (10 000 histori) | 7–25% gabim | 0 |
+| Çelësa "binjakë" (500 ndryshime) | 545 ms, 31 179 lexime, thellësi 256 | 13 ms, 1 122 lexime, thellësi 16 |
+| RAM, 2M llogari, 5000 ndryshime/slot | 14.5 ms p50 | 11.5 ms p50 |
+| Disk, 2M llogari, 3000 ndryshime/slot (2 vCPU) | 91.8 ms p50 | 93.8 ms p50 (zhurmë); dëftesat s'presin më zbatimin |
+| Fuzz (dëftesa, disk, RPC, JS = Rust) | — | 1 orë pa gjetje, pas 4 rregullimeve të kodimit kanonik |
+
 ## Çfarë mbetet (kërkon një server të vërtetë)
 
 1. **Node mainnet ose testnet me Ziles për 72 orë:** CPU shtesë, numri real i ndryshimeve për slot, koha e nisjes nga snapshot-i i plotë.

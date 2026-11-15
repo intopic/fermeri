@@ -46,11 +46,17 @@ node web/check.mjs http://127.0.0.1:7799 <PUBKEY>       # i njëjti kontroll në
 #   "db_path": "/var/lib/zilja/db", "history_slots": 32, "cache_depth": 20
 ./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> --slot <SLOT>   # dëftesë historike
 
-# 4. A e kanë firmosur pleqtë? (shto "attest_keypair" te zilja.json)
+# 4. A e kanë firmosur pleqtë? Shto te zilja.json:
+#   "attest_keypair": "<çelësi>", "attest_authorization": "<nga zilja-authorize>",
+#   "genesis_path": "<ledger>/genesis.bin"          (shih docs/OPERIMI.md)
 ./target/release/zilja-quorum http://127.0.0.1:8899 http://127.0.0.1:7799
 ```
 
-Testi i plotë automatik (validator i vërtetë, transferime, rinisje nga snapshot):
+Metrikat janë në `http://127.0.0.1:7798/metrics`, një port privat. RPC-ja publike duhet
+të qëndrojë pas një proxy, shih [`docs/OPERIMI.md`](docs/OPERIMI.md).
+
+Testi i plotë automatik (validator i vërtetë, transferime, rinisje nga snapshot, ringarkim i
+plugin-it, zinxhir i gabuar, rindërtim):
 
 ```bash
 scripts/e2e-test-validator.sh /rruga/te/solana-release/bin
@@ -71,6 +77,8 @@ scripts/e2e-test-validator.sh /rruga/te/solana-release/bin
 | Light client me checkpoint | ⏳ e shtyrë (dega lokale `pika-3-light-client`) |
 | Pema në disk | ✅ RocksDB me faqe 4-nivelëshe, atomike, rinisje pa snapshot, 32 slote histori, mbrojtje nga zinxhiri i gabuar · ⚠️ ~315 ms/slot me 10M llogari në 2 bërthama |
 
+| Auditimi (15 nëntor 2026) | ✅ v0.2.0: të gjitha gjetjet (2 kritike, 3 të larta, 8 mesatare, 9 të ulëta, 6 info) të rregulluara dhe të testuara: [`docs/AUDIT-FIXES.md`](docs/AUDIT-FIXES.md) · ⏳ ri-auditimi |
+
 Numrat e plotë janë te [`docs/RAPORTI.md`](docs/RAPORTI.md).
 
 ## Për kuletat: `zilja-verify`
@@ -85,7 +93,9 @@ Pa varësi, 8.7 KB e paketuar, me tipe TypeScript. Shih [`sdk/js/README.md`](sdk
 
 ## Dokumentet
 
-- [`docs/SPEC.md`](docs/SPEC.md): formati i hash-eve, i dëftesës dhe i RPC-së
+- [`docs/SPEC.md`](docs/SPEC.md): formati v2 i hash-eve, i dëftesës, i firmave dhe i RPC-së
+- [`docs/OPERIMI.md`](docs/OPERIMI.md): portet, proxy, ndalimi dhe rindërtimi, firmosja
+- [`docs/AUDIT-FIXES.md`](docs/AUDIT-FIXES.md): çdo gjetje e auditimit → rregullimi → testi
 - [`docs/RAPORTI.md`](docs/RAPORTI.md): numrat e matur, faza pas faze
 - [`docs/SIMD-DRAFT.md`](docs/SIMD-DRAFT.md): drafti i propozimit për protokollin
 
