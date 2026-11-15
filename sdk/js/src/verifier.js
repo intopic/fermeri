@@ -8,6 +8,9 @@
 const subtle = globalThis.crypto.subtle;
 const enc = new TextEncoder();
 const ACCOUNT_DOMAIN = enc.encode("zilja/account/v1");
+const KEY_DOMAIN = enc.encode("zilja/key/v2");
+/** Versioni i formatit të dëftesës (2 = pema mbi tree_key, F-09). */
+export const PROOF_VERSION = 2;
 const EMPTY = new Uint8Array(32);
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -125,6 +128,11 @@ export async function valueHash(account) {
   );
 }
 
+/** Vendi i llogarisë në pemë: SHA256("zilja/key/v2" ‖ pubkey). */
+export async function treeKey(pubkeyB58) {
+  return sha256(concat(KEY_DOMAIN, key32(pubkeyB58)));
+}
+
 /** Lexon formatin binar të dëftesës. */
 export function parseProof(bytes) {
   let p = 0;
@@ -135,7 +143,7 @@ export function parseProof(bytes) {
     return s;
   };
   const version = take(1)[0];
-  if (version !== 1) throw new Error(`version i panjohur ${version}`);
+  if (version !== PROOF_VERSION) throw new Error(`version i panjohur ${version}`);
   const d = take(2);
   const depth = d[0] | (d[1] << 8);
   if (depth > 256) throw new Error("shumë e thellë");
@@ -154,6 +162,8 @@ export function parseProof(bytes) {
 
 async function computeRoot(key, proof) {
   const depth = proof.siblings.length;
+  // Pemë kanonike: kurrë vëlla bosh në fund të rrugës (një dëftesë e vetme për çdo çelës).
+  if (depth > 0 && eq(proof.siblings[depth - 1], EMPTY)) return null;
   let cur;
   if (proof.leaf) {
     if (commonPrefixLen(proof.leaf.key, key) < depth) return null;
@@ -179,7 +189,7 @@ async function computeRoot(key, proof) {
 export async function verifyAccount(rootHex, pubkeyB58, account, proofHex) {
   try {
     const root = hex32(rootHex);
-    const key = key32(pubkeyB58);
+    const key = await treeKey(pubkeyB58);
     const proof = parseProof(hexToBytes(proofHex));
     if (account) {
       if (!proof.leaf || !eq(proof.leaf.key, key)) return "invalid";

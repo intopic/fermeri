@@ -40,8 +40,17 @@ verifiable RPC all need per-account inclusion and exclusion proofs.
 Defined in [`SPEC.md`](SPEC.md):
 
 - `value_hash = SHA256("zilja/account/v1" ‖ lamports ‖ owner ‖ executable ‖ data_len ‖ SHA256(data))`
-- `leaf = SHA256(0x00 ‖ pubkey ‖ value_hash)`, `internal = SHA256(0x01 ‖ left ‖ right)`, `empty = 0^32`
-- A binary sparse Merkle tree keyed by pubkey, in compact canonical form: a subtree holding one account is that leaf. Accounts with zero lamports are absent.
+- `tree_key = SHA256("zilja/key/v2" ‖ pubkey)`
+- `leaf = SHA256(0x00 ‖ tree_key ‖ value_hash)`, `internal = SHA256(0x01 ‖ left ‖ right)`, `empty = 0^32`
+- A binary sparse Merkle tree keyed by `tree_key`, in compact canonical form: a subtree holding one account is that leaf. Accounts with zero lamports are absent. A proof whose last sibling is empty is non-canonical and rejected, so each key has exactly one proof.
+
+Keying by a hash of the pubkey, not the pubkey itself, matters because anyone can fund
+an arbitrary address. With raw pubkeys an attacker can create accounts sharing 255 bits
+with an existing one and force depth-256 paths (about 30× more disk work per update in
+our measurement). With `tree_key`, deepening a path by *k* bits costs 2^k hash work.
+
+`rent_epoch` is excluded, as in Agave's accounts lattice hash: since SIMD-0215 rent is
+no longer collected, so the field no longer describes account state.
 
 Committing `SHA256(data)` rather than `data` keeps proofs small for large
 accounts. The client fetches the data from any source and checks the hash.
@@ -49,8 +58,11 @@ accounts. The client fetches the data from any source and checks the hash.
 ### Commitment
 
 Phase A (no consensus change; implemented in this repo): validators run the
-tree as a Geyser plugin and sign `"zilja/attest/v1" ‖ slot ‖ root` with their
-identity key. Clients check that the signers hold >2/3 of epoch stake.
+tree as a Geyser plugin and sign `"zilja/attest/v2" ‖ genesis_hash ‖ slot ‖ root`.
+The genesis hash binds a signature to one cluster. Signing uses a dedicated key, which the
+identity key authorizes once (`"zilja/authorize/v1" ‖ genesis_hash ‖ signer`). The plugin
+signs only complete trees, only after the chain is re-confirmed on restart, and never two
+roots for one slot (persisted). Clients check that the signers hold >2/3 of epoch stake.
 
 Phase B (this proposal): the Zilja root is mixed into the bank hash, so
 existing votes, or Alpenglow certificates, attest to it with no extra

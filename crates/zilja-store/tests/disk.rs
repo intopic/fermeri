@@ -2,7 +2,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::collections::BTreeMap;
 use zilja_store::{DiskTree, StoreOptions};
 use zilja_tree::{StateTree, Tree, Update};
-use zilja_verifier::{verify_account, AccountMeta, Key, Verdict};
+use zilja_verifier::{verify_tree_key, AccountMeta, Key, Verdict};
 
 fn meta(rng: &mut StdRng) -> AccountMeta {
     let mut owner = [0u8; 32];
@@ -35,7 +35,7 @@ fn check_proof(disk: &DiskTree, mem: &Tree, key: &Key, at: Option<u64>) {
     let (_, root, proof, m) = disk.prove_at(key, at).unwrap();
     assert_eq!(root, mem.root());
     assert_eq!(m.as_ref(), mem.get(key));
-    let v = verify_account(&root, key, m.as_ref(), &proof);
+    let v = verify_tree_key(&root, key, m.as_ref(), &proof);
     assert_eq!(v, if m.is_some() { Verdict::Exists } else { Verdict::DoesNotExist });
     // E njëjta dëftesë si ajo e pemës në RAM.
     assert_eq!(proof, mem.prove(key).0);

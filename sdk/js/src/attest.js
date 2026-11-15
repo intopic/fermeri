@@ -1,16 +1,39 @@
-// Firmat e validatorëve mbi vulën e një sloti: "zilja/attest/v1" ‖ slot LE ‖ root.
+// Firmat e validatorëve, formati v2 (F-10): "zilja/attest/v2" ‖ genesis_hash ‖ slot LE ‖ root.
+// Një çelës i veçantë mund të firmosë, kur identiteti e ka autorizuar me
+// "zilja/authorize/v1" ‖ genesis_hash ‖ signer.
 // Përdor Ed25519 të WebCrypto (Node ≥ 22, Chrome/Edge ≥ 137, Firefox ≥ 129, Safari ≥ 17).
 import { b58decode, hexToBytes } from "./verifier.js";
 
 const enc = new TextEncoder();
-const ATTEST_DOMAIN = enc.encode("zilja/attest/v1");
+const ATTEST_DOMAIN = enc.encode("zilja/attest/v2");
+const AUTHORIZE_DOMAIN = enc.encode("zilja/authorize/v1");
+
+function hex32(h) {
+  const b = hexToBytes(h);
+  if (b.length !== 32) throw new Error("duhen 32 bajt");
+  return b;
+}
 
 /** Mesazhi që firmos validatori për vulën e slotit. */
-export function attestMessage(slot, rootHex) {
-  const m = new Uint8Array(ATTEST_DOMAIN.length + 8 + 32);
+export function attestMessage(genesisHex, slot, rootHex) {
+  const d = ATTEST_DOMAIN.length;
+  const m = new Uint8Array(d + 32 + 8 + 32);
   m.set(ATTEST_DOMAIN, 0);
-  new DataView(m.buffer).setBigUint64(ATTEST_DOMAIN.length, BigInt(slot), true);
-  m.set(hexToBytes(rootHex), ATTEST_DOMAIN.length + 8);
+  m.set(hex32(genesisHex), d);
+  new DataView(m.buffer).setBigUint64(d + 32, BigInt(slot), true);
+  m.set(hex32(rootHex), d + 40);
+  return m;
+}
+
+/** Mesazhi me të cilin identiteti autorizon çelësin që firmos. */
+export function authorizeMessage(genesisHex, signerB58) {
+  const d = AUTHORIZE_DOMAIN.length;
+  const m = new Uint8Array(d + 64);
+  m.set(AUTHORIZE_DOMAIN, 0);
+  m.set(hex32(genesisHex), d);
+  const s = b58decode(signerB58);
+  if (s.length !== 32) throw new Error("signer duhet 32 bajt");
+  m.set(s, d + 32);
   return m;
 }
 
@@ -38,15 +61,35 @@ export function stakeTableFromVoteAccounts(result) {
   return t;
 }
 
+/** A është kjo firmë e vlefshme për (genesis, slot, root)? */
+export async function verifyAttestation(genesisHex, slot, rootHex, a) {
+  try {
+    const id = b58decode(a.validator);
+    const sig = hexToBytes(a.signature);
+    if (id.length !== 32 || sig.length !== 64) return false;
+    let signer = id;
+    if (a.signer != null && a.signer !== a.validator) {
+      if (a.authorization == null) return false;
+      const auth = hexToBytes(a.authorization);
+      if (auth.length !== 64 || !(await ed25519Verify(id, auth, authorizeMessage(genesisHex, a.signer)))) return false;
+      signer = b58decode(a.signer);
+      if (signer.length !== 32) return false;
+    }
+    return await ed25519Verify(signer, sig, attestMessage(genesisHex, slot, rootHex));
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Kontrollon firmat mbi (slot, root) dhe kuorumin > 2/3 të stake-ut.
+ * Kontrollon firmat mbi (genesis, slot, root) dhe kuorumin > 2/3 të stake-ut.
+ * @param {string} genesisHex hash-i i genesis-it të zinxhirit që pret klienti
  * @param {number|bigint} slot
  * @param {string} rootHex
- * @param {{validator: string, signature: string}[]} atts validator në base58, firma në hex
+ * @param {{validator: string, signer?: string|null, authorization?: string|null, signature: string}[]} atts
  * @param {Map<string, bigint>} table
  */
-export async function verifyQuorum(slot, rootHex, atts, table) {
-  const msg = attestMessage(slot, rootHex);
+export async function verifyQuorum(genesisHex, slot, rootHex, atts, table) {
   const seen = new Set();
   let attested = 0n;
   let valid = 0;
@@ -62,15 +105,7 @@ export async function verifyQuorum(slot, rootHex, atts, table) {
       rejected++;
       continue;
     }
-    let ok = false;
-    try {
-      const pk = b58decode(a.validator);
-      const sig = hexToBytes(a.signature);
-      ok = pk.length === 32 && sig.length === 64 && (await ed25519Verify(pk, sig, msg));
-    } catch {
-      ok = false;
-    }
-    if (ok) {
+    if (await verifyAttestation(genesisHex, slot, rootHex, a)) {
       valid++;
       attested += stake;
     } else {

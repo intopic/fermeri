@@ -1,5 +1,5 @@
 // ZiljaClient: një thirrje e vetme për kuletat: verifyAccount(pubkey).
-import { verifyAccount, dataMatches, normalizeAccount } from "./verifier.js";
+import { verifyAccount, dataMatches, normalizeAccount, b58decode, bytesToHex } from "./verifier.js";
 import { verifyQuorum, stakeTableFromVoteAccounts } from "./attest.js";
 
 /** Nivelet e besimit te root-i, nga më i dobëti te më i forti. */
@@ -17,6 +17,8 @@ export class ZiljaClient {
    * @param {string} [o.solanaRpc] RPC Solana për të krahasuar të dhënat dhe për tabelën e stake-ut
    * @param {number} [o.minAgree] sa zile duhet të japin të njëjtin root për nivelin "agreement" (parazgjedhja: 2)
    * @param {boolean} [o.quorum] kontrollo edhe firmat e validatorëve (kërkon solanaRpc)
+   * @param {string} [o.genesisHash] hash-i i genesis-it (base58 ose hex) i zinxhirit që pret kuleta;
+   *   pa të, merret nga solanaRpc (dhe i besohet asaj)
    * @param {"single"|"agreement"|"quorum"} [o.minTrust] nën këtë nivel, `ok` del false (parazgjedhja: "agreement", L-01)
    * @param {number} [o.timeoutMs] parazgjedhja: 10000
    * @param {typeof fetch} [o.fetch]
@@ -28,6 +30,7 @@ export class ZiljaClient {
     this.solanaRpc = o.solanaRpc;
     this.minAgree = o.minAgree ?? 2;
     this.quorum = o.quorum ?? false;
+    this.genesisHash = o.genesisHash;
     this.minTrust = o.minTrust ?? "agreement";
     this.timeoutMs = o.timeoutMs ?? 10_000;
     this.fetch = o.fetch ?? globalThis.fetch.bind(globalThis);
@@ -138,11 +141,17 @@ export class ZiljaClient {
       try {
         const va = await this.rpc(this.solanaRpc, "getVoteAccounts", [{ commitment: "finalized" }]);
         const table = stakeTableFromVoteAccounts(va);
+        let g = this.genesisHash;
+        if (g == null) {
+          g = await this.rpc(this.solanaRpc, "getGenesisHash");
+          warnings.push("hash-i i genesis-it u mor nga solanaRpc; jepe me genesisHash për ta fiksuar");
+        }
+        const genesisHex = /^[0-9a-fA-F]{64}$/.test(g) ? g.toLowerCase() : bytesToHex(b58decode(g));
         const got = await Promise.allSettled(this.endpoints.map((ep) => this.rpc(ep, "getZiljaAttestation", [slot])));
         const atts = got
           .filter((a) => a.status === "fulfilled" && a.value?.root === r.root && a.value?.slot === slot)
-          .map((a) => ({ validator: a.value.validator, signature: a.value.signature }));
-        const q = await verifyQuorum(slot, r.root, atts, table);
+          .map((a) => ({ validator: a.value.validator, signer: a.value.signer, authorization: a.value.authorization, signature: a.value.signature }));
+        const q = await verifyQuorum(genesisHex, slot, r.root, atts, table);
         const pct = q.totalStake > 0n ? Number((q.attestedStake * 10000n) / q.totalStake) / 100 : 0;
         result.quorum = { reached: q.reached, stakePercent: pct, validSignatures: q.validSignatures };
         if (q.reached) result.trust = "quorum";

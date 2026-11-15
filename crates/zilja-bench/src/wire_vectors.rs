@@ -56,7 +56,7 @@ fn expect(resp: &Value) -> &'static str {
 
 fn main() {
     let mut rng = StdRng::seed_from_u64(1115);
-    let mut svc = Service::start(None).unwrap();
+    let mut svc = Service::start_opts(Default::default()).unwrap();
     let mut keys = Vec::new();
     for i in 0..60u64 {
         let k: Key = rng.gen();

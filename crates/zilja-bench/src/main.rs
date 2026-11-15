@@ -11,7 +11,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde_json::json;
 use std::time::Instant;
 use zilja_tree::{Tree, Update};
-use zilja_verifier::{verify_account, AccountMeta, Key, Proof, Verdict};
+use zilja_verifier::{verify_tree_key, AccountMeta, Key, Proof, Verdict};
 
 fn rss_mb() -> f64 {
     std::fs::read_to_string("/proc/self/status")
@@ -99,7 +99,7 @@ fn main() {
         let m = m.cloned();
         let t = Instant::now();
         let p2 = Proof::from_bytes(&bytes).unwrap();
-        let v = verify_account(&root, &k, m.as_ref(), &p2);
+        let v = verify_tree_key(&root, &k, m.as_ref(), &p2);
         verify_us.push(t.elapsed().as_secs_f64() * 1e6);
         if matches!(v, Verdict::Exists | Verdict::DoesNotExist) {
             ok += 1;

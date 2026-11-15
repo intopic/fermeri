@@ -4824,6 +4824,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bs58",
+ "ed25519-dalek",
  "hex",
  "serde_json",
  "ureq",
@@ -4854,6 +4855,8 @@ name = "zilja-plugin"
 version = "0.1.0"
 dependencies = [
  "agave-geyser-plugin-interface",
+ "bs58",
+ "hex",
  "log",
  "serde",
  "serde_json",

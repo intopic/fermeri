@@ -440,6 +440,8 @@ pub struct DiskTree {
     /// Matje: sa nyje u lexuan nga disku në slotin e fundit.
     pub last_disk_reads: AtomicU64,
     durable: bool,
+    sync_every: u64,
+    commits: u64,
     /// Faqet e lexuara paraprakisht për slotin që po zbatohet.
     prefetched: HashMap<PKey, Option<(u64, Page)>>,
     /// Testet (Safer-6): kur > 0, çdo lexim i n-të i një faqeje "dështon".
@@ -458,14 +460,19 @@ pub struct StoreOptions {
     /// Nivelet në RAM. Vlen vetëm kur krijohet disku; më pas lexohet nga gjendja.
     pub cache_depth: u16,
     pub block_cache_mb: usize,
+    /// `true` = me WAL: çdo slot i shkruar i mbijeton vrasjes së procesit (SIGKILL).
     /// `false` = pa WAL: më shpejt, por pas një rrëzimi mund të humbasin slotet e fundit
     /// (gjendja mbetet e rregullt sepse `atomic_flush` ruan të gjitha CF-të bashkë).
     pub durable: bool,
+    /// I-01: WAL-i shkruhet, por sistemi operativ e mban në RAM derisa ta çojë në disk. Pa `sync`,
+    /// ikja e rrymës mund të humbasë slotet e fundit (jo konsistencën: zilja vazhdon nga një slot
+    /// më i hershëm dhe validatori i ripërsërit). `sync_every = N` bën fsync çdo N slote; 0 = kurrë.
+    pub sync_every: u64,
 }
 
 impl Default for StoreOptions {
     fn default() -> Self {
-        StoreOptions { history: DEFAULT_HISTORY, cache_depth: CACHE_DEPTH, block_cache_mb: 512, durable: true }
+        StoreOptions { history: DEFAULT_HISTORY, cache_depth: CACHE_DEPTH, block_cache_mb: 512, durable: true, sync_every: 0 }
     }
 }
 
@@ -551,6 +558,8 @@ impl DiskTree {
             bucket_target: BUCKET_TARGET,
             last_disk_reads: AtomicU64::new(0),
             durable: o.durable,
+            sync_every: o.sync_every,
+            commits: 0,
             prefetched: HashMap::default(),
             fault_every: AtomicU64::new(0),
             fault_count: AtomicU64::new(0),
@@ -1071,7 +1080,14 @@ impl DiskTree {
 
     fn commit_state(&mut self, batch: &mut WriteBatch, st: State) -> Result<(), String> {
         batch.put_cf(self.cf(CF_META), STATE_KEY, st.enc());
-        self.write(std::mem::take(batch))?;
+        self.commits += 1;
+        if self.sync_every > 0 && self.durable && self.commits % self.sync_every == 0 {
+            let mut wo = WriteOptions::default();
+            wo.set_sync(true);
+            self.db.write_opt(std::mem::take(batch), &wo).map_err(|e| e.to_string())?;
+        } else {
+            self.write(std::mem::take(batch))?;
+        }
         self.state = Some(st);
         Ok(())
     }

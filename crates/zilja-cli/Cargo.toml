@@ -13,8 +13,13 @@ path = "src/main.rs"
 name = "zilja-quorum"
 path = "src/quorum.rs"
 
+[[bin]]
+name = "zilja-authorize"
+path = "src/authorize.rs"
+
 [dependencies]
 zilja-verifier = { workspace = true, features = ["attest"] }
+ed25519-dalek = { workspace = true }
 serde_json = { workspace = true }
 bs58 = { workspace = true }
 hex = { workspace = true }

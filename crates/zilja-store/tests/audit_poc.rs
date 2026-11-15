@@ -4,7 +4,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::sync::atomic::Ordering;
 use zilja_store::{DiskTree, StoreOptions};
 use zilja_tree::{StateTree, Update};
-use zilja_verifier::{verify_account, AccountMeta, Key, Verdict};
+use zilja_verifier::{verify_tree_key, AccountMeta, Key, Verdict};
 
 fn meta(rng: &mut StdRng) -> AccountMeta {
     AccountMeta { lamports: rng.gen_range(1..1 << 40), data_len: 0, data_hash: rng.gen(), ..Default::default() }
@@ -55,7 +55,7 @@ fn f04_unreadable_page_must_not_become_empty_subtree() {
     // Faza 3: apply_slot kthen Result; gabimi (ose panic) është sjellja e pritur.
     if let Ok(Ok(root)) = res {
         let (_, _, proof, m) = t.prove_at(&bystander, None).unwrap();
-        let excluded = m.is_none() && verify_account(&root, &bystander, None, &proof) == Verdict::DoesNotExist;
+        let excluded = m.is_none() && verify_tree_key(&root, &bystander, None, &proof) == Verdict::DoesNotExist;
         assert!(
             !excluded,
             "account with {} lamports was never deleted, yet the node now serves a VALID exclusion proof for it (len {} -> {})",
@@ -71,18 +71,21 @@ fn f04_unreadable_page_must_not_become_empty_subtree() {
 /// Keys are raw pubkeys, and anyone can fund an
 /// arbitrary 32-byte address, so an attacker can create "twins" that share 255 bits
 /// with an existing key. Each twin pair costs one page per 4 levels down to depth 256.
+///
+/// Faza 4: pema renditet sipas `tree_key(pubkey)`, si në shërbim. Binjakët e pubkey-it bien
+/// në vende të rastësishme, ndaj puna duhet të jetë si për ndryshimet e zakonshme.
 #[test]
-#[ignore]
 fn f09_deep_twin_keys_amplify_disk_work() {
+    let tk = |k: &Key| zilja_verifier::tree_key(k);
     let dir = tempfile::tempdir().unwrap();
     let mut rng = StdRng::seed_from_u64(2);
     let keys: Vec<Key> = (0..50_000).map(|_| rng.gen()).collect();
     let mut t = DiskTree::open_opts(dir.path(), StoreOptions { cache_depth: 8, history: 32, ..Default::default() }).unwrap();
-    t.stage_snapshot(1, keys.iter().map(|k| (*k, Some(meta(&mut rng)))).collect()).unwrap();
+    t.stage_snapshot(1, keys.iter().map(|k| (tk(k), Some(meta(&mut rng)))).collect()).unwrap();
     t.finish_snapshot(1, true).unwrap();
     let n = 500;
     let run = |t: &mut DiskTree, slot: u64, ks: &[Key], rng: &mut StdRng| {
-        let ups: Vec<Update> = ks.iter().map(|k| (*k, Some(meta(rng)))).collect();
+        let ups: Vec<Update> = ks.iter().map(|k| (tk(k), Some(meta(rng)))).collect();
         let t0 = std::time::Instant::now();
         t.apply_slot(slot, ups, None).unwrap();
         (t0.elapsed(), t.last_disk_reads.load(Ordering::Relaxed))
@@ -91,11 +94,13 @@ fn f09_deep_twin_keys_amplify_disk_work() {
     let twins: Vec<Key> = keys[n..2 * n].iter().map(|k| { let mut x = *k; x[31] ^= 1; x }).collect();
     let (create_t, create_reads) = run(&mut t, 3, &twins, &mut rng);
     let (upd_t, upd_reads) = run(&mut t, 4, &twins, &mut rng);
-    let (_, _, proof, _) = t.prove_at(&twins[0], None).unwrap();
+    let (_, _, proof, _) = t.prove_at(&tk(&twins[0]), None).unwrap();
     println!("F-09 {n} ordinary updates : {normal_t:?}, {normal_reads} page reads");
     println!("F-09 {n} twin creations   : {create_t:?}, {create_reads} page reads");
     println!("F-09 {n} twin updates     : {upd_t:?}, {upd_reads} page reads, proof depth {}", proof.siblings.len());
     t.verify_integrity().unwrap();
+    assert!(create_reads <= normal_reads * 3 && upd_reads <= normal_reads * 3, "binjakët ende shtojnë punë");
+    assert!(proof.siblings.len() < 64, "rrugë e thellë: {}", proof.siblings.len());
 }
 
 /// F-09 (stack probe). Depth-256 paths recurse 256 frames in `apply`/`build`. Runs on a

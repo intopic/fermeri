@@ -38,7 +38,7 @@ fi
 export ZILJA_ALLOW_SMALL_CACHE_DEPTH=1
 cat > "$WORK/zilja.json" <<EOF
 { "libpath": "$LIB", "bind": "127.0.0.1:7799", "metrics_bind": "127.0.0.1:7798", "roots_log": "$WORK/roots.log",
-  "attest_keypair": "$LEDGER/validator-keypair.json" $DBCONF }
+  "attest_keypair": "$LEDGER/validator-keypair.json", "genesis_path": "$LEDGER/genesis.bin" $DBCONF }
 EOF
 cat "$WORK/zilja.json"
 
@@ -155,6 +155,22 @@ stop
 S1=$(snap_slot)
 echo "   llogaria e provës F-01: $F01, 0.123 SOL në slotin $F01_SLOT (i finalizuar); snapshot-i i fundit: $S1"
 [ "$F01_SLOT" -gt "$S1" ] || echo "   ⚠️ snapshot-i e mbulon transferimin: hapi 4b nuk e provon F-01 këtë herë"
+# F-10: nga kjo nisje firmos një çelës i veçantë, i autorizuar një herë nga identiteti.
+GENESIS=$(solana -u "$RPC" genesis-hash 2>/dev/null || true)
+[ -n "$GENESIS" ] || GENESIS=$(python3 -c 'import hashlib,sys
+d=hashlib.sha256(open(sys.argv[1],"rb").read()).digest();A="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";n=int.from_bytes(d,"big");s=""
+while n: n,r=divmod(n,58); s=A[r]+s
+print(s)' "$LEDGER/genesis.bin")
+solana-keygen new --force --no-bip39-passphrase -s -o "$WORK/attest-signer.json" >/dev/null
+"$ROOT/target/release/zilja-authorize" "$LEDGER/validator-keypair.json" "$WORK/attest-signer.json" "$GENESIS" > "$WORK/zilja-authorization.json"
+python3 - "$WORK/zilja.json" "$WORK" <<'PY'
+import json, sys
+p, w = sys.argv[1], sys.argv[2]
+c = json.load(open(p))
+c["attest_keypair"] = f"{w}/attest-signer.json"
+c["attest_authorization"] = f"{w}/zilja-authorization.json"
+json.dump(c, open(p, "w"), indent=1)
+PY
 sleep 2
 start
 if [ "${ZILJA_DB:-0}" = "1" ]; then
@@ -232,12 +248,32 @@ else
 fi
 fi
 echo "== Hapi 6: pleqtë firmosin ziles (kuorumi > 2/3 i stake-ut nga getVoteAccounts)"
-"$ROOT/target/release/zilja-quorum" "$RPC" "$ZILJA"
-echo "-- SDK me kuorum (minTrust=quorum):"
-node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --rpc "$RPC" --quorum --min-trust quorum
+ATT=$(curl -s --noproxy '*' -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getZiljaAttestation"}' "$ZILJA")
+if [ "$(metric complete)" = "1" ]; then
+  echo "$ATT" | python3 -c 'import json,sys; r=json.load(sys.stdin)["result"]; g=sys.argv[1]
+assert r["genesis"]==g, (r["genesis"], g); assert r["signer"] and r["authorization"], r
+print("   firma v2: genesis", g[:8]+"…, çelës i veçantë", r["signer"][:8]+"…")' "$GENESIS" || { echo "GABIM: firma v2"; exit 1; }
+  "$ROOT/target/release/zilja-quorum" "$RPC" "$ZILJA" --genesis "$GENESIS"
+  if "$ROOT/target/release/zilja-quorum" "$RPC" "$ZILJA" --genesis 11111111111111111111111111111111 >/dev/null; then
+    echo "GABIM: kuorumi u pranua për një genesis tjetër"; exit 1
+  fi
+  echo "   ✅ firmat s'vlejnë për një zinxhir tjetër (F-10)"
+  echo "-- SDK me kuorum (minTrust=quorum):"
+  node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --rpc "$RPC" --quorum --min-trust quorum
+  [ "$(metric attest_refused_total)" = "0" ] || { echo "GABIM: firma të refuzuara pas rinisjes (root tjetër për të njëjtin slot?)"; exit 1; }
+else
+  echo "$ATT" | grep -q "s'firmos" || { echo "GABIM: pema jo e plotë s'duhet të firmosë: $ATT"; exit 1; }
+  echo "   ✅ pema jo e plotë (nisur nga genesis) nuk firmos (F-10)"
+fi
 if [ "${ZILJA_DB:-0}" = "1" ]; then
   echo "== Hapi 7 (disk): zinxhir krejt i ri (--reset) me pemën e vjetër në disk → zilja duhet të ndalojë"
   stop
+  # Autorizimi i çelësit lidhet me genesis-in; zinxhiri i ri ka genesis tjetër, ndaj kthehu te identiteti.
+  python3 - "$WORK/zilja.json" "$LEDGER" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1])); c.pop("attest_authorization", None); c["attest_keypair"] = sys.argv[2] + "/validator-keypair.json"
+json.dump(c, open(sys.argv[1], "w"), indent=1)
+PY
   sleep 2
   start --reset
   for _ in $(seq 1 240); do [ "$(metric broken)" = "1" ] && break; sleep 1; done

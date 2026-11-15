@@ -8,7 +8,8 @@
 
 use crate::tracker::{Event, Output, Slot, Tracker};
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
-use ed25519_dalek::{Signer, SigningKey};
+use crate::attester::{AttestOptions, Attester, AttesterInfo};
+use ed25519_dalek::SigningKey;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -18,8 +19,7 @@ use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::Instant;
 use zilja_tree::{MemTree, StateTree};
-use zilja_verifier::attest::attest_message;
-use zilja_verifier::Hash;
+use zilja_verifier::{tree_key, Hash};
 
 /// Sa slote të fundit mbahen me firmë (që disa zile të krahasohen në të njëjtin slot).
 pub const ATTEST_HISTORY: usize = 1024;
@@ -49,8 +49,8 @@ pub struct State {
     pub complete: bool,
     /// Arsyeja pse zilja ndaloi (boshllëk, zinxhir tjetër), nëse ndaloi.
     pub broken: Option<String>,
-    /// Çelësi publik i validatorit që firmos (nëse është konfiguruar).
-    pub attester: Option<[u8; 32]>,
+    /// Kush firmos (nëse është konfiguruar).
+    pub attester: Option<AttesterInfo>,
     /// Root-et e firmosura të sloteve të fundit.
     pub attestations: BTreeMap<Slot, SignedRoot>,
     /// Root-et e sloteve të fundit të rrënjosur (ROOT_HISTORY), për `getZiljaRoot [slot]` dhe etiketat e dëftesave.
@@ -96,6 +96,8 @@ pub struct Metrics {
     pub provable_from_slot: AtomicU64,
     pub resume_verified: AtomicU64,
     pub ambiguous_banks: AtomicU64,
+    /// Firmat e refuzuara (do të ishin firmosje e dyfishtë).
+    pub attest_refused: AtomicU64,
     /// 1 kur pema është gati dhe zilja nuk ka ndaluar (lexohet nga /health pa kyçur gjendjen).
     pub ready: AtomicU64,
     /// Koha (sekonda Unix) e root-it të fundit.
@@ -117,7 +119,7 @@ impl Metrics {
         // I-03: numrat që vetëm rriten janë `counter`, të tjerët `gauge`.
         const COUNTERS: &[&str] = &[
             "batches", "updates_applied", "total_apply_us", "events_received", "missing_parents",
-            "abandoned_banks", "dead_banks", "proofs_served", "ambiguous_banks",
+            "abandoned_banks", "dead_banks", "proofs_served", "ambiguous_banks", "attest_refused",
         ];
         let g = |n: &str, h: &str, v: &AtomicU64| {
             let t = if COUNTERS.contains(&n) { "counter" } else { "gauge" };
@@ -132,6 +134,7 @@ impl Metrics {
         [
             age,
             g("ready", "1 kur zilja jep dëftesa", &self.ready),
+            g("attest_refused", "Firmat e refuzuara (do të ishin firmosje e dyfishtë)", &self.attest_refused),
             g("last_rooted_slot", "Sloti i fundit i aplikuar në pemë", &self.last_rooted_slot),
             g("accounts", "Numri i llogarive në pemë", &self.accounts),
             g("startup_accounts", "Llogaritë nga snapshot-i", &self.startup_accounts),
@@ -171,8 +174,8 @@ pub struct Shared {
 pub struct Options {
     /// Skedari ku shkruhet `slot root_hex` për çdo slot të rrënjosur.
     pub roots_log: Option<PathBuf>,
-    /// Çelësi që firmos çdo root (Faza 4).
-    pub signer: Option<SigningKey>,
+    /// Firmosja e root-eve (F-10).
+    pub attest: Option<AttestOptions>,
     /// Pema: `None` = në RAM.
     pub tree: Option<Box<dyn StateTree>>,
 }
@@ -186,22 +189,24 @@ pub struct Service {
 }
 
 impl Service {
-    pub fn start(roots_log: Option<PathBuf>) -> std::io::Result<Self> {
-        Self::start_opts(Options { roots_log, ..Default::default() })
-    }
-
-    pub fn start_with(roots_log: Option<PathBuf>, signer: Option<SigningKey>) -> std::io::Result<Self> {
-        Self::start_opts(Options { roots_log, signer, ..Default::default() })
-    }
-
     pub fn start_opts(opts: Options) -> std::io::Result<Self> {
         let shared = Shared::default();
         let mut tracker = Tracker::new();
+        let attester = match opts.attest {
+            Some(a) => Some(Attester::open(a).map_err(std::io::Error::other)?),
+            None => None,
+        };
         let tree = opts.tree.unwrap_or_else(|| Box::new(MemTree::new()));
         let resume = tree.resume_point();
         {
             let mut st = shared.state.write().unwrap();
-            st.attester = opts.signer.as_ref().map(|k| k.verifying_key().to_bytes());
+            if let Some(a) = &attester {
+                st.attester = Some(a.info());
+                // I-02: firmat e fundit nga skedari, gati menjëherë pas rinisjes.
+                for (slot, root, signature) in a.recent(ATTEST_HISTORY) {
+                    st.attestations.insert(slot, SignedRoot { root, signature });
+                }
+            }
             st.tree = tree;
             if let Some(r) = &resume {
                 tracker.resume(r.slot, r.fingerprint, r.complete);
@@ -221,11 +226,11 @@ impl Service {
         }
         let (tx, rx) = bounded(QUEUE_CAP);
         let log = match opts.roots_log {
-            Some(p) => Some(OpenOptions::new().create(true).append(true).open(p)?),
+            Some(p) => Some(RootsLog::open(p)?),
             None => None,
         };
         let s2 = shared.clone();
-        let signer = opts.signer;
+        let signer = attester;
         let worker = std::thread::Builder::new()
             .name("zilja-worker".into())
             .stack_size(WORKER_STACK)
@@ -276,18 +281,27 @@ impl Drop for Service {
     }
 }
 
-fn sign_root(st: &mut State, signer: &Option<SigningKey>, slot: Slot, root: Hash) {
+/// Ruan root-in e slotit dhe e firmos kur lejohet: vetëm një pemë e plotë firmoset (F-10).
+/// Pas rinisjes, tracker-i nuk lëshon asnjë Rooted pa e konfirmuar zinxhirin.
+fn sign_root(st: &mut State, signer: &mut Option<Attester>, m: &Metrics, slot: Slot, root: Hash) {
     st.roots.insert(slot, root);
     while st.roots.len() > ROOT_HISTORY {
         st.roots.pop_first();
     }
-    if let Some(k) = signer {
-        let signature = k.sign(&attest_message(slot, &root)).to_bytes();
-        st.attestations.insert(slot, SignedRoot { root, signature });
-        while st.attestations.len() > ATTEST_HISTORY {
-            st.attestations.pop_first();
-        }
+    let Some(a) = signer else { return };
+    if !st.complete {
+        return;
     }
+    match a.sign(slot, &root) {
+        Ok(signature) => {
+            st.attestations.insert(slot, SignedRoot { root, signature });
+            while st.attestations.len() > ATTEST_HISTORY {
+                st.attestations.pop_first();
+            }
+        }
+        Err(e) => log::error!("zilja: firma u refuzua: {e}"),
+    }
+    m.attest_refused.store(a.refused, Ordering::Relaxed);
 }
 
 /// Lexon një keypair Solana (JSON me 64 numra, si `validator-keypair.json`).
@@ -326,7 +340,7 @@ fn halt(shared: &Shared, tracker: &mut Tracker, why: String) {
     }
 }
 
-fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signer: Option<SigningKey>, mut tracker: Tracker) {
+fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, mut signer: Option<Attester>, mut tracker: Tracker) {
     let m = &shared.metrics;
     let mut staged_total = 0u64;
     for ev in rx.iter() {
@@ -342,6 +356,7 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
         // Snapshot-i kalon te pema me copa, që të mos mbahet i gjithi në RAM.
         if let Some(chunk) = tracker.take_startup_chunk(SNAPSHOT_CHUNK) {
             staged_total += chunk.len() as u64;
+            let chunk: Vec<(Slot, zilja_tree::Update)> = chunk.into_iter().map(|(s, (k, m))| (s, (tree_key(&k), m))).collect();
             let r = stage_by_slot(&mut *shared.state.write().unwrap().tree, chunk);
             if let Err(e) = r {
                 halt(&shared, &mut tracker, e);
@@ -351,6 +366,7 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
         for out in outs {
             match out {
                 Output::Startup { slot, accounts } => {
+                    let accounts: Vec<(Slot, zilja_tree::Update)> = accounts.into_iter().map(|(s, (k, m))| (s, (tree_key(&k), m))).collect();
                     let n = staged_total + accounts.len() as u64;
                     let t0 = Instant::now();
                     let complete = tracker.complete();
@@ -361,7 +377,7 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
                             st.slot = slot;
                             st.ready = true;
                             st.complete = complete;
-                            sign_root(&mut st, &signer, slot, root);
+                            sign_root(&mut st, &mut signer, m, slot, root);
                             update_range(&st, m);
                             (root, st.tree.len())
                         })
@@ -386,6 +402,8 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
                     write_root(&mut log, slot, &root);
                 }
                 Output::Rooted { slot, slots_in_batch: _, updates, fingerprint } => {
+                    // F-09: pema renditet sipas tree_key, jo sipas pubkey-it.
+                    let updates: Vec<zilja_tree::Update> = updates.into_iter().map(|(k, m)| (tree_key(&k), m)).collect();
                     let n = updates.len() as u64;
                     let t0 = Instant::now();
                     let res = {
@@ -393,7 +411,7 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<File>, signe
                         st.tree.apply_slot(slot, updates, fingerprint).map(|root| {
                             st.slot = slot;
                             st.ready = true;
-                            sign_root(&mut st, &signer, slot, root);
+                            sign_root(&mut st, &mut signer, m, slot, root);
                             update_range(&st, m);
                             (root, st.tree.len())
                         })
@@ -445,8 +463,36 @@ fn stage_by_slot(tree: &mut dyn StateTree, chunk: Vec<(Slot, zilja_tree::Update)
     Ok(())
 }
 
-fn write_root(log: &mut Option<File>, slot: Slot, root: &Hash) {
-    if let Some(f) = log {
-        let _ = writeln!(f, "{slot} {}", hex::encode(root));
+/// `roots.log` me rrotullim (I-02): mbi 64 MB bëhet `roots.log.1` dhe nis një i ri.
+pub struct RootsLog {
+    path: PathBuf,
+    file: File,
+    bytes: u64,
+}
+
+const ROOTS_LOG_MAX: u64 = 64 << 20;
+
+impl RootsLog {
+    fn open(path: PathBuf) -> std::io::Result<Self> {
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let bytes = file.metadata()?.len();
+        Ok(RootsLog { path, file, bytes })
+    }
+}
+
+fn write_root(log: &mut Option<RootsLog>, slot: Slot, root: &Hash) {
+    let Some(l) = log else { return };
+    let line = format!("{slot} {}\n", hex::encode(root));
+    if l.bytes + line.len() as u64 > ROOTS_LOG_MAX {
+        let old = l.path.with_extension("log.1");
+        if std::fs::rename(&l.path, &old).is_ok() {
+            if let Ok(f) = OpenOptions::new().create(true).append(true).open(&l.path) {
+                l.file = f;
+                l.bytes = 0;
+            }
+        }
+    }
+    if l.file.write_all(line.as_bytes()).is_ok() {
+        l.bytes += line.len() as u64;
     }
 }

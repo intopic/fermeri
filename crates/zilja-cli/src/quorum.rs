@@ -1,8 +1,10 @@
 //! `zilja-quorum`: a e kanë firmosur pleqtë ziles?
 //!
 //! ```text
-//! zilja-quorum <SOLANA_RPC_URL> <ZILJA_URL> [ZILJA_URL ...]
+//! zilja-quorum <SOLANA_RPC_URL> <ZILJA_URL> [ZILJA_URL ...] [--genesis <hash base58>]
 //! ```
+//!
+//! Pa `--genesis`, hash-i i genesis-it merret nga `getGenesisHash` i RPC-së.
 //!
 //! 1. Merr tabelën e stake-ut nga `getVoteAccounts` (sot nga RPC; në versionin e
 //!    protokollit, nga vetë zinxhiri).
@@ -38,7 +40,12 @@ fn b58_32(s: &str) -> Result<[u8; 32], String> {
 }
 
 fn run() -> Result<bool, String> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let genesis_arg = args.iter().position(|a| a == "--genesis").map(|i| {
+        let v = args.get(i + 1).cloned().unwrap_or_default();
+        args.drain(i..(i + 2).min(args.len()));
+        v
+    });
     if args.len() < 2 {
         return Err("përdorimi: zilja-quorum <SOLANA_RPC_URL> <ZILJA_URL> [ZILJA_URL ...]".into());
     }
@@ -53,6 +60,12 @@ fn run() -> Result<bool, String> {
         }
     }
     let table = StakeTable { entries: stakes.into_iter().collect() };
+    let genesis_b58 = match genesis_arg {
+        Some(g) => g,
+        None => rpc(sol, "getGenesisHash", json!([]))?.as_str().ok_or("getGenesisHash")?.to_string(),
+    };
+    let genesis = b58_32(&genesis_b58)?;
+    println!("genesis: {genesis_b58}");
     println!("stake total: {} lamports, {} validatorë", table.total(), table.entries.len());
 
     // Sloti i përbashkët: më i vogli nga slotet e fundit të firmosura.
@@ -71,9 +84,22 @@ fn run() -> Result<bool, String> {
             .map_err(|e| e.to_string())?
             .try_into()
             .map_err(|_| "firma duhet 64 bajt")?;
+        let signer = match a["signer"].as_str() {
+            Some(s) => Some(b58_32(s)?),
+            None => None,
+        };
+        let authorization = match a["authorization"].as_str() {
+            Some(h) => Some(hex::decode(h).map_err(|e| e.to_string())?.try_into().map_err(|_| "autorizimi duhet 64 bajt")?),
+            None => None,
+        };
         let root = a["root"].as_str().ok_or("root")?.to_string();
-        println!("  {z}: validator {} → root {}", a["validator"].as_str().unwrap(), &root[..16]);
-        by_root.entry(root).or_default().push(Attestation { validator, signature });
+        println!(
+            "  {z}: validator {}{} → root {}",
+            a["validator"].as_str().unwrap(),
+            if signer.is_some() { " (çelës i veçantë, i autorizuar)" } else { "" },
+            &root[..16]
+        );
+        by_root.entry(root).or_default().push(Attestation { validator, signer, authorization, signature });
     }
     if by_root.len() > 1 {
         println!("⚠️  zilet japin {} root-e të ndryshme për slotin {slot}", by_root.len());
@@ -81,7 +107,7 @@ fn run() -> Result<bool, String> {
     let mut best: Option<(String, zilja_verifier::attest::QuorumReport)> = None;
     for (root_hex, atts) in &by_root {
         let root: [u8; 32] = hex::decode(root_hex).map_err(|e| e.to_string())?.try_into().map_err(|_| "root")?;
-        let rep = verify_quorum(slot, &root, atts, &table);
+        let rep = verify_quorum(&genesis, slot, &root, atts, &table);
         if best.as_ref().is_none_or(|(_, b)| rep.attested_stake > b.attested_stake) {
             best = Some((root_hex.clone(), rep));
         }

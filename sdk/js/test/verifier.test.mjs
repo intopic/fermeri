@@ -18,7 +18,7 @@ const ms = (performance.now() - t0) / cases.length;
 
 // Dëftesë e prishur në mënyra të ndryshme: s'duhet të rrëzojë verifikuesin.
 const c0 = cases.find((c) => c.expect === "exists");
-for (const bad of [c0.proof.slice(0, -2), c0.proof + "00", "02" + c0.proof.slice(2), "zz", ""]) {
+for (const bad of [c0.proof.slice(0, -2), c0.proof + "00", "09" + c0.proof.slice(2), "01" + c0.proof.slice(2), "zz", ""]) {
   if ((await verifyAccount(c0.root, c0.pubkey, c0.account, bad)) !== "invalid") {
     fail++;
     console.error("❌ dëftesa e prishur u pranua");

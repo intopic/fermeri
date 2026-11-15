@@ -6,7 +6,7 @@
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde_json::{json, Value};
 use zilja_tree::Tree;
-use zilja_verifier::{verify_account, AccountMeta, Key, Proof, Verdict};
+use zilja_verifier::{tree_key, verify_account, AccountMeta, Key, Proof, Verdict};
 
 fn acc_json(m: &AccountMeta) -> Value {
     json!({
@@ -46,24 +46,25 @@ fn main() {
         let lamports = if i % 50 == 0 { u64::MAX - i } else { rng.gen_range(1..1u64 << 50) };
         accs.push((k, AccountMeta::from_account(lamports, &owner, i % 7 == 0, &data)));
     }
-    let tree = Tree::from_accounts(accs.iter().map(|(k, m)| (*k, Some(m.clone()))).collect());
+    // Pema mbi tree_key (F-09); vektorët mbajnë pubkey-in, dhe verifikuesit e hashojnë vetë.
+    let tree = Tree::from_accounts(accs.iter().map(|(k, m)| (tree_key(k), Some(m.clone()))).collect());
     let root = tree.root();
     let mut cases = Vec::new();
 
     // Përfshirje e vlefshme.
     for (k, m) in accs.iter().take(40) {
-        let (p, _) = tree.prove(k);
+        let (p, _) = tree.prove(&tree_key(k));
         cases.push(case("inclusion", &root, k, Some(m), &p));
     }
     // Mospërfshirje e vlefshme.
     for _ in 0..20 {
         let k: Key = rng.gen();
-        let (p, _) = tree.prove(&k);
+        let (p, _) = tree.prove(&tree_key(&k));
         cases.push(case("exclusion", &root, &k, None, &p));
     }
     // Sulmet: duhet të dalin "invalid".
     for (k, m) in accs.iter().skip(40).take(10) {
-        let (p, _) = tree.prove(k);
+        let (p, _) = tree.prove(&tree_key(k));
         let mut fake = m.clone();
         fake.lamports = fake.lamports.wrapping_add(1);
         cases.push(case("attack_wrong_lamports", &root, k, Some(&fake), &p));
@@ -86,30 +87,51 @@ fn main() {
             "rast i papritur: {c}"
         );
     }
-    println!("{}", serde_json::to_string_pretty(&json!({"version": 1, "cases": cases, "attest": attest_vectors()})).unwrap());
+    println!("{}", serde_json::to_string_pretty(&json!({"version": 2, "cases": cases, "attest": attest_vectors()})).unwrap());
 }
 
 /// Vektorë për firmat e validatorëve: 10 validatorë me çelësa të njohur dhe stake të ndryshëm.
 fn attest_vectors() -> Value {
     use ed25519_dalek::{Signer, SigningKey};
-    use zilja_verifier::attest::{attest_message, verify_quorum, Attestation, StakeTable};
+    use zilja_verifier::attest::{attest_message, authorize_message, verify_quorum, Attestation, StakeTable};
+    let genesis = zilja_verifier::sha256(b"zilja-vektoret-genesis");
     let keys: Vec<SigningKey> = (1u8..=10).map(|i| SigningKey::from_bytes(&[i; 32])).collect();
     let stakes: Vec<u64> = (1..=10).map(|i| i * 1_000_000_000).collect(); // 1..10 SOL, gjithsej 55
     let table = StakeTable { entries: keys.iter().zip(&stakes).map(|(k, s)| (k.verifying_key().to_bytes(), *s)).collect() };
     let sign = |k: &SigningKey, slot: u64, root: &[u8; 32]| Attestation {
         validator: k.verifying_key().to_bytes(),
-        signature: k.sign(&attest_message(slot, root)).to_bytes(),
+        signer: None,
+        authorization: None,
+        signature: k.sign(&attest_message(&genesis, slot, root)).to_bytes(),
+    };
+    // Çelës i veçantë firmosjeje, i autorizuar nga identiteti (F-10).
+    let sign_dedicated = |id: &SigningKey, slot: u64, root: &[u8; 32], g_auth: &[u8; 32]| {
+        let signer = SigningKey::from_bytes(&zilja_verifier::sha256(&id.to_bytes()));
+        let s_pk = signer.verifying_key().to_bytes();
+        Attestation {
+            validator: id.verifying_key().to_bytes(),
+            signer: Some(s_pk),
+            authorization: Some(id.sign(&authorize_message(g_auth, &s_pk)).to_bytes()),
+            signature: signer.sign(&attest_message(&genesis, slot, root)).to_bytes(),
+        }
     };
     let enc = |atts: &[Attestation]| -> Value {
         atts.iter()
-            .map(|a| json!({"validator": bs58::encode(a.validator).into_string(), "signature": hex::encode(a.signature)}))
+            .map(|a| {
+                json!({
+                    "validator": bs58::encode(a.validator).into_string(),
+                    "signer": a.signer.map(|s| bs58::encode(s).into_string()),
+                    "authorization": a.authorization.map(hex::encode),
+                    "signature": hex::encode(a.signature),
+                })
+            })
             .collect()
     };
     let root = [7u8; 32];
     let slot = 123_456u64;
     let mut cases = Vec::new();
     let mut add = |name: &str, s: u64, r: &[u8; 32], atts: Vec<Attestation>| {
-        let rep = verify_quorum(s, r, &atts, &table);
+        let rep = verify_quorum(&genesis, s, r, &atts, &table);
         cases.push(json!({
             "name": name, "slot": s, "root": hex::encode(r), "atts": enc(&atts),
             "expectReached": rep.reached, "expectAttested": rep.attested_stake.to_string(),
@@ -134,7 +156,10 @@ fn attest_vectors() -> Value {
         a.signature[0] ^= 1;
     }
     add("corrupted_signatures", slot, &root, bad);
+    add("dedicated_signers", slot, &root, keys[3..].iter().map(|k| sign_dedicated(k, slot, &root, &genesis)).collect());
+    add("dedicated_signers_other_chain_auth", slot, &root, keys[3..].iter().map(|k| sign_dedicated(k, slot, &root, &[1u8; 32])).collect());
     json!({
+        "genesis": hex::encode(genesis),
         "table": table.entries.iter().map(|(k, s)| json!([bs58::encode(k).into_string(), s.to_string()])).collect::<Vec<_>>(),
         "cases": cases,
     })

@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 use zilja_store::{DiskTree, StoreOptions};
 use zilja_tree::StateTree;
-use zilja_verifier::{verify_account, AccountMeta, Key, Verdict};
+use zilja_verifier::{verify_tree_key, AccountMeta, Key, Verdict};
 
 fn rss_mb() -> f64 {
     std::fs::read_to_string("/proc/self/status")
@@ -118,7 +118,7 @@ fn main() {
         let (_, r, p, m) = t.prove_at(&k, None).unwrap();
         prove_ms.push(s.elapsed().as_secs_f64() * 1000.0);
         assert_eq!(r, root);
-        if verify_account(&r, &k, m.as_ref(), &p) != Verdict::Invalid {
+        if verify_tree_key(&r, &k, m.as_ref(), &p) != Verdict::Invalid {
             ok += 1;
         }
         if i % 4 == 0 {
@@ -126,7 +126,7 @@ fn main() {
             let s = Instant::now();
             let (_, r, p, m) = t.prove_at(&k, Some(v)).unwrap();
             hist_ms.push(s.elapsed().as_secs_f64() * 1000.0);
-            assert_ne!(verify_account(&r, &k, m.as_ref(), &p), Verdict::Invalid);
+            assert_ne!(verify_tree_key(&r, &k, m.as_ref(), &p), Verdict::Invalid);
         }
     }
     let out = json!({

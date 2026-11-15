@@ -383,7 +383,7 @@ mod tests {
     use super::*;
     use rand::{rngs::StdRng, Rng, SeedableRng};
     use std::collections::BTreeMap;
-    use zilja_verifier::{verify_account, Verdict};
+    use zilja_verifier::{verify_tree_key, Verdict};
 
     fn rand_meta(rng: &mut StdRng) -> AccountMeta {
         let mut owner = [0u8; 32];
@@ -405,7 +405,7 @@ mod tests {
         let k = [1u8; 32];
         let (p, m) = t.prove(&k);
         assert!(m.is_none());
-        assert_eq!(verify_account(&t.root(), &k, None, &p), Verdict::DoesNotExist);
+        assert_eq!(verify_tree_key(&t.root(), &k, None, &p), Verdict::DoesNotExist);
     }
 
     #[test]
@@ -501,7 +501,7 @@ mod tests {
             let bytes = p.to_bytes();
             max = max.max(bytes.len());
             let p2 = Proof::from_bytes(&bytes).unwrap();
-            assert_eq!(verify_account(&root, k, Some(m), &p2), Verdict::Exists);
+            assert_eq!(verify_tree_key(&root, k, Some(m), &p2), Verdict::Exists);
         }
         assert!(max <= 10 * 1024, "dëftesa më e madhe: {max} bajt");
         // Mospërfshirje për çelësa që s'ekzistojnë.
@@ -509,10 +509,10 @@ mod tests {
             let k = rand_key(&mut rng);
             let (p, got) = t.prove(&k);
             assert!(got.is_none());
-            assert_eq!(verify_account(&root, &k, None, &p), Verdict::DoesNotExist);
+            assert_eq!(verify_tree_key(&root, &k, None, &p), Verdict::DoesNotExist);
             // E njëjta dëftesë nuk mund të "provojë" një llogari të shpikur.
             let fake = rand_meta(&mut rng);
-            assert_eq!(verify_account(&root, &k, Some(&fake), &p), Verdict::Invalid);
+            assert_eq!(verify_tree_key(&root, &k, Some(&fake), &p), Verdict::Invalid);
         }
     }
 
@@ -530,6 +530,6 @@ mod tests {
         assert_eq!(p.siblings.len(), 256);
         // Bitmap-i i ngjesh vëllezërit bosh: 3 + 32 + 1*32 + 1 + 64.
         assert_eq!(p.to_bytes().len(), 132);
-        assert_eq!(verify_account(&t.root(), &b, Some(&mb), &p), Verdict::Exists);
+        assert_eq!(verify_tree_key(&t.root(), &b, Some(&mb), &p), Verdict::Exists);
     }
 }

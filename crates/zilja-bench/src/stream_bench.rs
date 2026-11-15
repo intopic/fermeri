@@ -28,7 +28,7 @@ fn main() {
     // Modeli: çfarë duhet të jetë gjendja në fund (vetëm zinxhiri kanonik).
     let mut model: std::collections::HashMap<Key, AccountMeta> = std::collections::HashMap::new();
 
-    let mut svc = Service::start(None).unwrap();
+    let mut svc = Service::start_opts(Default::default()).unwrap();
     let t0 = Instant::now();
     let mut events = 0u64;
     for k in &keys {

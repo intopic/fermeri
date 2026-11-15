@@ -99,3 +99,23 @@ ngarkohet dhe nuk e fshin. Fshije dosjen me dorë, ose përdor versionin e duhur
 `on_unload` thirret vetëm kur plugin-i hiqet ose ringarkohet me admin RPC (`reloadPlugin`).
 Nuk thirret kur validatori ndalet me SIGTERM (u mat në Fazën 0). Prandaj gjendja në disk
 është e sigurt ndaj ndalimit pa paralajmërim: çdo slot shkruhet në një `WriteBatch` atomik.
+
+## Firmosja (F-10)
+
+1. Krijo një çelës të veçantë: `solana-keygen new -o attest-signer.json`.
+2. Autorizoje një herë me identitetin:
+   `zilja-authorize validator-keypair.json attest-signer.json $(solana genesis-hash) > zilja-authorization.json`.
+   Kjo është e vetmja herë që përdoret çelësi i identitetit.
+3. Në konfigurim:
+   ```json
+   "attest_keypair": "attest-signer.json",
+   "attest_authorization": "zilja-authorization.json",
+   "genesis_path": "<ledger>/genesis.bin"
+   ```
+
+Autorizimi vlen vetëm për atë genesis. Në një zinxhir tjetër (`--reset`, klaster tjetër)
+plugin-i refuzon të ngarkohet derisa të bësh një autorizim të ri.
+
+Zilja firmos vetëm pemë të plota (nisur nga snapshot) dhe kurrë dy root-e për të njëjtin slot.
+Firmat ruhen te `attest_state`, parazgjedhja `<db_path>.attest.log`. **Mos e fshi këtë skedar:**
+pa të, zilja s'e di më çfarë ka firmosur.

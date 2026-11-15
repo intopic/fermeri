@@ -8,9 +8,11 @@
 //!
 //! Plugin-i i Geyser (`zilja-plugin`) vetëm i kthen thirrjet e validatorit në [`tracker::Event`].
 
+pub mod attester;
 pub mod rpc;
 pub mod service;
 pub mod tracker;
 
+pub use attester::{AttestOptions, AttesterInfo};
 pub use service::{Metrics, Options, Service, Shared, State};
 pub use tracker::{Event, Status};

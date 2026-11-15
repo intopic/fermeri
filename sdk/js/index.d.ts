@@ -26,7 +26,12 @@ export function toU64(v: unknown): bigint;
 export function normalizeAccount(a: unknown): { lamports: bigint; owner: string; executable: boolean; dataLen: bigint; dataHash: string };
 
 export interface Attestation {
+  /** Identiteti i validatorit (çelësi në tabelën e stake-ut), base58. */
   validator: string;
+  /** Çelësi që firmosi, kur s'është vetë identiteti (base58). */
+  signer?: string | null;
+  /** Firma e identitetit mbi authorizeMessage(genesis, signer), hex. */
+  authorization?: string | null;
   signature: string;
 }
 export interface QuorumReport {
@@ -36,8 +41,13 @@ export interface QuorumReport {
   rejected: number;
   reached: boolean;
 }
-export function attestMessage(slot: number | bigint, rootHex: string): Uint8Array;
-export function verifyQuorum(slot: number | bigint, rootHex: string, atts: Attestation[], table: Map<string, bigint>): Promise<QuorumReport>;
+export function attestMessage(genesisHex: string, slot: number | bigint, rootHex: string): Uint8Array;
+export function authorizeMessage(genesisHex: string, signerB58: string): Uint8Array;
+export function verifyAttestation(genesisHex: string, slot: number | bigint, rootHex: string, a: Attestation): Promise<boolean>;
+export function verifyQuorum(genesisHex: string, slot: number | bigint, rootHex: string, atts: Attestation[], table: Map<string, bigint>): Promise<QuorumReport>;
+/** Vendi i llogarisë në pemë: SHA256("zilja/key/v2" ‖ pubkey). */
+export function treeKey(pubkeyB58: string): Promise<Uint8Array>;
+export const PROOF_VERSION: 2;
 export function stakeTableFromVoteAccounts(result: unknown): Map<string, bigint>;
 
 export const TRUST: Readonly<Record<Trust, number>>;
@@ -51,6 +61,8 @@ export interface ZiljaClientOptions {
   minAgree?: number;
   /** Kontrollo firmat e validatorëve (> 2/3 e stake-ut). Kërkon `solanaRpc`. */
   quorum?: boolean;
+  /** Hash-i i genesis-it (base58 ose hex). Pa të, merret nga `solanaRpc`. */
+  genesisHash?: string;
   /** Nën këtë nivel besimi, `ok` del `false`. Parazgjedhja: "agreement". */
   minTrust?: Trust;
   timeoutMs?: number;

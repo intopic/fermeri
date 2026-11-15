@@ -8,7 +8,8 @@
 //!   nga unaza e sloteve të fundit (Simpler-5), në të dyja mënyrat.
 //!
 //! `lamports` dhe `dataLen` dalin si tekst dhjetor (F-08): JSON-i s'mund t'i mbajë saktë mbi 2^53.
-//! - `getZiljaAttestation [slot?]` → `{slot, root, validator, signature}` (kur zilja firmos).
+//! - `getZiljaAttestation [slot?]` → `{slot, root, validator, signer, authorization, genesis, signature}`
+//!   (kur zilja firmos; vetëm për pemë të plota, F-10).
 //!
 //! Rrugë GET: `/health` (200 vetëm kur jep dëftesa, përndryshe 503), `/metrics` (Prometheus,
 //! zakonisht në një port privat). Trupi i kërkesës ≤ 64 KB, me kohë maksimale leximi.
@@ -37,7 +38,7 @@ pub fn account_proof_json(st: &State, pubkey: &Key, at: Option<u64>) -> Result<V
             None => return Err((-32602, format!("sloti {v} është jashtë kujtesës"))),
         },
     };
-    let (slot, root, proof, meta) = st.tree.prove_at(pubkey, at).map_err(|e| (-32602, e))?;
+    let (slot, root, proof, meta) = st.tree.prove_at(&zilja_verifier::tree_key(pubkey), at).map_err(|e| (-32602, e))?;
     // L-02: një pemë që s'mbulon çdo llogari nuk jep dëftesa "nuk ekziston".
     if meta.is_none() && !st.complete {
         return Err((-32006, "pema e kësaj zileje nuk mbulon çdo llogari (nisi pa snapshot): s'jep dëftesa mospërfshirjeje".into()));
@@ -135,9 +136,12 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
             })
         }
         "getZiljaAttestation" => {
-            let Some(attester) = st.attester else {
+            let Some(attester) = st.attester.clone() else {
                 return err(id, -32004, "kjo zile nuk firmos (mungon attest_keypair)");
             };
+            if !st.complete {
+                return err(id, -32004, "kjo zile s'firmos: pema nuk mbulon çdo llogari (nisi pa snapshot)");
+            }
             let wanted = match params.first() {
                 None => None,
                 Some(v) => match v.as_u64() {
@@ -153,7 +157,10 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
                 Some((slot, a)) => json!({"jsonrpc": "2.0", "id": id, "result": {
                     "slot": slot,
                     "root": hex::encode(a.root),
-                    "validator": bs58::encode(attester).into_string(),
+                    "validator": bs58::encode(attester.identity).into_string(),
+                    "signer": (attester.signer != attester.identity).then(|| bs58::encode(attester.signer).into_string()),
+                    "authorization": attester.authorization.map(hex::encode),
+                    "genesis": bs58::encode(attester.genesis).into_string(),
                     "signature": hex::encode(a.signature),
                 }}),
                 None => err(id, -32005, "s'ka firmë për këtë slot"),
@@ -377,7 +384,7 @@ mod tests {
 
     #[test]
     fn end_to_end_service_and_jsonrpc() {
-        let mut svc = Service::start(None).unwrap();
+        let mut svc = Service::start_opts(Default::default()).unwrap();
         let a = [1u8; 32];
         let b = [2u8; 32];
         let owner = [9u8; 32];
@@ -458,7 +465,8 @@ mod attest_tests {
         let keys: Vec<SigningKey> = (1u8..=4).map(|i| SigningKey::from_bytes(&[i; 32])).collect();
         let mut shareds = Vec::new();
         for k in &keys {
-            let mut svc = Service::start_with(None, Some(k.clone())).unwrap();
+            let attest = crate::AttestOptions { key: k.clone(), identity: None, authorization: None, genesis: [0x33; 32], log: None };
+            let mut svc = Service::start_opts(crate::Options { attest: Some(attest), ..Default::default() }).unwrap();
             // Të gjitha zilet shohin të njëjtin zinxhir: duhet të dalë i njëjti root.
             svc.send(Event::Snapshot { slot: 1, pubkey: [7; 32], meta: Some(AccountMeta { lamports: 5, ..Default::default() }) });
             svc.send(Event::EndOfStartup);
@@ -477,13 +485,15 @@ mod attest_tests {
             assert!(root.is_none() || root == Some(rt));
             root = Some(rt);
             atts.push(Attestation {
+                signer: None,
+                authorization: None,
                 validator: bs58::decode(r["validator"].as_str().unwrap()).into_vec().unwrap().try_into().unwrap(),
                 signature: hex::decode(r["signature"].as_str().unwrap()).unwrap().try_into().unwrap(),
             });
         }
         let table = StakeTable { entries: keys.iter().map(|k| (k.verifying_key().to_bytes(), 10)).collect() };
         let root = root.unwrap();
-        assert!(verify_quorum(2, &root, &atts, &table).reached);
-        assert!(!verify_quorum(2, &root, &atts[..2], &table).reached);
+        assert!(verify_quorum(&[0x33; 32], 2, &root, &atts, &table).reached);
+        assert!(!verify_quorum(&[0x33; 32], 2, &root, &atts[..2], &table).reached);
     }
 }

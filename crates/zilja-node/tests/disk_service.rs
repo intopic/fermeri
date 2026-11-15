@@ -68,7 +68,7 @@ fn resume_history_and_wrong_chain() {
     }
     {
         // E njëjta histori në RAM, për krahasim.
-        let mut svc = Service::start(None).unwrap();
+        let mut svc = Service::start_opts(Default::default()).unwrap();
         svc.send(Event::Snapshot { slot: 10, pubkey: [1; 32], meta: m(100) });
         svc.send(Event::EndOfStartup);
         for s in 11..=25 {

@@ -7,12 +7,14 @@
 //!
 //! - `data_hash  = SHA256(data)`
 //! - `value_hash = SHA256("zilja/account/v1" ‖ lamports LE ‖ owner ‖ executable ‖ data_len LE ‖ data_hash)`
-//! - `leaf       = SHA256(0x00 ‖ pubkey ‖ value_hash)`
+//! - `tree_key   = SHA256("zilja/key/v2" ‖ pubkey)` (F-09: vendi në pemë)
+//! - `leaf       = SHA256(0x00 ‖ tree_key ‖ value_hash)`
 //! - `internal   = SHA256(0x01 ‖ left ‖ right)`
 //! - `empty      = [0; 32]`
 //!
-//! Pema është një sparse Merkle tree kompakt mbi çelësa 256-bit (pubkey):
-//! një nënpemë me vetëm një llogari përfaqësohet nga vetë gjethja.
+//! Pema është një sparse Merkle tree kompakt mbi `tree_key` (256 bit): një nënpemë me
+//! vetëm një llogari përfaqësohet nga vetë gjethja. Meqë vendi është hash i pubkey-it,
+//! askush s'mund të krijojë me qëllim llogari me prefiks të gjatë të përbashkët.
 
 #![forbid(unsafe_code)]
 
@@ -29,8 +31,10 @@ pub type Key = [u8; 32];
 pub const EMPTY: Hash = [0u8; 32];
 /// Prefiksi i domenit për hash-in e vlerës së llogarisë.
 pub const ACCOUNT_DOMAIN: &[u8] = b"zilja/account/v1";
-/// Versioni i formatit binar të dëftesës.
-pub const PROOF_VERSION: u8 = 1;
+/// Prefiksi i domenit për vendin e llogarisë në pemë.
+pub const KEY_DOMAIN: &[u8] = b"zilja/key/v2";
+/// Versioni i formatit binar të dëftesës (2 = pema mbi `tree_key`).
+pub const PROOF_VERSION: u8 = 2;
 /// Thellësia maksimale e pemës (bit-ët e çelësit).
 pub const MAX_DEPTH: usize = 256;
 
@@ -74,6 +78,14 @@ impl AccountMeta {
 
 pub fn sha256(data: &[u8]) -> Hash {
     Sha256::digest(data).into()
+}
+
+/// Vendi i një llogarie në pemë: `SHA256("zilja/key/v2" ‖ pubkey)`.
+pub fn tree_key(pubkey: &Key) -> Key {
+    let mut h = Sha256::new();
+    h.update(KEY_DOMAIN);
+    h.update(pubkey);
+    h.finalize().into()
 }
 
 /// Hash-i i një gjetheje.
@@ -150,6 +162,12 @@ impl Proof {
     fn compute_root(&self, key: &Key) -> Option<Hash> {
         let depth = self.siblings.len();
         if depth > MAX_DEPTH {
+            return None;
+        }
+        // Një pemë kanonike s'ka kurrë vëlla bosh në fund të rrugës: një gjethe me vëlla bosh
+        // do të ishte ngjitur lart, dhe dy fëmijë bosh do të ishin një nyje bosh. Kështu çdo
+        // çelës ka një dëftesë të vetme.
+        if depth > 0 && self.siblings[depth - 1] == EMPTY {
             return None;
         }
         let mut cur = match &self.leaf {
@@ -293,16 +311,23 @@ pub enum Verdict {
 /// - `account = Some(meta)`: pretendimi është "llogaria ekziston me këtë meta".
 /// - `account = None`: pretendimi është "llogaria nuk ekziston".
 pub fn verify_account(root: &Hash, pubkey: &Key, account: Option<&AccountMeta>, proof: &Proof) -> Verdict {
+    verify_tree_key(root, &tree_key(pubkey), account, proof)
+}
+
+/// Si [`verify_account`], por me vendin në pemë (`tree_key`) të dhënë drejtpërdrejt.
+/// Për pemët që ndërtohen pa pubkey (teste, matje).
+pub fn verify_tree_key(root: &Hash, key: &Key, account: Option<&AccountMeta>, proof: &Proof) -> Verdict {
+    let key = *key;
     match account {
         Some(meta) => {
-            if proof.verify_inclusion(root, pubkey, &meta.value_hash()) {
+            if proof.verify_inclusion(root, &key, &meta.value_hash()) {
                 Verdict::Exists
             } else {
                 Verdict::Invalid
             }
         }
         None => {
-            if proof.verify_exclusion(root, pubkey) {
+            if proof.verify_exclusion(root, &key) {
                 Verdict::DoesNotExist
             } else {
                 Verdict::Invalid
@@ -338,8 +363,9 @@ mod tests {
         let key = [7u8; 32];
         let meta = AccountMeta::from_account(5, &[1u8; 32], false, b"miell");
         let vh = meta.value_hash();
-        let root = leaf_hash(&key, &vh);
-        let proof = Proof { siblings: vec![], leaf: Some((key, vh)) };
+        let tk = tree_key(&key);
+        let root = leaf_hash(&tk, &vh);
+        let proof = Proof { siblings: vec![], leaf: Some((tk, vh)) };
         assert_eq!(verify_account(&root, &key, Some(&meta), &proof), Verdict::Exists);
         // Mospërfshirje për një çelës tjetër, me të njëjtën dëftesë.
         let other = [9u8; 32];
@@ -367,6 +393,21 @@ mod tests {
         let mut badv = b.clone();
         badv[0] = 9;
         assert_eq!(Proof::from_bytes(&badv), Err(ProofError::BadVersion(9)));
+    }
+
+    #[test]
+    fn non_canonical_proofs_are_rejected() {
+        // Gjethe me vëlla bosh në fund: një pemë kanonike do ta kishte ngjitur lart.
+        let key = [7u8; 32];
+        let meta = AccountMeta::from_account(5, &[1u8; 32], false, b"x");
+        let (tk, vh) = (tree_key(&key), meta.value_hash());
+        let leaf = leaf_hash(&tk, &vh);
+        let root = if bit(&tk, 0) == 0 { internal_hash(&leaf, &EMPTY) } else { internal_hash(&EMPTY, &leaf) };
+        let p = Proof { siblings: vec![EMPTY], leaf: Some((tk, vh)) };
+        assert_eq!(verify_account(&root, &key, Some(&meta), &p), Verdict::Invalid);
+        // Pozicion bosh me vëlla bosh.
+        let p = Proof { siblings: vec![EMPTY], leaf: None };
+        assert_eq!(verify_account(&internal_hash(&EMPTY, &EMPTY), &[1u8; 32], None, &p), Verdict::Invalid);
     }
 
     #[test]

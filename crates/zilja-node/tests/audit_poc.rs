@@ -86,7 +86,7 @@ fn f01_resume_gap_hidden_by_startup_replayed_banks() {
 /// must win. Here the old version (slot 10) happens to arrive after the new one (slot 20).
 #[test]
 fn f02_snapshot_duplicates_newest_slot_must_win() {
-    let mut svc = Service::start(None).unwrap();
+    let mut svc = Service::start_opts(Default::default()).unwrap();
     let k = key(7);
     svc.send(Event::Snapshot { slot: 20, pubkey: k, meta: meta(200) }); // current version
     svc.send(Event::Snapshot { slot: 10, pubkey: k, meta: meta(100) }); // stale version, arrives later
@@ -97,8 +97,9 @@ fn f02_snapshot_duplicates_newest_slot_must_win() {
     let sh = svc.shared.clone();
     svc.shutdown();
     let s = sh.state.read().unwrap();
-    let (_, _, _, m) = s.tree.prove_at(&k, None).unwrap();
-    let (_, _, _, closed) = s.tree.prove_at(&key(8), None).unwrap();
+    // (Faza 4: pema renditet sipas tree_key(pubkey).)
+    let (_, _, _, m) = s.tree.prove_at(&zilja_verifier::tree_key(&k), None).unwrap();
+    let (_, _, _, closed) = s.tree.prove_at(&zilja_verifier::tree_key(&key(8)), None).unwrap();
     assert_eq!(m.map(|m| m.lamports), Some(200), "stale snapshot version won");
     assert!(closed.is_none(), "closed account resurrected from a stale snapshot version");
 }
@@ -128,7 +129,7 @@ fn f06_one_stalled_client_must_not_block_health() {
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::time::Duration;
-    let svc = Service::start(None).unwrap();
+    let svc = Service::start_opts(Default::default()).unwrap();
     let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let bind = format!("127.0.0.1:{port}");
     let _h = zilja_node::rpc::serve(&bind, svc.shared.clone()).unwrap();

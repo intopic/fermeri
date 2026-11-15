@@ -43,9 +43,22 @@ pub struct Config {
     pub bind: String,
     #[serde(default)]
     pub roots_log: Option<PathBuf>,
-    /// Faza 4: keypair Solana (p.sh. identiteti i validatorit) që firmos çdo root.
+    /// Keypair-i që firmos root-et. Rekomandohet një çelës i veçantë, i autorizuar nga
+    /// identiteti me `zilja-authorize` (F-10); pa `attest_authorization`, ky duhet të jetë vetë identiteti.
     #[serde(default)]
     pub attest_keypair: Option<PathBuf>,
+    /// Skedari që del nga `zilja-authorize` (identiteti + autorizimi).
+    #[serde(default)]
+    pub attest_authorization: Option<PathBuf>,
+    /// Hash-i i genesis-it (base58) që hyn në çdo firmë. Ose `genesis_path`.
+    #[serde(default)]
+    pub genesis_hash: Option<String>,
+    /// `genesis.bin` i ledger-it: hash-i i genesis-it = SHA256 i tij.
+    #[serde(default)]
+    pub genesis_path: Option<PathBuf>,
+    /// Skedari i firmave (kundër firmosjes së dyfishtë). Parazgjedhja: pranë `db_path` ose `roots_log`.
+    #[serde(default)]
+    pub attest_state: Option<PathBuf>,
     /// Pema në disk (RocksDB). Pa këtë, pema mbahet në RAM.
     #[serde(default)]
     pub db_path: Option<PathBuf>,
@@ -59,6 +72,9 @@ pub struct Config {
     /// Cache-ja e blloqeve të RocksDB në MB. Parazgjedhja: 512.
     #[serde(default)]
     pub block_cache_mb: Option<usize>,
+    /// I-01: fsync i diskut çdo N slote (0 = kurrë; WAL-i mbetet). Parazgjedhja: 0.
+    #[serde(default)]
+    pub sync_every_slots: Option<u64>,
     /// Porti privat për `/metrics` (F-06). Parazgjedhja: 127.0.0.1:7798.
     #[serde(default = "default_metrics_bind")]
     pub metrics_bind: String,
@@ -70,6 +86,40 @@ pub struct Config {
     /// pema, zilja ndalon dhe e rindërton në nisjen e ardhshme (dy rinisje gjithsej).
     #[serde(default)]
     pub snapshot_on_resume: bool,
+}
+
+/// Ndërton opsionet e firmosjes nga konfigurimi (F-10).
+fn attest_options(cfg: &Config, keypair: &std::path::Path) -> Result<zilja_node::AttestOptions, String> {
+    let key = zilja_node::service::read_solana_keypair(keypair).map_err(|e| format!("{}: {e}", keypair.display()))?;
+    let genesis: [u8; 32] = match (&cfg.genesis_hash, &cfg.genesis_path) {
+        (Some(h), _) => bs58::decode(h).into_vec().map_err(|e| e.to_string())?.try_into().map_err(|_| "genesis_hash duhet 32 bajt")?,
+        (None, Some(p)) => zilja_verifier::sha256(&std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
+        (None, None) => return Err("attest_keypair kërkon genesis_hash ose genesis_path".into()),
+    };
+    let (identity, authorization) = match &cfg.attest_authorization {
+        None => (None, None),
+        Some(p) => {
+            let v: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?).map_err(|e| e.to_string())?;
+            let id: [u8; 32] = bs58::decode(v["identity"].as_str().ok_or("identity")?)
+                .into_vec()
+                .map_err(|e| e.to_string())?
+                .try_into()
+                .map_err(|_| "identity duhet 32 bajt")?;
+            let auth: [u8; 64] = hex::decode(v["authorization"].as_str().ok_or("authorization")?)
+                .map_err(|e| e.to_string())?
+                .try_into()
+                .map_err(|_| "authorization duhet 64 bajt")?;
+            (Some(id), Some(auth))
+        }
+    };
+    let log = match (&cfg.attest_state, &cfg.db_path, &cfg.roots_log) {
+        (Some(p), _, _) => p.clone(),
+        (None, Some(db), _) => db.with_extension("attest.log"),
+        (None, None, Some(r)) => r.with_extension("attest.log"),
+        _ => return Err("attest_keypair kërkon attest_state (ose db_path / roots_log)".into()),
+    };
+    Ok(zilja_node::AttestOptions { key, identity, authorization, genesis, log: Some(log) })
 }
 
 fn default_metrics_bind() -> String {
@@ -224,8 +274,8 @@ impl GeyserPlugin for ZiljaPlugin {
         let text = std::fs::read_to_string(config_file)?;
         let cfg: Config = serde_json::from_str(&text).map_err(custom)?;
         cfg.validate().map_err(custom)?;
-        let signer = match &cfg.attest_keypair {
-            Some(p) => Some(zilja_node::service::read_solana_keypair(p).map_err(custom)?),
+        let attest = match &cfg.attest_keypair {
+            Some(p) => Some(attest_options(&cfg, p).map_err(custom)?),
             None => None,
         };
         let tree: Option<Box<dyn zilja_tree::StateTree>> = match &cfg.db_path {
@@ -236,12 +286,13 @@ impl GeyserPlugin for ZiljaPlugin {
                     cache_depth: cfg.cache_depth.unwrap_or(d.cache_depth),
                     block_cache_mb: cfg.block_cache_mb.unwrap_or(d.block_cache_mb),
                     durable: true,
+                    sync_every: cfg.sync_every_slots.unwrap_or(0),
                 };
                 Some(Box::new(zilja_store::DiskTree::open_opts(p, o).map_err(custom)?))
             }
             None => None,
         };
-        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), signer, tree }).map_err(custom)?;
+        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree }).map_err(custom)?;
         self.resuming.store(service.resumed, Ordering::Relaxed);
         self.snapshot_on_resume.store(cfg.snapshot_on_resume, Ordering::Relaxed);
         let main = rpc::serve_routes(&cfg.bind, service.shared.clone(), rpc::Routes { jsonrpc: true, metrics: false, cors: cfg.cors })
