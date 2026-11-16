@@ -202,11 +202,13 @@ fn main() {
     let mut prove_ms = Vec::new();
     let mut hist_ms = Vec::new();
     let mut ok = 0;
+    let mut siblings = Vec::new();
     for i in 0..2000 {
         let k = key_of(rng.gen_range(0..nkeys));
         let s = Instant::now();
         let (_, r, p, m) = t.prove_at(&k, None).unwrap();
         prove_ms.push(s.elapsed().as_secs_f64() * 1000.0);
+        siblings.push(p.siblings.len() as f64);
         assert_eq!(r, root);
         if verify_tree_key(&r, &k, m.as_ref(), &p) != Verdict::Invalid {
             ok += 1;
@@ -245,6 +247,10 @@ fn main() {
         "prove_ms_p99": pct(&prove_ms, 0.99),
         "historic_prove_ms_p50": pct(&hist_ms, 0.5),
         "proofs_verified": format!("{ok}/2000"),
+        "proof_siblings_avg": siblings.iter().sum::<f64>() / siblings.len() as f64,
+        "proof_siblings_max": pct(&siblings, 1.0),
+        // Dëftesa në tel: një hash për çdo fqinj jo-bosh + gjethja + koka (vlerësim i sipërm).
+        "proof_bytes_approx": 32.0 * siblings.iter().sum::<f64>() / siblings.len() as f64 + 32.0 + 64.0 + 40.0,
         "process_rss_mb": rss_mb(),
         "rss_growth_mb": rss_mb() - rss0,
         "disk_mb": dir_mb(&dir),
