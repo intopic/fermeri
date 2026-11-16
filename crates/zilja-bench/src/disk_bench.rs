@@ -1,12 +1,16 @@
-//! Matjet e pemës në disk.
+//! Matjet e pemës në disk, për të dy motorët.
 //!
-//! `cargo run -p zilja-bench --release --bin zilja-disk-bench -- [llogari] [slote] [ndryshime_per_slot] [dir]`
+//! `cargo run -p zilja-bench --release --bin zilja-disk-bench -- [llogari] [slote] [ndryshime_per_slot] [dir] [history]`
+//!
+//! `ZILJA_ENGINE=pages` (parazgjedhja) = skedari i faqeve; `ZILJA_ENGINE=rocksdb` = RocksDB.
+//! Çelësat nuk mbahen në RAM: çelësi `i` rillogaritet nga numri `i`, ndaj bench-i shkon deri në
+//! miliarda llogari me pak memorie.
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde_json::json;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
-use zilja_store::{DiskTree, StoreOptions};
+use zilja_store::{DiskTree, PageOptions, PageTree, StoreOptions};
 use zilja_tree::StateTree;
 use zilja_verifier::{verify_tree_key, AccountMeta, Key, Verdict};
 
@@ -26,13 +30,65 @@ fn dir_mb(p: &std::path::Path) -> f64 {
                 rd.flatten()
                     .map(|e| {
                         let m = e.metadata().unwrap();
-                        if m.is_dir() { walk(&e.path()) } else { m.len() }
+                        if m.is_dir() {
+                            walk(&e.path())
+                        } else {
+                            m.len()
+                        }
                     })
                     .sum()
             })
             .unwrap_or(0)
     }
     walk(p) as f64 / (1 << 20) as f64
+}
+
+/// Bajtet që procesi ka dërguar realisht në disk / lexuar prej tij (`/proc/self/io`).
+fn proc_io() -> (u64, u64) {
+    let s = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
+    let get = |k: &str| s.lines().find(|l| l.starts_with(k)).and_then(|l| l.split_whitespace().nth(1)?.parse().ok()).unwrap_or(0);
+    (get("read_bytes:"), get("write_bytes:"))
+}
+
+/// Çelësi i llogarisë `i`: i rastësishëm në pamje, por i rillogaritshëm (splitmix64).
+fn key_of(i: u64) -> Key {
+    let mut k = [0u8; 32];
+    let mut x = i.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0x5EED;
+    for c in k.chunks_mut(8) {
+        x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        c.copy_from_slice(&(z ^ (z >> 31)).to_le_bytes());
+    }
+    k
+}
+
+enum Engine {
+    Rocks(Box<DiskTree>),
+    Pages(Box<PageTree>),
+}
+
+impl Engine {
+    fn tree(&mut self) -> &mut dyn StateTree {
+        match self {
+            Engine::Rocks(x) => x.as_mut(),
+            Engine::Pages(x) => x.as_mut(),
+        }
+    }
+    fn view(&self) -> &dyn StateTree {
+        match self {
+            Engine::Rocks(x) => x.as_ref(),
+            Engine::Pages(x) => x.as_ref(),
+        }
+    }
+    /// Leximet nga disku në slotin e fundit.
+    fn reads(&self) -> u64 {
+        match self {
+            Engine::Rocks(x) => x.last_disk_reads.load(Ordering::Relaxed),
+            Engine::Pages(x) => x.last_disk_reads.load(Ordering::Relaxed),
+        }
+    }
 }
 
 fn meta(rng: &mut StdRng) -> AccountMeta {
@@ -60,60 +116,94 @@ fn main() {
     let history: u64 = a.get(4).and_then(|x| x.parse().ok()).unwrap_or(zilja_store::DEFAULT_HISTORY);
     let durable = std::env::var_os("ZILJA_NOWAL").is_none();
     let cache_depth: u16 = std::env::var("ZILJA_CACHE_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(zilja_store::CACHE_DEPTH);
-    let mut t = DiskTree::open_opts(&dir, StoreOptions { history, cache_depth, block_cache_mb: std::env::var("ZILJA_BLOCK_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(256), durable, ..Default::default() }).unwrap();
+    let engine = std::env::var("ZILJA_ENGINE").unwrap_or_else(|_| "pages".into());
+    let mut eng = match engine.as_str() {
+        "rocksdb" => Engine::Rocks(Box::new(
+            DiskTree::open_opts(
+                &dir,
+                StoreOptions {
+                    history,
+                    cache_depth,
+                    block_cache_mb: std::env::var("ZILJA_BLOCK_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(256),
+                    durable,
+                    sync_every: std::env::var("ZILJA_SYNC_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
+                },
+            )
+            .unwrap(),
+        )),
+        "pages" => Engine::Pages(Box::new(
+            PageTree::open(
+                &dir,
+                PageOptions {
+                    history,
+                    cache_depth,
+                    durable,
+                    sync_every: std::env::var("ZILJA_SYNC_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(1),
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
+        )),
+        e => panic!("motor i panjohur: {e} (pages | rocksdb)"),
+    };
+    eprintln!("motori: {engine}, cache_depth {cache_depth}, history {history}, durable {durable}");
     let rss0 = rss_mb();
     let t0 = Instant::now();
-    let mut keys: Vec<Key> = Vec::with_capacity(n);
+    let mut nkeys: u64 = 0;
     let chunk = 1 << 18;
-    let mut staged = 0;
-    while staged < n {
-        let m = chunk.min(n - staged);
-        let ups: Vec<_> = (0..m)
-            .map(|_| {
-                let k: Key = rng.gen();
-                keys.push(k);
-                (k, Some(meta(&mut rng)))
-            })
-            .collect();
-        t.stage_snapshot(0, ups).unwrap();
-        staged += m;
+    while nkeys < n as u64 {
+        let m = (chunk as u64).min(n as u64 - nkeys);
+        let ups: Vec<_> = (nkeys..nkeys + m).map(|i| (key_of(i), Some(meta(&mut rng)))).collect();
+        eng.tree().stage_snapshot(0, ups).unwrap();
+        nkeys += m;
+        if nkeys.is_multiple_of(1 << 24) {
+            eprintln!("  staging {nkeys}/{n}");
+        }
     }
     let stage_s = t0.elapsed().as_secs_f64();
     let t1 = Instant::now();
-    t.finish_snapshot(0, true).unwrap();
+    eng.tree().finish_snapshot(0, true).unwrap();
     let build_s = t1.elapsed().as_secs_f64();
-    eprintln!("snapshot: shkrimi {stage_s:.1} s, ndërtimi {build_s:.1} s, disk {:.0} MB", dir_mb(&dir));
+    let disk_after_build = dir_mb(&dir);
+    eprintln!("snapshot: shkrimi {stage_s:.1} s, ndërtimi {build_s:.1} s, disk {disk_after_build:.0} MB");
 
     let mut apply_ms = Vec::new();
     let mut reads = Vec::new();
+    let (r0, w0) = proc_io();
+    let ta = Instant::now();
     for slot in 1..=slots {
         let ups: Vec<_> = (0..per_slot)
             .map(|_| {
                 let r: f64 = rng.gen();
                 if r < 0.9 {
-                    (keys[rng.gen_range(0..keys.len())], Some(meta(&mut rng)))
+                    (key_of(rng.gen_range(0..nkeys)), Some(meta(&mut rng)))
                 } else if r < 0.98 {
-                    let k: Key = rng.gen();
-                    keys.push(k);
-                    (k, Some(meta(&mut rng)))
+                    nkeys += 1;
+                    (key_of(nkeys - 1), Some(meta(&mut rng)))
                 } else {
-                    (keys[rng.gen_range(0..keys.len())], None)
+                    (key_of(rng.gen_range(0..nkeys)), None)
                 }
             })
             .collect();
         let s = Instant::now();
-        t.apply_slot(slot, ups, None).unwrap();
+        eng.tree().apply_slot(slot, ups, None).unwrap();
         apply_ms.push(s.elapsed().as_secs_f64() * 1000.0);
-        reads.push(t.last_disk_reads.load(Ordering::Relaxed) as f64);
+        reads.push(eng.reads() as f64);
+        if slot % 100 == 0 {
+            eprintln!("  slot {slot}/{slots}: p50 {:.1} ms", pct(&apply_ms, 0.5));
+        }
     }
+    let apply_wall = ta.elapsed().as_secs_f64();
+    let (r1, w1) = proc_io();
 
+    let t = eng.view();
     let root = t.root();
     let (lo, hi) = t.provable_range().unwrap();
     let mut prove_ms = Vec::new();
     let mut hist_ms = Vec::new();
     let mut ok = 0;
     for i in 0..2000 {
-        let k = keys[rng.gen_range(0..keys.len())];
+        let k = key_of(rng.gen_range(0..nkeys));
         let s = Instant::now();
         let (_, r, p, m) = t.prove_at(&k, None).unwrap();
         prove_ms.push(s.elapsed().as_secs_f64() * 1000.0);
@@ -135,8 +225,8 @@ fn main() {
         "slots": slots,
         "updates_per_slot": per_slot,
         "history_slots": history,
-        "durable_wal": durable,
-        "cached_nodes": t.cached_nodes(),
+        "engine": engine,
+        "durable": durable,
         "cache_depth": cache_depth,
         "snapshot_stage_seconds": stage_s,
         "snapshot_build_seconds": build_s,
@@ -144,6 +234,13 @@ fn main() {
         "apply_ms_p99": pct(&apply_ms, 0.99),
         "apply_ms_max": pct(&apply_ms, 1.0),
         "disk_reads_per_slot_p50": pct(&reads, 0.5),
+        "apply_wall_seconds": apply_wall,
+        "slots_per_second": slots as f64 / apply_wall,
+        "updates_per_second": (slots as usize * per_slot) as f64 / apply_wall,
+        "device_write_mb_per_slot": (w1 - w0) as f64 / (1 << 20) as f64 / slots as f64,
+        "device_write_bytes_per_update": (w1 - w0) as f64 / (slots as usize * per_slot) as f64,
+        "device_read_mb_per_slot": (r1 - r0) as f64 / (1 << 20) as f64 / slots as f64,
+        "disk_mb_after_build": disk_after_build,
         "prove_ms_p50": pct(&prove_ms, 0.5),
         "prove_ms_p99": pct(&prove_ms, 0.99),
         "historic_prove_ms_p50": pct(&hist_ms, 0.5),
@@ -152,7 +249,7 @@ fn main() {
         "rss_growth_mb": rss_mb() - rss0,
         "disk_mb": dir_mb(&dir),
         "disk_bytes_per_account": dir_mb(&dir) * (1 << 20) as f64 / t.len() as f64,
-        "note": "process_rss përfshin edhe listën e çelësave të bench-it (32 B/llogari) dhe cache-në e RocksDB (256 MB)",
+        "note": "device_* nga /proc/self/io (bajte të dërguara realisht në disk, përfshirë kompaktimin e RocksDB); rocksdb ka edhe 256 MB block cache në RSS",
     });
     println!("{}", serde_json::to_string_pretty(&out).unwrap());
 }

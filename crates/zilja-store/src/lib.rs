@@ -1,5 +1,8 @@
 //! # zilja-store: pema e Ziles në disk
 //!
+//! Dy motorë me të njëjtin algoritëm dhe të njëjtat root-e/dëftesa: `DiskTree` (RocksDB, më poshtë)
+//! dhe `PageTree` (skedar blloqesh pa bazë të dhënash, në `pagefile.rs`).
+//!
 //! **Tavolina dhe rafti.** Nivelet e sipërme të pemës (`cache_depth`) jetojnë vetëm
 //! në RAM. Poshtë tyre, pema ruhet në RocksDB me **faqe**: çdo faqe mban 4 nivele
 //! (deri në 15 nyje, gjethe ose të brendshme) dhe lexohet/shkruhet si një hyrje e
@@ -56,6 +59,9 @@ const CF_STAGING: &str = "staging";
 /// Çelësi në `meta` që shënon gjendjen si të pavlefshme (rindërtohet në nisjen e ardhshme).
 const INVALID_KEY: &[u8] = b"invalid";
 const CF_META: &str = "meta";
+
+mod pagefile;
+pub use pagefile::{fuzz_decode_pages, fuzz_seeds_pages, PageOptions, PageStats, PageTree, BLOCK as PAGE_BLOCK};
 const STATE_KEY: &[u8] = b"state";
 
 // ---------------------------------------------------------------- rruga
@@ -471,6 +477,166 @@ struct DiskPrepared {
 
 /// Ndryshimet e niveleve të sipërme në një slot: vlerat e vjetra, për dëftesat historike.
 type CacheDiff = (u64, HashMap<PKey, Option<(u64, Node)>>);
+
+// ---------------------------------------------------------------- algoritmi
+
+/// Burimi i nyjeve të gjendjes së fundit. Algoritmi i zbatimit (`build`/`apply`) është i
+/// përbashkët për çdo mënyrë ruajtjeje (RocksDB ose skedari i faqeve): ndryshon vetëm leximi.
+trait Source: Sync {
+    /// F-04: nyja në `p` që prindi e shënon si `rf`; mungesa ose hash i ndryshëm = gabim.
+    fn read_expected(&self, p: &NPath, rf: Ref) -> Result<Option<(u64, Node)>, String>;
+
+
+    /// Ndërton një nënpemë të re në `p` (poshtë `p` nuk ka asgjë). Nuk shkruan vetë `p`.
+    /// `ups` përmban vetëm llogari të gjalla (Faster-2: varret hiqen një herë, nga thirrësi).
+    fn build(&self, p: NPath, ups: &[(Key, Option<AccountMeta>)], out: &mut Vec<NodeW>) -> Option<Node> {
+        match ups.len() {
+            0 => None,
+            1 => {
+                let (k, v) = &ups[0];
+                Some(Node::leaf(*k, v.clone()?))
+            }
+            _ => {
+                let i = ups.partition_point(|(k, _)| bit(k, p.depth as usize) == 0);
+                let (u0, u1) = ups.split_at(i);
+                let (c0, c1) = if ups.len() > PAR_THRESHOLD {
+                    let ((c0, o0), (c1, o1)) = rayon::join(
+                        || {
+                            let mut o = Vec::new();
+                            (self.build(p.child(0), u0, &mut o), o)
+                        },
+                        || {
+                            let mut o = Vec::new();
+                            (self.build(p.child(1), u1, &mut o), o)
+                        },
+                    );
+                    out.extend(o0);
+                    out.extend(o1);
+                    (c0, c1)
+                } else {
+                    (self.build(p.child(0), u0, out), self.build(p.child(1), u1, out))
+                };
+                let node = Node::Internal { l: ref_of(&c0), r: ref_of(&c1) };
+                emit(out, p.child(0), c0, None);
+                emit(out, p.child(1), c1, None);
+                Some(node)
+            }
+        }
+    }
+
+    /// Zbaton ndryshimet në `p`, ku tani ndodhet `old`. Kthen nyjen e re për `p` (pa e
+    /// shkruar) dhe ndryshimin në numrin e llogarive.
+    fn apply(
+        &self,
+        p: NPath,
+        old: Option<(u64, Node)>,
+        ups: &[(Key, Option<AccountMeta>)],
+        out: &mut Vec<NodeW>,
+    ) -> Result<(Option<Node>, i64), String> {
+        Ok(match old.map(|o| o.1) {
+            None => {
+                let live: Vec<_> = ups.iter().filter(|(_, m)| m.is_some()).cloned().collect();
+                let delta = live.len() as i64;
+                (self.build(p, &live, out), delta)
+            }
+            Some(Node::Leaf(d)) => {
+                let LeafData { key, meta, .. } = *d;
+                match ups.binary_search_by(|(k, _)| k.cmp(&key)) {
+                    Ok(_) => {
+                        let live: Vec<_> = ups.iter().filter(|(_, m)| m.is_some()).cloned().collect();
+                        let delta = live.len() as i64 - 1;
+                        (self.build(p, &live, out), delta)
+                    }
+                    Err(pos) => {
+                        let mut merged = Vec::with_capacity(ups.len() + 1);
+                        merged.extend(ups[..pos].iter().filter(|(_, m)| m.is_some()).cloned());
+                        merged.push((key, Some(meta)));
+                        merged.extend(ups[pos..].iter().filter(|(_, m)| m.is_some()).cloned());
+                        let delta = merged.len() as i64 - 1;
+                        (self.build(p, &merged, out), delta)
+                    }
+                }
+            }
+            Some(Node::Internal { l, r }) => {
+                let i = ups.partition_point(|(k, _)| bit(k, p.depth as usize) == 0);
+                let (u0, u1) = ups.split_at(i);
+                type Side = (bool, Option<Node>, Option<(u64, Node)>, Vec<NodeW>, i64);
+                let side = |b: u8, u: &[(Key, Option<AccountMeta>)], rf: Ref| -> Result<Side, String> {
+                    let mut o = Vec::new();
+                    if u.is_empty() {
+                        return Ok((false, None, None, o, 0));
+                    }
+                    let cp = p.child(b);
+                    let old_c = self.read_expected(&cp, rf)?;
+                    let (res, d) = self.apply(cp, old_c.clone(), u, &mut o)?;
+                    Ok((true, res, old_c, o, d))
+                };
+                let (s0, s1) = if ups.len() > PAR_THRESHOLD {
+                    rayon::join(|| side(0, u0, l), || side(1, u1, r))
+                } else {
+                    (side(0, u0, l), side(1, u1, r))
+                };
+                let (s0, s1) = (s0?, s1?);
+                let (ch0, n0, old0, o0, d0) = s0;
+                let (ch1, n1, old1, o1, d1) = s1;
+                out.extend(o0);
+                out.extend(o1);
+                let k0 = if ch0 { ref_of(&n0).kind } else { l.kind };
+                let k1 = if ch1 { ref_of(&n1).kind } else { r.kind };
+                let (cp0, cp1) = (p.child(0), p.child(1));
+                let node = match (k0, k1) {
+                    (Kind::Empty, Kind::Empty) => {
+                        if ch0 {
+                            emit(out, cp0, None, old0);
+                        }
+                        if ch1 {
+                            emit(out, cp1, None, old1);
+                        }
+                        None
+                    }
+                    (Kind::Leaf, Kind::Empty) | (Kind::Empty, Kind::Leaf) => {
+                        // Gjethja e vetme ngjitet lart; vendi i saj dhe vendi bosh lirohen.
+                        let mut sides = [(ch0, n0, old0, cp0), (ch1, n1, old1, cp1)];
+                        let li = if k0 == Kind::Leaf { 0 } else { 1 };
+                        let (ch, n, old, cp) = std::mem::replace(&mut sides[li], (false, None, None, cp0));
+                        let (leaf, old_place) = if ch {
+                            (n.ok_or("gjethja e re mungon")?, old)
+                        } else {
+                            let rf = if li == 0 { l } else { r };
+                            let o = self.read_expected(&cp, rf)?;
+                            (o.as_ref().ok_or("gjethja e pandryshuar mungon")?.1.clone(), o)
+                        };
+                        emit(out, cp, None, old_place);
+                        let (che, _, olde, cpe) = std::mem::replace(&mut sides[1 - li], (false, None, None, cp0));
+                        if che {
+                            emit(out, cpe, None, olde);
+                        }
+                        Some(leaf)
+                    }
+                    _ => {
+                        let l2 = if ch0 { ref_of(&n0) } else { l };
+                        let r2 = if ch1 { ref_of(&n1) } else { r };
+                        if ch0 {
+                            emit(out, cp0, n0, old0);
+                        }
+                        if ch1 {
+                            emit(out, cp1, n1, old1);
+                        }
+                        Some(Node::Internal { l: l2, r: r2 })
+                    }
+                };
+                (node, d0 + d1)
+            }
+        })
+    }
+
+}
+
+impl Source for DiskTree {
+    fn read_expected(&self, p: &NPath, rf: Ref) -> Result<Option<(u64, Node)>, String> {
+        DiskTree::read_expected(self, p, rf)
+    }
+}
 
 // ---------------------------------------------------------------- DiskTree
 
@@ -915,151 +1081,6 @@ impl DiskTree {
         }
         let (root, idx) = page_pos(p, self.page_depth(p.depth));
         Ok(self.page_at(&root, v)?.and_then(|pg| pg.slots[idx].clone()))
-    }
-
-    // ------------------------------------------------------------ algoritmi
-
-    /// Ndërton një nënpemë të re në `p` (poshtë `p` nuk ka asgjë). Nuk shkruan vetë `p`.
-    /// `ups` përmban vetëm llogari të gjalla (Faster-2: varret hiqen një herë, nga thirrësi).
-    fn build(&self, p: NPath, ups: &[(Key, Option<AccountMeta>)], out: &mut Vec<NodeW>) -> Option<Node> {
-        match ups.len() {
-            0 => None,
-            1 => {
-                let (k, v) = &ups[0];
-                Some(Node::leaf(*k, v.clone()?))
-            }
-            _ => {
-                let i = ups.partition_point(|(k, _)| bit(k, p.depth as usize) == 0);
-                let (u0, u1) = ups.split_at(i);
-                let (c0, c1) = if ups.len() > PAR_THRESHOLD {
-                    let ((c0, o0), (c1, o1)) = rayon::join(
-                        || {
-                            let mut o = Vec::new();
-                            (self.build(p.child(0), u0, &mut o), o)
-                        },
-                        || {
-                            let mut o = Vec::new();
-                            (self.build(p.child(1), u1, &mut o), o)
-                        },
-                    );
-                    out.extend(o0);
-                    out.extend(o1);
-                    (c0, c1)
-                } else {
-                    (self.build(p.child(0), u0, out), self.build(p.child(1), u1, out))
-                };
-                let node = Node::Internal { l: ref_of(&c0), r: ref_of(&c1) };
-                emit(out, p.child(0), c0, None);
-                emit(out, p.child(1), c1, None);
-                Some(node)
-            }
-        }
-    }
-
-    /// Zbaton ndryshimet në `p`, ku tani ndodhet `old`. Kthen nyjen e re për `p` (pa e
-    /// shkruar) dhe ndryshimin në numrin e llogarive.
-    fn apply(
-        &self,
-        p: NPath,
-        old: Option<(u64, Node)>,
-        ups: &[(Key, Option<AccountMeta>)],
-        out: &mut Vec<NodeW>,
-    ) -> Result<(Option<Node>, i64), String> {
-        Ok(match old.map(|o| o.1) {
-            None => {
-                let live: Vec<_> = ups.iter().filter(|(_, m)| m.is_some()).cloned().collect();
-                let delta = live.len() as i64;
-                (self.build(p, &live, out), delta)
-            }
-            Some(Node::Leaf(d)) => {
-                let LeafData { key, meta, .. } = *d;
-                match ups.binary_search_by(|(k, _)| k.cmp(&key)) {
-                    Ok(_) => {
-                        let live: Vec<_> = ups.iter().filter(|(_, m)| m.is_some()).cloned().collect();
-                        let delta = live.len() as i64 - 1;
-                        (self.build(p, &live, out), delta)
-                    }
-                    Err(pos) => {
-                        let mut merged = Vec::with_capacity(ups.len() + 1);
-                        merged.extend(ups[..pos].iter().filter(|(_, m)| m.is_some()).cloned());
-                        merged.push((key, Some(meta)));
-                        merged.extend(ups[pos..].iter().filter(|(_, m)| m.is_some()).cloned());
-                        let delta = merged.len() as i64 - 1;
-                        (self.build(p, &merged, out), delta)
-                    }
-                }
-            }
-            Some(Node::Internal { l, r }) => {
-                let i = ups.partition_point(|(k, _)| bit(k, p.depth as usize) == 0);
-                let (u0, u1) = ups.split_at(i);
-                type Side = (bool, Option<Node>, Option<(u64, Node)>, Vec<NodeW>, i64);
-                let side = |b: u8, u: &[(Key, Option<AccountMeta>)], rf: Ref| -> Result<Side, String> {
-                    let mut o = Vec::new();
-                    if u.is_empty() {
-                        return Ok((false, None, None, o, 0));
-                    }
-                    let cp = p.child(b);
-                    let old_c = self.read_expected(&cp, rf)?;
-                    let (res, d) = self.apply(cp, old_c.clone(), u, &mut o)?;
-                    Ok((true, res, old_c, o, d))
-                };
-                let (s0, s1) = if ups.len() > PAR_THRESHOLD {
-                    rayon::join(|| side(0, u0, l), || side(1, u1, r))
-                } else {
-                    (side(0, u0, l), side(1, u1, r))
-                };
-                let (s0, s1) = (s0?, s1?);
-                let (ch0, n0, old0, o0, d0) = s0;
-                let (ch1, n1, old1, o1, d1) = s1;
-                out.extend(o0);
-                out.extend(o1);
-                let k0 = if ch0 { ref_of(&n0).kind } else { l.kind };
-                let k1 = if ch1 { ref_of(&n1).kind } else { r.kind };
-                let (cp0, cp1) = (p.child(0), p.child(1));
-                let node = match (k0, k1) {
-                    (Kind::Empty, Kind::Empty) => {
-                        if ch0 {
-                            emit(out, cp0, None, old0);
-                        }
-                        if ch1 {
-                            emit(out, cp1, None, old1);
-                        }
-                        None
-                    }
-                    (Kind::Leaf, Kind::Empty) | (Kind::Empty, Kind::Leaf) => {
-                        // Gjethja e vetme ngjitet lart; vendi i saj dhe vendi bosh lirohen.
-                        let mut sides = [(ch0, n0, old0, cp0), (ch1, n1, old1, cp1)];
-                        let li = if k0 == Kind::Leaf { 0 } else { 1 };
-                        let (ch, n, old, cp) = std::mem::replace(&mut sides[li], (false, None, None, cp0));
-                        let (leaf, old_place) = if ch {
-                            (n.ok_or("gjethja e re mungon")?, old)
-                        } else {
-                            let rf = if li == 0 { l } else { r };
-                            let o = self.read_expected(&cp, rf)?;
-                            (o.as_ref().ok_or("gjethja e pandryshuar mungon")?.1.clone(), o)
-                        };
-                        emit(out, cp, None, old_place);
-                        let (che, _, olde, cpe) = std::mem::replace(&mut sides[1 - li], (false, None, None, cp0));
-                        if che {
-                            emit(out, cpe, None, olde);
-                        }
-                        Some(leaf)
-                    }
-                    _ => {
-                        let l2 = if ch0 { ref_of(&n0) } else { l };
-                        let r2 = if ch1 { ref_of(&n1) } else { r };
-                        if ch0 {
-                            emit(out, cp0, n0, old0);
-                        }
-                        if ch1 {
-                            emit(out, cp1, n1, old1);
-                        }
-                        Some(Node::Internal { l: l2, r: r2 })
-                    }
-                };
-                (node, d0 + d1)
-            }
-        })
     }
 
     /// Kalon ndryshimet në `batch` (disk) dhe në cache/unazë (RAM).

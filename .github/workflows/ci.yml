@@ -25,6 +25,12 @@ jobs:
         run: cargo run -q --release -p zilja-bench --bin zilja-crash-test -- 6
       - name: vrasje gjatë ndërtimit nga snapshot-i (Safer-6)
         run: cargo run -q --release -p zilja-bench --bin zilja-crash-test -- --snapshot 6
+      - name: testi i rrymës që ikën (motori me faqe)
+        run: ZILJA_ENGINE=pages cargo run -q --release -p zilja-bench --bin zilja-crash-test -- 6
+      - name: vrasje gjatë ndërtimit nga snapshot-i (motori me faqe)
+        run: ZILJA_ENGINE=pages cargo run -q --release -p zilja-bench --bin zilja-crash-test -- --snapshot 6
+      - name: fuzz diferencial i motorit me faqe (3 min)
+        run: cargo run -q --release -p zilja-bench --bin zilja-fuzz -- 180
       - name: vektorët në repo = vektorët që gjeneron Rust
         run: |
           cargo run -q -p zilja-bench --bin zilja-vectors > sdk/js/test/vectors.json
@@ -63,7 +69,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        db: ["0", "1"]
+        db: ["0", "1", "pages"]
     steps:
       - uses: actions/checkout@v4
       - name: Rust (versioni nga rust-toolchain.toml)

@@ -4871,6 +4871,7 @@ name = "zilja-store"
 version = "0.2.0"
 dependencies = [
  "ahash",
+ "crc32fast",
  "log",
  "rand 0.8.8",
  "rayon",
