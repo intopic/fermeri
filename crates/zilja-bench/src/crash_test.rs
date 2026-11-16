@@ -8,17 +8,53 @@
 //!
 //! `-- --snapshot [raunde]` (Safer-6): vret procesin gjatë ndërtimit nga snapshot-i. Pas
 //! rihapjes disku duhet të jetë ose bosh (ndërtim i mbetur në mes → rindërtim), ose i plotë.
+//!
+//! `ZILJA_ENGINE=pages` teston motorin me faqe; parazgjedhja është RocksDB.
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::time::Duration;
-use zilja_store::DiskTree;
+use zilja_store::{DiskTree, PageOptions, PageTree};
 use zilja_tree::StateTree;
+
+/// Pema në disk, me motorin e zgjedhur nga `ZILJA_ENGINE`.
+enum Disk {
+    Rocks(Box<DiskTree>),
+    Pages(Box<PageTree>),
+}
+
+impl Disk {
+    fn open(dir: &str) -> Disk {
+        match std::env::var("ZILJA_ENGINE").as_deref() {
+            Ok("pages") => Disk::Pages(Box::new(PageTree::open(dir, PageOptions { history: 16, ..Default::default() }).unwrap())),
+            _ => Disk::Rocks(Box::new(DiskTree::open(dir, 16).unwrap())),
+        }
+    }
+    fn tree(&mut self) -> &mut dyn StateTree {
+        match self {
+            Disk::Rocks(t) => t.as_mut(),
+            Disk::Pages(t) => t.as_mut(),
+        }
+    }
+    fn resume_point(&self) -> Option<zilja_tree::Resume> {
+        match self {
+            Disk::Rocks(t) => t.resume_point(),
+            Disk::Pages(t) => t.resume_point(),
+        }
+    }
+    fn verify_integrity(&self) -> Result<(), String> {
+        match self {
+            Disk::Rocks(t) => t.verify_integrity(),
+            Disk::Pages(t) => t.verify_integrity(),
+        }
+    }
+}
 use zilja_verifier::{AccountMeta, Key};
 
 fn writer(dir: &str) {
-    let mut t = DiskTree::open(dir, 16).unwrap();
+    let mut d = Disk::open(dir);
+    let t = d.tree();
     let start = match t.resume_point() {
         Some(r) => r.slot + 1,
         None => {
@@ -54,7 +90,8 @@ fn meta(rng: &mut StdRng) -> AccountMeta {
 }
 
 fn snap_writer(dir: &str) {
-    let mut t = DiskTree::open(dir, 16).unwrap();
+    let mut d = Disk::open(dir);
+    let t = d.tree();
     let mut rng = StdRng::seed_from_u64(5);
     for c in 0..40u64 {
         t.stage_snapshot(c % 7, (0..10_000).map(|i| (key(c * 10_000 + i), Some(meta(&mut rng)))).collect()).unwrap();
@@ -73,7 +110,7 @@ fn snapshot_kills(exe: &str, rounds: usize) {
         std::thread::sleep(wait);
         let _ = child.kill();
         child.wait().unwrap();
-        let t = DiskTree::open(&dir, 16).unwrap();
+        let t = Disk::open(&dir);
         match t.resume_point() {
             None => empty += 1,
             Some(r) => {
@@ -82,7 +119,11 @@ fn snapshot_kills(exe: &str, rounds: usize) {
                 full += 1;
             }
         }
-        println!("raundi {round:2}: u vra pas {:4} ms → {}", wait.as_millis(), if t.resume_point().is_some() { "i plotë ✅" } else { "bosh, do të rindërtohet ✅" });
+        println!(
+            "raundi {round:2}: u vra pas {:4} ms → {}",
+            wait.as_millis(),
+            if t.resume_point().is_some() { "i plotë ✅" } else { "bosh, do të rindërtohet ✅" }
+        );
         drop(t);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -108,11 +149,7 @@ fn main() {
     let mut rng = StdRng::seed_from_u64(99);
     let mut last_confirmed = 0u64;
     for round in 1..=rounds {
-        let mut child = Command::new(&args[0])
-            .args(["--writer", &dir])
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = Command::new(&args[0]).args(["--writer", &dir]).stdout(Stdio::piped()).spawn().unwrap();
         let out = child.stdout.take().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -128,7 +165,7 @@ fn main() {
         let confirmed = rx.try_iter().last().unwrap_or(last_confirmed);
         last_confirmed = last_confirmed.max(confirmed);
 
-        let t = DiskTree::open(&dir, 16).unwrap();
+        let t = Disk::open(&dir);
         let r = t.resume_point().expect("gjendja humbi");
         t.verify_integrity().unwrap_or_else(|e| panic!("raundi {round}: disku i dëmtuar: {e}"));
         assert!(r.slot >= last_confirmed, "raundi {round}: humbi sloti {last_confirmed} (në disk: {})", r.slot);

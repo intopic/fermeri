@@ -77,6 +77,25 @@ që në nisjen e parë. Rindërtimi bëhet në nisjen tjetër.
 Nëse dosja `db_path` është krijuar nga një version tjetër i Ziles, plugin-i refuzon të
 ngarkohet dhe nuk e fshin. Fshije dosjen me dorë, ose përdor versionin e duhur.
 
+## Motori i diskut: `tree_engine`
+
+`"tree_engine": "rocksdb"` (parazgjedhja) ose `"pages"`. Të dy japin të njëjtat root-e dhe
+dëftesa, bit për bit (testi `pages_match_rocksdb_tree_exactly` dhe fuzz-i diferencial).
+
+`"pages"` ruan pemën në një skedar blloqesh 4 KB (`pages.dat`), pa bazë të dhënash:
+- çdo faqe ka adresë direkte, ndaj leximi është një `pread` pa indeks;
+- faqet e reja të një sloti paketohen në blloqe të plota, dhe faqja e vjetër s'mbishkruhet kurrë;
+- dëftesat historike lexohen nga root-i i vjetër, pa arkivë;
+- blloqet gjysmë bosh mblidhen vetë.
+
+Çdo slot shton një rekord në `meta.log`, dhe herë pas here gjendja e plotë shkon në
+`meta.ckpt`. Me `sync_every_slots` = 1 (parazgjedhja për `pages`), faqet shkojnë në disk para
+rekordit, ndaj një ikje rryme humb maksimumi slotin që po shkruhej. Një faqe e dëmtuar ose e
+zhvendosur jep gabim, kurrë dëftesë të gabuar, sepse çdo faqe kontrollohet me crc32, me
+hash-in e prindit dhe me rrugën e saj.
+
+Ndryshimi i motorit kërkon një dosje të re ose rindërtim nga snapshot-i.
+
 ## Kufijtë e konfigurimit (L-08)
 
 - `cache_depth`: 12–24. Me ~2^thellësi nyje në RAM, 20 do të thotë ~1M nyje (~150 MB).

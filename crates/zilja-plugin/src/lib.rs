@@ -13,6 +13,7 @@
 //!   "roots_log": "/var/lib/zilja/roots.log",
 //!   "attest_keypair": "/rruga/validator-keypair.json",
 //!   "db_path": "/var/lib/zilja/db",
+//!   "tree_engine": "pages",
 //!   "history_slots": 32,
 //!   "cache_depth": 20,
 //!   "block_cache_mb": 512,
@@ -59,9 +60,12 @@ pub struct Config {
     /// Skedari i firmave (kundër firmosjes së dyfishtë). Parazgjedhja: pranë `db_path` ose `roots_log`.
     #[serde(default)]
     pub attest_state: Option<PathBuf>,
-    /// Pema në disk (RocksDB). Pa këtë, pema mbahet në RAM.
+    /// Pema në disk. Pa këtë, pema mbahet në RAM.
     #[serde(default)]
     pub db_path: Option<PathBuf>,
+    /// Motori i diskut: `"rocksdb"` (parazgjedhja) ose `"pages"` (skedar blloqesh, pa bazë të dhënash).
+    #[serde(default)]
+    pub tree_engine: Option<String>,
     /// Sa slote pas jepen dëftesa (vetëm me `db_path`). Parazgjedhja: 32.
     #[serde(default)]
     pub history_slots: Option<u64>,
@@ -144,6 +148,13 @@ impl Config {
         }
         if self.block_cache_mb.is_some_and(|m| m == 0 || m > 1 << 20) {
             return Err("block_cache_mb duhet në (0, 1048576]".into());
+        }
+        match self.tree_engine.as_deref() {
+            None | Some("rocksdb") | Some("pages") => {}
+            Some(e) => return Err(format!("tree_engine i panjohur: {e} (rocksdb | pages)")),
+        }
+        if self.tree_engine.is_some() && self.db_path.is_none() {
+            return Err("tree_engine kërkon db_path".into());
         }
         if self.history_slots.is_some() || self.cache_depth.is_some() || self.block_cache_mb.is_some() {
             if self.db_path.is_none() {
@@ -279,6 +290,17 @@ impl GeyserPlugin for ZiljaPlugin {
             None => None,
         };
         let tree: Option<Box<dyn zilja_tree::StateTree>> = match &cfg.db_path {
+            Some(p) if cfg.tree_engine.as_deref() == Some("pages") => {
+                let d = zilja_store::PageOptions::default();
+                let o = zilja_store::PageOptions {
+                    history: cfg.history_slots.unwrap_or(d.history),
+                    cache_depth: cfg.cache_depth.unwrap_or(d.cache_depth),
+                    durable: true,
+                    sync_every: cfg.sync_every_slots.unwrap_or(d.sync_every),
+                    ..d
+                };
+                Some(Box::new(zilja_store::PageTree::open(p, o).map_err(custom)?))
+            }
             Some(p) => {
                 let d = zilja_store::StoreOptions::default();
                 let o = zilja_store::StoreOptions {
@@ -446,5 +468,15 @@ mod tests {
         // Pubkey me gjatësi të gabuar: injorohet.
         let bad = AccountView { pubkey: &[1u8; 5], ..v };
         assert!(to_meta(&bad).is_none());
+    }
+
+    #[test]
+    fn tree_engine_is_validated() {
+        let cfg = |extra: &str| serde_json::from_str::<Config>(&format!(r#"{{"libpath": "x"{extra}}}"#)).unwrap();
+        assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages""#).validate().is_ok());
+        assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "rocksdb""#).validate().is_ok());
+        assert!(cfg(r#", "db_path": "/tmp/z""#).validate().is_ok());
+        assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "lmdb""#).validate().is_err());
+        assert!(cfg(r#", "tree_engine": "pages""#).validate().is_err(), "pa db_path");
     }
 }

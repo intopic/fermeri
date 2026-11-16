@@ -8,7 +8,7 @@
 #      pema rindërtohet me të gjitha llogaritë.
 #
 # Përdorimi: scripts/e2e-test-validator.sh [rruga/te/solana-release/bin]
-# Me ZILJA_DB=1 pema mbahet në disk (RocksDB) dhe rinisja vazhdon nga disku, pa snapshot.
+# Me ZILJA_DB=1 pema mbahet në disk (RocksDB), me ZILJA_DB=pages në skedarin e faqeve; rinisja vazhdon nga disku, pa snapshot.
 set -euo pipefail
 
 BIN="${1:-$HOME/.local/share/solana/install/active_release/bin}"
@@ -33,6 +33,8 @@ STRICT_F01="${STRICT_F01:-1}"
 DBCONF=""
 if [ "${ZILJA_DB:-0}" = "1" ]; then
   DBCONF=", \"db_path\": \"$WORK/zdb\", \"history_slots\": 256, \"cache_depth\": 4"
+elif [ "${ZILJA_DB:-0}" = "pages" ]; then
+  DBCONF=", \"db_path\": \"$WORK/zdb\", \"tree_engine\": \"pages\", \"history_slots\": 256, \"cache_depth\": 4"
 fi
 # Pema e cekët (cache_depth 4) me qëllim, që edhe me pak llogari të punojnë faqet në disk.
 export ZILJA_ALLOW_SMALL_CACHE_DEPTH=1
@@ -173,7 +175,7 @@ json.dump(c, open(p, "w"), indent=1)
 PY
 sleep 2
 start
-if [ "${ZILJA_DB:-0}" = "1" ]; then
+if [ "${ZILJA_DB:-0}" != "0" ]; then
   AFTER=$(zroot)
   echo "   para ndalimit: $BEFORE"
   echo "   pas rinisjes:  $AFTER"
@@ -212,7 +214,7 @@ elif [ "$STRICT_F01" = "1" ]; then
 else
   echo "   ❌ F-01 u riprodhua: zilja $ZL lamports, RPC $RL lamports (e pritur deri në Fazën 1)"
 fi
-if [ "${ZILJA_DB:-0}" = "1" ]; then
+if [ "${ZILJA_DB:-0}" != "0" ]; then
 echo "== Hapi 5 (disk): dëftesë historike dhe asnjë ndalim"
   [ "$(metric broken)" = "0" ] || { echo "GABIM: zilja ndaloi"; exit 1; }
   [ "$(metric resume_verified)" = "1" ] || { echo "GABIM: blockhash-i pas rinisjes nuk u kontrollua"; exit 1; }
@@ -265,7 +267,7 @@ else
   echo "$ATT" | grep -q "s'firmos" || { echo "GABIM: pema jo e plotë s'duhet të firmosë: $ATT"; exit 1; }
   echo "   ✅ pema jo e plotë (nisur nga genesis) nuk firmos (F-10)"
 fi
-if [ "${ZILJA_DB:-0}" = "1" ]; then
+if [ "${ZILJA_DB:-0}" != "0" ]; then
   echo "== Hapi 7 (disk): zinxhir krejt i ri (--reset) me pemën e vjetër në disk → zilja duhet të ndalojë"
   stop
   # Autorizimi i çelësit lidhet me genesis-in; zinxhiri i ri ka genesis tjetër, ndaj kthehu te identiteti.
