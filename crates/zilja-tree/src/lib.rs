@@ -319,8 +319,10 @@ pub trait StateTree: Send + Sync {
         None
     }
     /// Shënon gjendjen e ruajtur si të pavlefshme (p.sh. kur zbulohet zinxhir tjetër). Nuk fshin
-    /// gjë tani (F-13): rindërtimi bëhet në nisjen e ardhshme.
-    fn invalidate(&mut self, _why: &str) {}
+    /// gjë tani (F-13): rindërtimi bëhet në nisjen e ardhshme. Gabimi i shkrimit raportohet (P-03).
+    fn invalidate(&mut self, _why: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Pema në RAM, e mbështjellë për ndërfaqen [`StateTree`]. Pa histori.

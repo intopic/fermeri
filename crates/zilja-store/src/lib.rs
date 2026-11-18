@@ -1527,14 +1527,12 @@ impl StateTree for DiskTree {
         })
     }
 
-    fn invalidate(&mut self, why: &str) {
+    fn invalidate(&mut self, why: &str) -> Result<(), String> {
         // F-13: asgjë nuk fshihet tani. Shënimi në `meta` bën që nisja e ardhshme ta rindërtojë.
         let mut b = WriteBatch::default();
         b.put_cf(self.cf(CF_META), INVALID_KEY, why.as_bytes());
-        if let Err(e) = self.write(b) {
-            log::error!("zilja-store: shënimi 'i pavlefshëm' dështoi: {e}");
-        }
-        let _ = self.db.flush_cf(self.cf(CF_META));
+        self.write(b).map_err(|e| format!("shënimi 'i pavlefshëm': {e}"))?;
+        self.db.flush_cf(self.cf(CF_META)).map_err(|e| format!("shënimi 'i pavlefshëm': {e}"))
     }
 }
 

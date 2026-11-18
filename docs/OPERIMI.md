@@ -96,6 +96,46 @@ hash-in e prindit dhe me rrugën e saj.
 
 Ndryshimi i motorit kërkon një dosje të re ose rindërtim nga snapshot-i.
 
+## Rikuperimi dhe dëmtimi i ruajtjes (P-02, P-03)
+
+Në hapje, motori me faqe lexon `meta.ckpt` dhe pas tij rekordet e `meta.log`. Çdo rekord
+duhet të jetë i plotë, me CRC të saktë dhe i formatit të njohur. Rekordet duhet të jenë në
+rend: numri rendor rritet me 1, sloti rritet rreptësisht. Madhësitë kontrollohen kundër
+buxhetit: një rekord deri në 64 MB, log-u deri në 256 MB, checkpoint-i deri në 8 GB.
+
+**I vetmi rast i toleruar** është bishti pas rekordit të fundit të vlefshëm, kur shtrihet
+deri në fund të skedarit:
+- kokë ose trup i prerë;
+- vetëm zero;
+- korniza e fundit me CRC të gabuar.
+
+Me `sync_every_slots = 1`, ky është gjithmonë një slot që s'u konfirmua kurrë: commit-i kthehet
+vetëm pas fsync-ut të rekordit, ndaj ai slot s'u shërbye dhe s'u firmos kurrë. Bishti ruhet në
+`meta.log.tail-<offset>` dhe hiqet nga log-u.
+
+Kufizim: një bit-flip në rekordin e fundit, që ishte i konfirmuar, s'dallohet nga një shkrim
+i prerë. Në atë rast zilja kthehet një slot mbrapa. Pas rinisjes, kontrolli i zinxhirit
+(fingerprint) s'gjen vazhdimësi me validatorin dhe e ndalon zilen (fail-closed). Ajo s'jep
+dëftesa të gabuara.
+
+**Çdo gjë tjetër ndalon hapjen me gabim.** Këtu hyjnë: CRC e gabuar me rekorde të vlefshme
+pas saj, format i panjohur, rekord i përsëritur ose që mungon, log pa checkpoint, dhe faqe që
+s'përputhen me gjendjen. Mesazhi tregon skedarin dhe bajtin, dhe **asnjë skedar s'ndryshohet**.
+Plugin-i s'ngarkohet, dhe validatori s'niset me të.
+
+Procedura:
+1. Ndalo validatorin.
+2. Ruaj dosjen për diagnozë: `mv /var/lib/zilja/db /var/lib/zilja/db.damaged-$(date +%s)`.
+3. Rinise validatorin. Zilja ndërton pemën e re nga snapshot-i.
+
+`INVALID` (zinxhir tjetër, ndalim) mbetet rruga e vetme e rindërtimit automatik, sepse
+shënohet qëllimisht nga vetë zilja. Nëse shkrimi i tij dështon, `zilja_invalidate_failed`
+bëhet 1, dhe dosja duhet zhvendosur me dorë para rinisjes.
+
+**`sync_every_slots`**: motori me faqe pranon vetëm 1 në këtë release. Mënyra asinkrone kërkon
+që ripërdorimi i blloqeve të lidhet me rekordin e fundit të konfirmuar në disk, jo vetëm me
+historinë dhe me `reuse_slack`. Ky ndryshim s'është bërë ende.
+
 ## Pronësia ekskluzive e ruajtjes (P-01, P-04)
 
 - **Pema me faqe:** `db_path/LOCK` mbahet me lock ekskluziv (`flock`) gjatë gjithë jetës së

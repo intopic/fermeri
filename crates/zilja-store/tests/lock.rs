@@ -62,7 +62,7 @@ fn second_open_is_refused_and_touches_nothing() {
 fn second_open_does_not_wipe_an_invalidated_tree_in_use() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = filled(dir.path());
-    a.invalidate("test");
+    a.invalidate("test").unwrap();
     let before = files(dir.path());
     assert!(PageTree::open(dir.path(), opts()).is_err(), "hapja e dytë duhet të refuzohet, jo të fshijë");
     assert_eq!(files(dir.path()), before, "pema e instancës së parë u fshi");
@@ -74,7 +74,7 @@ fn second_open_does_not_wipe_an_invalidated_tree_in_use() {
 fn rebuild_keeps_the_lock() {
     let dir = tempfile::tempdir().unwrap();
     let mut a = filled(dir.path());
-    a.invalidate("test");
+    a.invalidate("test").unwrap();
     drop(a);
     // Rihapja rindërton (fshin faqet), por lock-u mbetet i saji gjatë gjithë jetës.
     let mut b = PageTree::open(dir.path(), opts()).unwrap();

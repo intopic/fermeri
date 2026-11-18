@@ -156,6 +156,10 @@ impl Config {
         if self.tree_engine.is_some() && self.db_path.is_none() {
             return Err("tree_engine kërkon db_path".into());
         }
+        // P-03: motori me faqe mbështet vetëm fsync në çdo slot në këtë release.
+        if self.tree_engine.as_deref() == Some("pages") && self.sync_every_slots.is_some_and(|n| n != 1) {
+            return Err("tree_engine \"pages\" kërkon sync_every_slots = 1 (ose lëre pa vendosur)".into());
+        }
         if self.history_slots.is_some() || self.cache_depth.is_some() || self.block_cache_mb.is_some() {
             if self.db_path.is_none() {
                 return Err("history_slots/cache_depth/block_cache_mb kërkojnë db_path".into());
@@ -478,5 +482,8 @@ mod tests {
         assert!(cfg(r#", "db_path": "/tmp/z""#).validate().is_ok());
         assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "lmdb""#).validate().is_err());
         assert!(cfg(r#", "tree_engine": "pages""#).validate().is_err(), "pa db_path");
+        assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages", "sync_every_slots": 1"#).validate().is_ok());
+        assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages", "sync_every_slots": 0"#).validate().is_err(), "P-03");
+        assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages", "sync_every_slots": 4"#).validate().is_err(), "P-03");
     }
 }
