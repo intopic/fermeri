@@ -14,7 +14,8 @@
 //! Rrugë GET: `/health` (200 vetëm kur jep dëftesa, përndryshe 503), `/metrics` (Prometheus,
 //! zakonisht në një port privat). Trupi i kërkesës ≤ 64 KB, me kohë maksimale leximi.
 
-use crate::service::{Shared, State};
+use crate::service::{Shared, State, PHASE_HALTED, PHASE_RECOVERED, PHASE_SERVING};
+use zilja_tree::ProveError;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -27,6 +28,13 @@ use zilja_verifier::Key;
 /// Gabim RPC: (kodi, mesazhi).
 pub type RpcError = (i64, String);
 
+/// P-09: kodet e gabimeve. -32602 vetëm për parametra të pavlefshëm.
+pub const CODE_NOT_READY: i64 = -32002;
+pub const CODE_HALTED: i64 = -32003;
+pub const CODE_OUT_OF_HISTORY: i64 = -32007;
+/// Gabim I/O ose dëmtim i ruajtjes: zilja ndalon së shërbyeri (s'garanton më korrektësinë).
+pub const CODE_STORAGE: i64 = -32010;
+
 /// Ndërton përgjigjen e `getAccountProof` nga gjendja (`at = None` = sloti i fundit).
 pub fn account_proof_json(st: &State, pubkey: &Key, at: Option<u64>) -> Result<Value, RpcError> {
     // L-05: gjendja në slotin `v` është ajo e slotit më të fundit të rrënjosur ≤ v; ai etiketohet.
@@ -35,10 +43,14 @@ pub fn account_proof_json(st: &State, pubkey: &Key, at: Option<u64>) -> Result<V
         Some(v) if v >= st.slot => Some(st.slot),
         Some(v) => match st.roots.range(..=v).next_back() {
             Some((s, _)) => Some(*s),
-            None => return Err((-32602, format!("sloti {v} është jashtë kujtesës"))),
+            None => return Err((CODE_OUT_OF_HISTORY, format!("sloti {v} është jashtë kujtesës"))),
         },
     };
-    let (slot, root, proof, meta) = st.tree.prove_at(&zilja_verifier::tree_key(pubkey), at).map_err(|e| (-32602, e))?;
+    let (slot, root, proof, meta) = st.tree.prove_at(&zilja_verifier::tree_key(pubkey), at).map_err(|e| match e {
+        ProveError::NotReady(m) => (CODE_NOT_READY, m),
+        ProveError::OutOfHistory(m) => (CODE_OUT_OF_HISTORY, m),
+        ProveError::Storage(m) => (CODE_STORAGE, format!("gabim i ruajtjes: {m}")),
+    })?;
     // L-02: një pemë që s'mbulon çdo llogari nuk jep dëftesa "nuk ekziston".
     if meta.is_none() && !st.complete {
         return Err((-32006, "pema e kësaj zileje nuk mbulon çdo llogari (nisi pa snapshot): s'jep dëftesa mospërfshirjeje".into()));
@@ -82,11 +94,20 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
     let Some(params) = params.as_array().cloned() else {
         return err(id, -32602, "params duhet të jenë listë");
     };
-    let st = shared.state.read().unwrap();
+    let m = &shared.metrics;
+    // P-10: kyçi mund të jetë "i helmuar" nëse punëtori ra duke e mbajtur; leximi mbetet i sigurt.
+    let st = shared.state.read().unwrap_or_else(|e| e.into_inner());
+    if m.halted.load(Ordering::Relaxed) || m.phase.load(Ordering::Relaxed) == PHASE_HALTED {
+        let why = st.broken.clone().unwrap_or_else(|| "punëtori s'punon".into());
+        return err(id, CODE_HALTED, &format!("zilja ndaloi: {why}"));
+    }
     if !st.ready {
         return match &st.broken {
-            Some(why) => err(id, -32003, &format!("zilja ndaloi: {why}")),
-            None => err(id, -32002, "zilja ende po ndërton pemën fillestare"),
+            Some(why) => err(id, CODE_HALTED, &format!("zilja ndaloi: {why}")),
+            None if m.phase.load(Ordering::Relaxed) == PHASE_RECOVERED => {
+                err(id, CODE_NOT_READY, "gjendja u hap nga disku por zinxhiri s'e ka konfirmuar ende (P-08)")
+            }
+            None => err(id, CODE_NOT_READY, "zilja ende po ndërton pemën fillestare"),
         };
     }
     match method {
@@ -111,6 +132,12 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
                 Ok(res) => {
                     shared.metrics.proofs_served.fetch_add(1, Ordering::Relaxed);
                     json!({"jsonrpc": "2.0", "id": id, "result": res})
+                }
+                Err((code, e)) if code == CODE_STORAGE => {
+                    // P-09/P-10: ruajtja s'lexohet saktë: asnjë përgjigje tjetër s'garantohet më.
+                    drop(st);
+                    crate::service::stop_serving(shared, e.clone());
+                    err(id, code, &e)
                 }
                 Err((code, e)) => err(id, code, &e),
             }
@@ -286,15 +313,27 @@ fn write_resp(s: &mut TcpStream, code: u16, ctype: &str, body: &[u8], cors: bool
     s.flush()
 }
 
-/// `/health`: 200 vetëm kur pema është gati dhe zilja s'ka ndaluar. Lexon vetëm atomike.
+/// `/health`: 200 vetëm kur zilja shërben, s'ka ndaluar, punëtori jeton dhe root-i është i freskët
+/// (P-08, P-10). Lexon vetëm atomike, ndaj s'bllokohet nga punëtori ose nga kërkesat.
 fn health(shared: &Shared) -> (u16, &'static str) {
     let m = &shared.metrics;
-    if m.broken.load(Ordering::Relaxed) == 1 || m.halted.load(Ordering::Relaxed) {
-        (503, "halted")
-    } else if m.ready.load(Ordering::Relaxed) == 1 {
-        (200, "ok")
-    } else {
-        (503, "starting")
+    if m.broken.load(Ordering::Relaxed) == 1 || m.halted.load(Ordering::Relaxed) || !m.worker_alive.load(Ordering::Relaxed) {
+        return (503, "halted");
+    }
+    match m.phase.load(Ordering::Relaxed) {
+        PHASE_SERVING if m.ready.load(Ordering::Relaxed) == 1 => {
+            let max = m.max_root_age_secs.load(Ordering::Relaxed);
+            let last = m.last_root_unix.load(Ordering::Relaxed);
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            if max > 0 && now.saturating_sub(last) > max {
+                (503, "stale")
+            } else {
+                (200, "ok")
+            }
+        }
+        PHASE_RECOVERED => (503, "recovered"),
+        PHASE_HALTED => (503, "halted"),
+        _ => (503, "starting"),
     }
 }
 

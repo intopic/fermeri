@@ -311,7 +311,7 @@ pub trait StateTree: Send + Sync {
         self.apply_slot(slot, ups, fp)
     }
     /// Dëftesa në slotin e fundit (`at = None`) ose në një slot të kaluar.
-    fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, String>;
+    fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, ProveError>;
     /// Slotet për të cilat mund të jepen dëftesa: (më i vjetri, më i riu).
     fn provable_range(&self) -> Option<(u64, u64)>;
     /// Gjendja e ruajtur nga një nisje e mëparshme, nëse ka.
@@ -322,6 +322,35 @@ pub trait StateTree: Send + Sync {
     /// gjë tani (F-13): rindërtimi bëhet në nisjen e ardhshme. Gabimi i shkrimit raportohet (P-03).
     fn invalidate(&mut self, _why: &str) -> Result<(), String> {
         Ok(())
+    }
+}
+
+/// P-09: pse s'u dha dëftesa.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProveError {
+    /// Pema ende s'është ndërtuar.
+    NotReady(String),
+    /// Sloti i kërkuar s'është në kujtesën e pemës.
+    OutOfHistory(String),
+    /// Leximi nga ruajtja dështoi ose gjeti të dhëna që s'përputhen (I/O ose dëmtim): korrektësia
+    /// e përgjigjeve s'garantohet më.
+    Storage(String),
+}
+
+impl std::fmt::Display for ProveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProveError::NotReady(s) | ProveError::OutOfHistory(s) | ProveError::Storage(s) => f.write_str(s),
+        }
+    }
+}
+
+/// Kontrolli i përbashkët para dëftesës: pema ekziston dhe sloti është në kujtesë.
+pub fn check_provable(range: Option<(u64, u64)>, at: Option<u64>) -> Result<(), ProveError> {
+    let (lo, hi) = range.ok_or_else(|| ProveError::NotReady("pema ende s'është ndërtuar".into()))?;
+    match at {
+        Some(v) if v < lo || v > hi => Err(ProveError::OutOfHistory(format!("sloti {v} është jashtë kujtesës ({lo}..={hi})"))),
+        _ => Ok(()),
     }
 }
 
@@ -368,11 +397,11 @@ impl StateTree for MemTree {
         self.slot = Some(slot);
         Ok(self.tree.apply_batch(ups))
     }
-    fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, String> {
+    fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, ProveError> {
         let slot = self.slot.unwrap_or(0);
         if let Some(a) = at {
             if a != slot {
-                return Err(format!("pema në RAM ka vetëm slotin e fundit ({slot})"));
+                return Err(ProveError::OutOfHistory(format!("pema në RAM ka vetëm slotin e fundit ({slot})")));
             }
         }
         let (p, m) = self.tree.prove(key);

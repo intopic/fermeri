@@ -95,6 +95,14 @@ pub struct Config {
     /// pema, zilja ndalon dhe e rindërton në nisjen e ardhshme (dy rinisje gjithsej).
     #[serde(default)]
     pub snapshot_on_resume: bool,
+    /// P-10: /health = 503 kur root-i i fundit është më i vjetër se kaq sekonda (0 = pa kontroll).
+    /// Në Solana rrënjosja ndodh çdo ~0.4 s; 60 s do të thotë që zilja ose validatori kanë mbetur pas.
+    #[serde(default = "default_max_root_age")]
+    pub max_root_age_secs: u64,
+}
+
+fn default_max_root_age() -> u64 {
+    60
 }
 
 /// Ndërton opsionet e firmosjes nga konfigurimi (F-10).
@@ -343,7 +351,7 @@ impl GeyserPlugin for ZiljaPlugin {
             }
             None => None,
         };
-        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree, mid_run_load: is_reload }).map_err(custom)?;
+        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree, mid_run_load: is_reload, max_root_age_secs: Some(cfg.max_root_age_secs) }).map_err(custom)?;
         self.resuming.store(service.resumed, Ordering::Relaxed);
         self.snapshot_on_resume.store(cfg.snapshot_on_resume, Ordering::Relaxed);
         let main = rpc::serve_routes(&cfg.bind, service.shared.clone(), rpc::Routes { jsonrpc: true, metrics: false, cors: cfg.cors })

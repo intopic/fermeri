@@ -60,6 +60,40 @@ Kur ndalon:
 
 Pra, pas një ndalimi mjafton **një rinisje** e validatorit.
 
+### Fazat dhe `/health` (P-08, P-10)
+
+| Faza (`zilja_phase`) | Kuptimi | `/health` | RPC |
+|---|---|---|---|
+| `starting` (0) | pema po ndërtohet nga snapshot-i ose genesis-i | 503 `starting` | `-32002` |
+| `recovered` (1) | pema u hap nga disku, por zinxhiri s'e ka konfirmuar ende (SlotHashes) | 503 `recovered` | `-32002` |
+| `serving` (2) | jep dëftesa | 200 `ok`; 503 `stale` kur root-i është më i vjetër se `max_root_age_secs` | normal |
+| `halted` (3) | ndaloi (shih më sipër) | 503 `halted` | `-32003` |
+
+- Pas rinisjes, gjendja nga disku **s'shërbehet** derisa banka e parë e re ta konfirmojë. Kjo
+  zgjat zakonisht pak sekonda.
+- `max_root_age_secs` (parazgjedhja 60, 0 = pa kontroll): rrënjosja në Solana ndodh çdo
+  ~0.4 s, ndaj 60 s pa root të ri do të thotë që zilja ose validatori kanë mbetur pas. Gjatë kësaj
+  kohe RPC-ja përgjigjet ende, me slotin në çdo përgjigje, por `/health` = 503 i largon
+  klientët nga kjo zile.
+- **Punëtori bie** (panic) ose mbaron papritur: kalon nëpër të njëjtën rrugë ndalimi
+  (`stop_serving`), dhe `/health` = 503. Kur kanali mbyllet (`Disconnected`), callback-et e
+  validatorit s'presin kurrë: vetëm shënojnë ndalimin.
+- **Gabim ruajtjeje gjatë një dëftese** (I/O ose dëmtim): zilja **ndalon** së shërbyeri,
+  sepse s'garanton më korrektësinë, dhe pema shënohet për rindërtim.
+
+### Kodet e gabimeve JSON-RPC (P-09)
+
+| Kodi | Kuptimi |
+|---|---|
+| `-32602` | parametra të pavlefshëm (vetëm kjo) |
+| `-32002` | s'është gati (`starting` ose `recovered`) |
+| `-32003` | ndaloi; arsyeja në mesazh |
+| `-32004` | kjo zile s'firmos |
+| `-32005` | s'ka root/firmë për këtë slot |
+| `-32006` | pema s'mbulon çdo llogari: s'jep dëftesa mospërfshirjeje |
+| `-32007` | sloti është jashtë historisë së pemës |
+| `-32010` | gabim i ruajtjes: zilja ndalon |
+
 ### Snapshot i shkarkuar (dy rinisje)
 
 Kur pema në disk vazhdon, njoftimet e snapshot-it fiken, sepse nisja është shumë më e shpejtë
