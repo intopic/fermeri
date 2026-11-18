@@ -80,6 +80,8 @@ pub struct TrackerStats {
     /// P-07: herët kur një slot kishte disa banka të gjalla që SlotHashes s'i dallonte (ndalim).
     pub ambiguous_banks: u64,
     pub parents_from_slot_hashes: u64,
+    /// Banka të vëzhguara vetëm pjesërisht (para ngarkimit të plugin-it) që u bënë bazë, pa u aplikuar.
+    pub partial_banks_skipped: u64,
 }
 
 #[derive(Default)]
@@ -99,6 +101,9 @@ pub struct Tracker {
     /// P-06: hash-i i bankës së slotit të fundit të rrënjosur, kur dihet. Lidhja e parë e çdo
     /// zinxhiri të ri duhet të jetë pikërisht me këtë bankë, jo vetëm me këtë slot.
     last_fp: Option<Fingerprint>,
+    /// Nisje pa bazë (genesis, ose ringarkim i plugin-it me pemë në RAM): bankat e vëzhguara vetëm
+    /// pjesërisht (pa SlotHashes, pra të krijuara para ngarkimit) s'aplikohen; bëhen baza.
+    no_base: bool,
     resumed: bool,
     broken: bool,
     pub stats: TrackerStats,
@@ -297,6 +302,7 @@ impl Tracker {
                                 // Pema nis bosh dhe mbulon vetëm llogaritë që ndryshojnë: `complete = false`.
                                 self.started = true;
                                 self.complete = false;
+                                self.no_base = true;
                                 let mut out = vec![Output::Startup { slot: 0, accounts: vec![] }];
                                 out.extend(self.root(slot, bank_id));
                                 return out;
@@ -367,6 +373,15 @@ impl Tracker {
             return self.break_with(format!("sloti i rrënjosur {slot} nuk ka asnjë bank të njohur"));
         };
         // Zinxhiri i bankave nga S prapa. Duhet të mbarojë SAKTËSISHT te sloti i fundit i rrënjosur (F-01).
+        // Nisje pa bazë: një bankë pa SlotHashes u krijua para ngarkimit, dhe një pjesë e ndryshimeve
+        // të saj i shkoi instancës tjetër. S'aplikohet: bëhet baza (pema nis pas saj).
+        if self.no_base && self.banks[&start].ancestors.is_empty() {
+            self.stats.partial_banks_skipped += 1;
+            self.banks.retain(|_, b| b.slot > slot);
+            self.last_rooted = Some(slot);
+            self.last_fp = None;
+            return vec![];
+        }
         let mut chain: Vec<BankId> = vec![start];
         let mut cur = start;
         loop {
@@ -400,6 +415,11 @@ impl Tracker {
                 }
                 (Some(p), _) => match self.bank_at(p, Some(cur)) {
                     Err(e) => return self.break_with(e),
+                    Ok(Some(next)) if self.no_base && self.banks[&next].ancestors.is_empty() => {
+                        // Paraardhës i vëzhguar pjesërisht: zinxhiri nis pas tij.
+                        self.stats.partial_banks_skipped += 1;
+                        break;
+                    }
                     Ok(Some(next)) => {
                         chain.push(next);
                         cur = next;
@@ -681,6 +701,8 @@ mod tests {
     #[test]
     fn genesis_start_without_snapshot_is_marked_incomplete() {
         let mut t = Tracker::new();
+        // Si në validator: banka shkruan sysvar-in SlotHashes kur krijohet.
+        t.handle(Event::SlotHashes { slot: 1, bank_id: 1, entries: vec![(0, [0; 32])] });
         t.handle(status(1, Some(0), Some(1), Status::CreatedBank));
         t.handle(acc(1, 1, 5, 1, 10));
         let out = t.handle(status(1, Some(0), Some(1), Status::Rooted));

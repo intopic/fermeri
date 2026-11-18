@@ -135,3 +135,21 @@ fn bottom_link_must_match_the_rooted_bank_hash() {
     let out = t.handle(rooted(51, 50, 3));
     assert!(broken(&out), "u pranua një bankë që s'rrjedh nga banka e rrënjosur: {:?}", lamports(&out));
 }
+
+/// Nisje pa bazë (genesis ose ringarkim në RAM): një bankë e krijuar para ngarkimit (pa SlotHashes,
+/// ndryshimet e saj i mori instanca tjetër) s'aplikohet me ndryshime që mungojnë; bëhet baza.
+#[test]
+fn partially_observed_banks_become_the_base_without_a_snapshot() {
+    let mut t = Tracker::new();
+    // Bankat 10 dhe 11 u krijuan para ngarkimit: vetëm statuse dhe një pjesë e llogarive.
+    t.handle(acc(10, 10, 2, 999));
+    let out = t.handle(rooted(10, 9, 10));
+    assert!(!broken(&out) && lamports(&out).is_none(), "banka e pjesshme u aplikua: {out:?}");
+    t.handle(acc(11, 11, 3, 888));
+    // Banka 12: e vëzhguar plotësisht.
+    t.handle(sh(12, 12, vec![(11, h(11, 0)), (10, h(10, 0))]));
+    t.handle(created(12, 11, 12));
+    t.handle(acc(12, 12, 4, 12));
+    let out = t.handle(rooted(12, 11, 12));
+    assert_eq!(lamports(&out), Some(vec![(4, 12)]), "vetëm banka e vëzhguar plotësisht: {out:?}");
+}
