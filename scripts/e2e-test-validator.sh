@@ -59,6 +59,18 @@ start() {
   echo "Validatori nuk u nis"; tail -50 "$LEDGER/validator.log" || true; exit 2
 }
 
+# Pret që validatori të MOS niset (plugin-i refuzon ngarkimin) dhe që logu të përmbajë "$1".
+start_refused() {
+  local want=$1; shift
+  solana-test-validator --ledger "$LEDGER" --geyser-plugin-config "$WORK/zilja.json" \
+    --quiet --rpc-port 8899 "$@" > "$WORK/validator.out" 2>&1 &
+  VPID=$!
+  for _ in $(seq 1 120); do kill -0 "$VPID" 2>/dev/null || break; sleep 1; done
+  if kill -0 "$VPID" 2>/dev/null; then echo "GABIM: validatori u nis, plugin-i duhej të refuzonte ($want)"; exit 1; fi
+  VPID=""
+  cat "$WORK/validator.out" "$LEDGER/validator.log" 2>/dev/null | grep -q "$want" || { echo "GABIM: mungon mesazhi '$want'"; tail -20 "$WORK/validator.out"; exit 1; }
+}
+
 METRICS="http://127.0.0.1:7798"
 health() { curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "$ZILJA/health"; }
 admin_rpc() { python3 - "$LEDGER/admin.rpc" "$@" <<'PY'
@@ -171,6 +183,8 @@ p, w = sys.argv[1], sys.argv[2]
 c = json.load(open(p))
 c["attest_keypair"] = f"{w}/attest-signer.json"
 c["attest_authorization"] = f"{w}/zilja-authorization.json"
+# P-05: çelës tjetër → log tjetër firmash (log-u i vjetër është i lidhur me çelësin e vjetër).
+c["attest_state"] = f"{w}/attest-dedicated.log"
 json.dump(c, open(p, "w"), indent=1)
 PY
 sleep 2
@@ -270,13 +284,46 @@ fi
 if [ "${ZILJA_DB:-0}" != "0" ]; then
   echo "== Hapi 7 (disk): zinxhir krejt i ri (--reset) me pemën e vjetër në disk → zilja duhet të ndalojë"
   stop
-  # Autorizimi i çelësit lidhet me genesis-in; zinxhiri i ri ka genesis tjetër, ndaj kthehu te identiteti.
-  python3 - "$WORK/zilja.json" "$LEDGER" <<'PY'
+  # Autorizimi i çelësit lidhet me genesis-in; zinxhiri i ri ka genesis tjetër, ndaj kthehu te
+  # identiteti, me log të ri firmash (P-05: log-u është i lidhur me genesis-in dhe çelësin).
+  python3 - "$WORK/zilja.json" "$LEDGER" "$WORK" <<'PY'
 import json, sys
 c = json.load(open(sys.argv[1])); c.pop("attest_authorization", None); c["attest_keypair"] = sys.argv[2] + "/validator-keypair.json"
+c["attest_state"] = sys.argv[3] + "/attest-reset.log"
 json.dump(c, open(sys.argv[1], "w"), indent=1)
 PY
   sleep 2
+  if [ "${ZILJA_DB:-0}" = "pages" ]; then
+    # P-05: pema me faqe është e lidhur me genesis-in (MANIFEST): s'hapet fare në rrjetin e ri.
+    start_refused "genesis" --reset
+    echo "   ✅ pema e genesis-it të vjetër u refuzua në ngarkim; skedarët u ruajtën"
+    [ -f "$WORK/zdb/MANIFEST" ] && [ -s "$WORK/zdb/pages.dat" ] || { echo "GABIM: pema e vjetër u prek"; exit 1; }
+    echo "== Hapi 8 (pages): procedura: zhvendos dosjen, rinis → pema ndërtohet për rrjetin e ri"
+    mv "$WORK/zdb" "$WORK/zdb.genesis-vjeter"
+    start
+    wait_rooted_past "$(( $(solana -u "$RPC" slot --commitment finalized) + 1 ))"
+    [ "$(metric broken)" = "0" ] && [ "$(health)" = "200" ] || { echo "GABIM: pas rindërtimit"; exit 1; }
+    grep -q "$(solana -u "$RPC" genesis-hash)" "$WORK/zdb/MANIFEST" || { echo "GABIM: MANIFEST pa genesis-in e ri"; exit 1; }
+    echo "   ✅ u ndërtua për genesis-in e ri"
+    echo "== Hapi 9 (pages): ringarkimi i plugin-it me admin RPC → LOCK-u lirohet; pema s'mund të vazhdojë"
+    admin_rpc reloadPlugin zilja "$WORK/zilja.json"
+    kill -0 "$VPID" || { echo "GABIM: validatori ra"; exit 1; }
+    # Instanca e re hapi të njëjtën dosje: lock-u i së vjetrës u lirua (P-01).
+    for _ in $(seq 1 60); do [ "$(metric resumed)" = "1" ] && break; sleep 1; done
+    [ "$(metric resumed)" = "1" ] || { echo "GABIM: instanca e re s'e hapi pemën (LOCK?)"; tail -20 "$WORK/validator.out"; exit 1; }
+    # Bankat në fluturim gjatë ringarkimit i mori instanca e vjetër: zinxhiri s'lidhet → ndalim (fail-closed).
+    for _ in $(seq 1 60); do [ "$(metric broken)" = "1" ] && break; sleep 1; done
+    [ "$(metric broken)" = "1" ] && [ "$(health)" = "503" ] || { echo "GABIM: pas ringarkimit zilja duhej të ndalonte, jo të shërbente"; exit 1; }
+    echo "   ✅ ringarkimi: LOCK-u u lirua, instanca e re ndaloi fail-closed (bankat në fluturim humbën)"
+    echo "== Hapi 10 (pages): rinisja e validatorit e rindërton pemën e shënuar"
+    stop
+    sleep 2
+    start
+    [ "$(metric resumed)" = "0" ] || { echo "GABIM: pema e shënuar s'duhej të vazhdonte"; exit 1; }
+    wait_rooted_past "$(( $(solana -u "$RPC" slot --commitment finalized) + 3 ))"
+    [ "$(metric broken)" = "0" ] && [ "$(health)" = "200" ] || { echo "GABIM: pas rindërtimit"; exit 1; }
+    echo "   ✅ u rindërtua dhe punon"
+  else
   start --reset
   for _ in $(seq 1 240); do [ "$(metric broken)" = "1" ] && break; sleep 1; done
   [ "$(metric broken)" = "1" ] || { echo "GABIM: zilja nuk e kuptoi që zinxhiri ndryshoi"; exit 1; }
@@ -295,6 +342,7 @@ PY
   [ "$(metric broken)" = "0" ] || { echo "GABIM: zilja ndaloi pas rindërtimit"; exit 1; }
   [ "$(health)" = "200" ] || { echo "GABIM: /health duhet 200"; exit 1; }
   echo "   ✅ u rindërtua vetë dhe punon"
+  fi
 else
   echo "== Hapi 7 (RAM): ringarkimi i plugin-it me admin RPC (F-07)"
   admin_rpc reloadPlugin zilja "$WORK/zilja.json"

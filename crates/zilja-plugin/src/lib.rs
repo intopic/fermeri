@@ -54,12 +54,17 @@ pub struct Config {
     /// Hash-i i genesis-it (base58) që hyn në çdo firmë. Ose `genesis_path`.
     #[serde(default)]
     pub genesis_hash: Option<String>,
-    /// `genesis.bin` i ledger-it: hash-i i genesis-it = SHA256 i tij.
+    /// `genesis.bin` i ledger-it: hash-i i genesis-it = SHA256 i tij. Rekomandohet ky (e jo
+    /// `genesis_hash`): skedari është i ledger-it të vetë validatorit, pra i rrjetit ku punon (P-05).
     #[serde(default)]
     pub genesis_path: Option<PathBuf>,
     /// Skedari i firmave (kundër firmosjes së dyfishtë). Parazgjedhja: pranë `db_path` ose `roots_log`.
     #[serde(default)]
     pub attest_state: Option<PathBuf>,
+    /// P-05: pohim i operatorit që një log firmash pa kontekst (version i vjetër) është i këtij
+    /// genesis-i dhe çelësi. Përdoret një herë; shih docs/OPERIMI.md.
+    #[serde(default)]
+    pub attest_adopt_legacy: bool,
     /// Pema në disk. Pa këtë, pema mbahet në RAM.
     #[serde(default)]
     pub db_path: Option<PathBuf>,
@@ -95,11 +100,7 @@ pub struct Config {
 /// Ndërton opsionet e firmosjes nga konfigurimi (F-10).
 fn attest_options(cfg: &Config, keypair: &std::path::Path) -> Result<zilja_node::AttestOptions, String> {
     let key = zilja_node::service::read_solana_keypair(keypair).map_err(|e| format!("{}: {e}", keypair.display()))?;
-    let genesis: [u8; 32] = match (&cfg.genesis_hash, &cfg.genesis_path) {
-        (Some(h), _) => bs58::decode(h).into_vec().map_err(|e| e.to_string())?.try_into().map_err(|_| "genesis_hash duhet 32 bajt")?,
-        (None, Some(p)) => zilja_verifier::sha256(&std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?),
-        (None, None) => return Err("attest_keypair kërkon genesis_hash ose genesis_path".into()),
-    };
+    let genesis = config_genesis(cfg)?.ok_or("attest_keypair kërkon genesis_path (ose genesis_hash)")?;
     let (identity, authorization) = match &cfg.attest_authorization {
         None => (None, None),
         Some(p) => {
@@ -123,7 +124,28 @@ fn attest_options(cfg: &Config, keypair: &std::path::Path) -> Result<zilja_node:
         (None, None, Some(r)) => r.with_extension("attest.log"),
         _ => return Err("attest_keypair kërkon attest_state (ose db_path / roots_log)".into()),
     };
-    Ok(zilja_node::AttestOptions { key, identity, authorization, genesis, log: Some(log) })
+    Ok(zilja_node::AttestOptions { key, identity, authorization, genesis, log: Some(log), adopt_legacy: cfg.attest_adopt_legacy })
+}
+
+/// P-05: genesis-i nga konfigurimi. Kur jepen të dyja, `genesis_hash` duhet të përputhet me
+/// `genesis.bin` e ledger-it (rrjeti real i validatorit).
+fn config_genesis(cfg: &Config) -> Result<Option<[u8; 32]>, String> {
+    let from_hash = match &cfg.genesis_hash {
+        Some(h) => Some(<[u8; 32]>::try_from(bs58::decode(h).into_vec().map_err(|e| format!("genesis_hash: {e}"))?).map_err(|_| "genesis_hash duhet 32 bajt")?),
+        None => None,
+    };
+    let from_file = match &cfg.genesis_path {
+        Some(p) => Some(zilja_verifier::sha256(&std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?)),
+        None => None,
+    };
+    match (from_hash, from_file) {
+        (Some(a), Some(b)) if a != b => Err(format!(
+            "genesis_hash {} nuk përputhet me genesis_path ({}): validatori punon në një rrjet tjetër",
+            bs58::encode(a).into_string(),
+            bs58::encode(b).into_string()
+        )),
+        (a, b) => Ok(b.or(a)),
+    }
 }
 
 fn default_metrics_bind() -> String {
@@ -296,7 +318,10 @@ impl GeyserPlugin for ZiljaPlugin {
         let tree: Option<Box<dyn zilja_tree::StateTree>> = match &cfg.db_path {
             Some(p) if cfg.tree_engine.as_deref() == Some("pages") => {
                 let d = zilja_store::PageOptions::default();
+                // P-05: pema lidhet me genesis-in e rrjetit (MANIFEST).
+                let genesis = config_genesis(&cfg).map_err(custom)?.ok_or_else(|| custom("tree_engine \"pages\" kërkon genesis_path (ose genesis_hash)"))?;
                 let o = zilja_store::PageOptions {
+                    genesis: Some(genesis),
                     history: cfg.history_slots.unwrap_or(d.history),
                     cache_depth: cfg.cache_depth.unwrap_or(d.cache_depth),
                     durable: true,

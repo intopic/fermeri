@@ -12,6 +12,8 @@ rayon = { workspace = true }
 log = { workspace = true }
 ahash = "0.8"
 crc32fast = "1"
+serde_json = { workspace = true }
+bs58 = { workspace = true }
 rocksdb = { version = "0.24", default-features = false, features = ["lz4"] }
 
 [dev-dependencies]

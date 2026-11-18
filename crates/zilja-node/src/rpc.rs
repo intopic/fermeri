@@ -465,7 +465,7 @@ mod attest_tests {
         let keys: Vec<SigningKey> = (1u8..=4).map(|i| SigningKey::from_bytes(&[i; 32])).collect();
         let mut shareds = Vec::new();
         for k in &keys {
-            let attest = crate::AttestOptions { key: k.clone(), identity: None, authorization: None, genesis: [0x33; 32], log: None };
+            let attest = crate::AttestOptions { key: k.clone(), identity: None, authorization: None, genesis: [0x33; 32], log: None, adopt_legacy: false };
             let mut svc = Service::start_opts(crate::Options { attest: Some(attest), ..Default::default() }).unwrap();
             // Të gjitha zilet shohin të njëjtin zinxhir: duhet të dalë i njëjti root.
             svc.send(Event::Snapshot { slot: 1, pubkey: [7; 32], meta: Some(AccountMeta { lamports: 5, ..Default::default() }) });

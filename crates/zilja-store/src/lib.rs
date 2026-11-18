@@ -61,7 +61,7 @@ const INVALID_KEY: &[u8] = b"invalid";
 const CF_META: &str = "meta";
 
 mod pagefile;
-pub use pagefile::{fuzz_decode_pages, fuzz_seeds_pages, PageOptions, PageStats, PageTree, BLOCK as PAGE_BLOCK};
+pub use pagefile::{fuzz_decode_pages, fuzz_seeds_pages, PageOptions, PageStats, PageTree, BLOCK as PAGE_BLOCK, FORMAT_VERSION as PAGE_FORMAT_VERSION};
 const STATE_KEY: &[u8] = b"state";
 
 // ---------------------------------------------------------------- rruga
