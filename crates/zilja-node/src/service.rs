@@ -96,6 +96,7 @@ pub struct Metrics {
     pub provable_from_slot: AtomicU64,
     pub resume_verified: AtomicU64,
     pub ambiguous_banks: AtomicU64,
+    pub partial_banks_skipped: AtomicU64,
     /// Firmat e refuzuara (do të ishin firmosje e dyfishtë).
     pub attest_refused: AtomicU64,
     /// 1 kur pema është gati dhe zilja nuk ka ndaluar (lexohet nga /health pa kyçur gjendjen).
@@ -157,7 +158,8 @@ impl Metrics {
             g("resumed", "1 kur zilja vazhdoi nga pema në disk pa snapshot", &self.resumed),
             g("broken", "1 kur zilja ndaloi (boshllëk ose zinxhir tjetër)", &self.broken),
             g("provable_from_slot", "Sloti më i vjetër për të cilin jepen dëftesa", &self.provable_from_slot),
-            g("ambiguous_banks", "Herët kur një slot kishte disa banka të gjalla (rrugë rezervë)", &self.ambiguous_banks),
+            g("partial_banks_skipped", "Banka të krijuara para ngarkimit të plugin-it (pa SlotHashes) që s'u aplikuan (nisje pa bazë)", &self.partial_banks_skipped),
+            g("ambiguous_banks", "Herët kur një slot kishte disa banka të gjalla që SlotHashes s'i dallonte (ndalim, P-07)", &self.ambiguous_banks),
             g("resume_verified", "1 kur pas rinisjes u konfirmua që jemi në të njëjtin zinxhir (SlotHashes)", &self.resume_verified),
             format!(
                 "# HELP zilja_invalidate_failed 1 kur shënimi 'i pavlefshëm' i pemës në disk dështoi (rindërtoje me dorë)\n# TYPE zilja_invalidate_failed gauge\nzilja_invalidate_failed {}\n",
@@ -184,6 +186,9 @@ pub struct Options {
     pub attest: Option<AttestOptions>,
     /// Pema: `None` = në RAM.
     pub tree: Option<Box<dyn StateTree>>,
+    /// Plugin-i u ngarkua ndërsa validatori punonte (`reloadPlugin`): bankat që po përpunoheshin
+    /// u krijuan para ngarkimit dhe vëzhgohen vetëm pjesërisht.
+    pub mid_run_load: bool,
 }
 
 pub struct Service {
@@ -198,6 +203,7 @@ impl Service {
     pub fn start_opts(opts: Options) -> std::io::Result<Self> {
         let shared = Shared::default();
         let mut tracker = Tracker::new();
+        tracker.set_mid_run_load(opts.mid_run_load);
         let attester = match opts.attest {
             Some(a) => Some(Attester::open(a).map_err(std::io::Error::other)?),
             None => None,
@@ -462,6 +468,7 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
         m.queue_len.store(rx.len() as u64, Ordering::Relaxed);
         m.resume_verified.store(tracker.resume_verified() as u64, Ordering::Relaxed);
         m.ambiguous_banks.store(tracker.stats.ambiguous_banks, Ordering::Relaxed);
+        m.partial_banks_skipped.store(tracker.stats.partial_banks_skipped, Ordering::Relaxed);
     }
 }
 

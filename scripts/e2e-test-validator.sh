@@ -350,7 +350,10 @@ else
   for _ in $(seq 1 120); do [ "$(health)" = "200" ] && break; sleep 1; done
   [ "$(health)" = "200" ] || { echo "GABIM: zilja s'u ringrit pas ringarkimit"; exit 1; }
   kill -0 "$VPID" || { echo "GABIM: validatori ra"; exit 1; }
-  echo "   ✅ ringarkim pa rrëzim: portet u liruan dhe u rimorën, validatori vazhdon"
+  # Pema duhet të përparojë pas ringarkimit (bankat në fluturim kapërcehen, s'aplikohen gjysmake).
+  wait_rooted_past "$(( $(solana -u "$RPC" slot --commitment finalized) + 3 ))"
+  [ "$(metric broken)" = "0" ] || { echo "GABIM: zilja ndaloi pas ringarkimit"; exit 1; }
+  echo "   ✅ ringarkim pa rrëzim: portet u liruan dhe u rimorën, pema vazhdon (kapërcyen $(metric partial_banks_skipped) banka në fluturim)"
 fi
 echo "== Sonda: pyetjet e hapura të auditimit"
 python3 "$ROOT/scripts/probe-report.py" "$ZILJA_PROBE" || true

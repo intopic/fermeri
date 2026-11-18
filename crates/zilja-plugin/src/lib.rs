@@ -343,7 +343,7 @@ impl GeyserPlugin for ZiljaPlugin {
             }
             None => None,
         };
-        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree }).map_err(custom)?;
+        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree, mid_run_load: is_reload }).map_err(custom)?;
         self.resuming.store(service.resumed, Ordering::Relaxed);
         self.snapshot_on_resume.store(cfg.snapshot_on_resume, Ordering::Relaxed);
         let main = rpc::serve_routes(&cfg.bind, service.shared.clone(), rpc::Routes { jsonrpc: true, metrics: false, cors: cfg.cors })
