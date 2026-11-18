@@ -136,11 +136,12 @@ fn bottom_link_must_match_the_rooted_bank_hash() {
     assert!(broken(&out), "u pranua një bankë që s'rrjedh nga banka e rrënjosur: {:?}", lamports(&out));
 }
 
-/// Nisje pa bazë (genesis ose ringarkim në RAM): një bankë e krijuar para ngarkimit (pa SlotHashes,
-/// ndryshimet e saj i mori instanca tjetër) s'aplikohet me ndryshime që mungojnë; bëhet baza.
+/// Ringarkim në RAM: një bankë e krijuar para ngarkimit (pa `CreatedBank`; SlotHashes dhe një pjesë
+/// e llogarive i shkuan instancës tjetër) s'aplikohet me ndryshime që mungojnë; bëhet baza.
 #[test]
-fn partially_observed_banks_become_the_base_without_a_snapshot() {
+fn partially_observed_banks_become_the_base_after_a_reload() {
     let mut t = Tracker::new();
+    t.set_mid_run_load(true);
     // Bankat 10 dhe 11 u krijuan para ngarkimit: vetëm statuse dhe një pjesë e llogarive.
     t.handle(acc(10, 10, 2, 999));
     let out = t.handle(rooted(10, 9, 10));
@@ -152,4 +153,15 @@ fn partially_observed_banks_become_the_base_without_a_snapshot() {
     t.handle(acc(12, 12, 4, 12));
     let out = t.handle(rooted(12, 11, 12));
     assert_eq!(lamports(&out), Some(vec![(4, 12)]), "vetëm banka e vëzhguar plotësisht: {out:?}");
+}
+
+/// Nisja e validatorit nga genesis (plugin-i i ngarkuar që në fillim): bankat e para s'kapërcehen
+/// edhe kur u mungon njoftimi SlotHashes.
+#[test]
+fn genesis_boot_applies_early_banks() {
+    let mut t = Tracker::new();
+    t.handle(created(1, 0, 1));
+    t.handle(acc(1, 1, 2, 7));
+    let out = t.handle(rooted(1, 0, 1));
+    assert_eq!(lamports(&out), Some(vec![(2, 7)]), "{out:?}");
 }

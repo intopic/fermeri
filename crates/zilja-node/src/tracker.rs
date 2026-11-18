@@ -66,6 +66,8 @@ struct Bank {
     /// P-07: paraardhësit nga SlotHashes (nga më i riu), deri te sloti i fundit i rrënjosur. Lidhja e
     /// vetme e saktë bankë → bankë prind që jep Agave 4.3 (statuset japin vetëm slotin e prindit).
     ancestors: Vec<(Slot, [u8; 32])>,
+    /// `CreatedBank` u pa: banka u vëzhgua që nga krijimi.
+    created: bool,
     /// pubkey → (write_version, meta)
     updates: HashMap<Key, (u64, Option<AccountMeta>)>,
 }
@@ -101,8 +103,10 @@ pub struct Tracker {
     /// P-06: hash-i i bankës së slotit të fundit të rrënjosur, kur dihet. Lidhja e parë e çdo
     /// zinxhiri të ri duhet të jetë pikërisht me këtë bankë, jo vetëm me këtë slot.
     last_fp: Option<Fingerprint>,
-    /// Nisje pa bazë (genesis, ose ringarkim i plugin-it me pemë në RAM): bankat e vëzhguara vetëm
-    /// pjesërisht (pa SlotHashes, pra të krijuara para ngarkimit) s'aplikohen; bëhen baza.
+    /// Plugin-i u ngarkua në mes të punës (`reloadPlugin`).
+    mid_run_load: bool,
+    /// Ngarkim në mes të punës pa bazë (pema në RAM): bankat pa `CreatedBank` u krijuan para
+    /// ngarkimit dhe një pjesë e ndryshimeve të tyre i shkoi instancës tjetër; s'aplikohen, bëhen baza.
     no_base: bool,
     resumed: bool,
     broken: bool,
@@ -117,6 +121,10 @@ impl Tracker {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn set_mid_run_load(&mut self, v: bool) {
+        self.mid_run_load = v;
     }
 
     /// Vazhdon nga gjendja e ruajtur në disk, pa snapshot. Asnjë slot nuk aplikohet derisa
@@ -268,6 +276,9 @@ impl Tracker {
                 if let Some(b) = bank_id {
                     if !self.is_old(slot) && !self.broken {
                         let bank = self.banks.entry(b).or_insert_with(|| Bank { slot, ..Default::default() });
+                        if status == Status::CreatedBank {
+                            bank.created = true;
+                        }
                         // SlotHashes ka përparësi; statusi plotëson kur ai mungon.
                         if bank.parent.is_none() {
                             bank.parent = parent;
@@ -302,7 +313,7 @@ impl Tracker {
                                 // Pema nis bosh dhe mbulon vetëm llogaritë që ndryshojnë: `complete = false`.
                                 self.started = true;
                                 self.complete = false;
-                                self.no_base = true;
+                                self.no_base = self.mid_run_load;
                                 let mut out = vec![Output::Startup { slot: 0, accounts: vec![] }];
                                 out.extend(self.root(slot, bank_id));
                                 return out;
@@ -373,9 +384,9 @@ impl Tracker {
             return self.break_with(format!("sloti i rrënjosur {slot} nuk ka asnjë bank të njohur"));
         };
         // Zinxhiri i bankave nga S prapa. Duhet të mbarojë SAKTËSISHT te sloti i fundit i rrënjosur (F-01).
-        // Nisje pa bazë: një bankë pa SlotHashes u krijua para ngarkimit, dhe një pjesë e ndryshimeve
-        // të saj i shkoi instancës tjetër. S'aplikohet: bëhet baza (pema nis pas saj).
-        if self.no_base && self.banks[&start].ancestors.is_empty() {
+        // Ngarkim në mes të punës pa bazë: një bankë pa `CreatedBank` u krijua para ngarkimit, dhe një
+        // pjesë e ndryshimeve të saj i shkoi instancës tjetër. S'aplikohet: bëhet baza.
+        if self.no_base && !self.banks[&start].created {
             self.stats.partial_banks_skipped += 1;
             self.banks.retain(|_, b| b.slot > slot);
             self.last_rooted = Some(slot);
@@ -415,7 +426,7 @@ impl Tracker {
                 }
                 (Some(p), _) => match self.bank_at(p, Some(cur)) {
                     Err(e) => return self.break_with(e),
-                    Ok(Some(next)) if self.no_base && self.banks[&next].ancestors.is_empty() => {
+                    Ok(Some(next)) if self.no_base && !self.banks[&next].created => {
                         // Paraardhës i vëzhguar pjesërisht: zinxhiri nis pas tij.
                         self.stats.partial_banks_skipped += 1;
                         break;

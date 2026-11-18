@@ -186,6 +186,9 @@ pub struct Options {
     pub attest: Option<AttestOptions>,
     /// Pema: `None` = në RAM.
     pub tree: Option<Box<dyn StateTree>>,
+    /// Plugin-i u ngarkua ndërsa validatori punonte (`reloadPlugin`): bankat që po përpunoheshin
+    /// u krijuan para ngarkimit dhe vëzhgohen vetëm pjesërisht.
+    pub mid_run_load: bool,
 }
 
 pub struct Service {
@@ -200,6 +203,7 @@ impl Service {
     pub fn start_opts(opts: Options) -> std::io::Result<Self> {
         let shared = Shared::default();
         let mut tracker = Tracker::new();
+        tracker.set_mid_run_load(opts.mid_run_load);
         let attester = match opts.attest {
             Some(a) => Some(Attester::open(a).map_err(std::io::Error::other)?),
             None => None,
