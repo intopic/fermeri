@@ -6,6 +6,12 @@
 //! - Asnjëherë dy root-e të ndryshme për të njëjtin slot, as pas rinisjes: çdo (slot, root) i
 //!   firmosur shkruhet në një skedar (me `sync`) para se firma të dalë. Po ky skedar i rikthen
 //!   firmat e fundit pas rinisjes (I-02).
+//! - P-04: skedari mbrohet me një lock ekskluziv (`<log>.lock`) gjatë gjithë jetës së instancës, ndaj
+//!   dy procese në të njëjtin host s'firmosin përmes të njëjtit log. Një log që përmban dy root-e për
+//!   të njëjtin slot refuzohet në hapje: është provë firmosjeje të dyfishtë dhe s'zgjidhet në heshtje.
+//!
+//! Kufizim: lock-u është lokal. Dy host-e me të njëjtin çelës dhe log-e të ndryshme NUK mbrohen;
+//! një çelës firmosjeje duhet të jetë në një host të vetëm (shih docs/OPERIMI.md).
 
 use ed25519_dalek::{Signer, SigningKey};
 use std::collections::BTreeMap;
@@ -41,6 +47,7 @@ pub struct AttesterInfo {
 
 pub struct Attester {
     opts: AttestOptions,
+    _lock: Option<File>,
     signed: BTreeMap<u64, Hash>,
     file: Option<File>,
     lines: usize,
@@ -60,7 +67,12 @@ impl Attester {
         } else if opts.identity.is_some_and(|id| id != signer) {
             return Err("një çelës i veçantë firmosjeje kërkon autorizim nga identiteti".into());
         }
-        let mut signed = BTreeMap::new();
+        // P-04: lock-u para leximit ose shkrimit të log-ut.
+        let lock = match &opts.log {
+            Some(p) => Some(lock_exclusive(&lock_path(p))?),
+            None => None,
+        };
+        let mut signed: BTreeMap<u64, Hash> = BTreeMap::new();
         let mut lines = 0;
         if let Some(p) = &opts.log {
             if let Ok(f) = File::open(p) {
@@ -70,6 +82,16 @@ impl Attester {
                     let (Some(s), Some(r)) = (it.next(), it.next()) else { continue };
                     let slot: u64 = s.parse().map_err(|_| format!("rresht i dëmtuar në {}: {line}", p.display()))?;
                     let root: Hash = hex::decode(r).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| format!("rresht i dëmtuar: {line}"))?;
+                    if let Some(prev) = signed.get(&slot) {
+                        if *prev != root {
+                            return Err(format!(
+                                "{} përmban dy root-e të ndryshme për slotin {slot} ({} dhe {}): firmosje e dyfishtë; hapja refuzohet, skedari s'u prek",
+                                p.display(),
+                                hex::encode(prev),
+                                hex::encode(root)
+                            ));
+                        }
+                    }
                     signed.insert(slot, root);
                     lines += 1;
                 }
@@ -79,7 +101,7 @@ impl Attester {
             Some(p) => Some(OpenOptions::new().create(true).append(true).open(p).map_err(|e| e.to_string())?),
             None => None,
         };
-        Ok(Attester { opts, signed, file, lines, refused: 0 })
+        Ok(Attester { opts, _lock: lock, signed, file, lines, refused: 0 })
     }
 
     pub fn info(&self) -> AttesterInfo {
@@ -147,6 +169,22 @@ impl Attester {
     }
 }
 
+fn lock_path(log: &std::path::Path) -> PathBuf {
+    let mut s = log.as_os_str().to_owned();
+    s.push(".lock");
+    PathBuf::from(s)
+}
+
+/// Lock ekskluziv (flock) pa pritur, i mbajtur derisa mbyllet skedari.
+fn lock_exclusive(path: &std::path::Path) -> Result<File, String> {
+    let f = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path).map_err(|e| format!("hapja e {}: {e}", path.display()))?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(std::fs::TryLockError::WouldBlock) => Err(format!("log-u i firmave është në përdorim nga një instancë tjetër ({} është i zënë)", path.display())),
+        Err(std::fs::TryLockError::Error(e)) => Err(format!("lock-u {}: {e}", path.display())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,4 +222,43 @@ mod tests {
         let none = AttestOptions { key, identity: Some(id.verifying_key().to_bytes()), authorization: None, genesis: g, log: None };
         assert!(Attester::open(none).is_err());
     }
+
+    /// P-04: dy instanca mbi të njëjtin log nuk mund të firmosin dy root-e për një slot.
+    #[test]
+    fn second_attester_on_same_log_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("attest.log");
+        let mut a = Attester::open(opts(Some(p.clone()))).unwrap();
+        let b = Attester::open(opts(Some(p.clone())));
+        let Ok(mut b) = b else {
+            assert!(a.sign(10, &[5; 32]).is_ok());
+            return;
+        };
+        let ra = a.sign(10, &[5; 32]);
+        let rb = b.sign(10, &[6; 32]);
+        panic!("dy instanca u hapën mbi të njëjtin log; firmosën: {} dhe {}", ra.is_ok(), rb.is_ok());
+    }
+
+    /// P-04: një log me dy root-e për të njëjtin slot është provë firmosjeje të dyfishtë: hapja
+    /// refuzohet dhe asnjë nga të dy nuk "fiton" në heshtje.
+    #[test]
+    fn conflicting_roots_in_log_refuse_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("attest.log");
+        std::fs::write(&p, format!("10 {}\n11 {}\n10 {}\n", hex::encode([5u8; 32]), hex::encode([7u8; 32]), hex::encode([6u8; 32]))).unwrap();
+        let before = std::fs::read(&p).unwrap();
+        match Attester::open(opts(Some(p.clone()))) {
+            Ok(mut a) => {
+                let r5 = a.sign(10, &[5; 32]).is_ok();
+                let r6 = a.sign(10, &[6; 32]).is_ok();
+                panic!("log me konflikt u pranua (firmos [5]: {r5}, firmos [6]: {r6})");
+            }
+            Err(e) => assert!(e.contains("10"), "mesazhi duhet të tregojë slotin: {e}"),
+        }
+        assert_eq!(std::fs::read(&p).unwrap(), before, "log-u me konflikt u ndryshua");
+        // E njëjta hyrje e përsëritur nuk është konflikt.
+        std::fs::write(&p, format!("10 {}\n10 {}\n", hex::encode([5u8; 32]), hex::encode([5u8; 32]))).unwrap();
+        assert!(Attester::open(opts(Some(p))).is_ok());
+    }
 }
+

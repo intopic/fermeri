@@ -96,6 +96,23 @@ hash-in e prindit dhe me rrugën e saj.
 
 Ndryshimi i motorit kërkon një dosje të re ose rindërtim nga snapshot-i.
 
+## Pronësia ekskluzive e ruajtjes (P-01, P-04)
+
+- **Pema me faqe:** `db_path/LOCK` mbahet me lock ekskluziv (`flock`) gjatë gjithë jetës së
+  instancës. Lock-u merret para çdo recovery, wipe ose shkrimi, dhe rindërtimi s'e fshin. Një
+  hapje e dytë e së njëjtës dosje refuzohet me gabim dhe pa ndryshuar asnjë skedar. RocksDB ka
+  lock-un e vet (`LOCK`).
+- **Log-u i firmave:** `<attest_state>.lock` mbahet në të njëjtën mënyrë, ndaj dy procese në të
+  njëjtin host s'mund të firmosin përmes të njëjtit log. Një log që përmban dy root-e të ndryshme
+  për të njëjtin slot refuzohet në hapje dhe nuk preket. Ai është provë firmosjeje të dyfishtë dhe
+  duhet hetuar me dorë.
+- **Kufizim:** lock-u është lokal. Ai **nuk** mbron dy host-e që përdorin të njëjtin çelës
+  firmosjeje me log-e të ndryshme, dhe nuk garantohet mbi sisteme skedarësh të ndarë (NFS etj.).
+  Një çelës firmosjeje duhet të jetë aktiv në një host të vetëm. Për rezervë (failover), përdor
+  çelës tjetër me autorizim të vetin.
+- Gjatë ringarkimit të plugin-it, `on_unload` ndalon serverët dhe punëtorin, dhe i liron të dy
+  lock-et para se të hapet instanca e re.
+
 ## Kufijtë e konfigurimit (L-08)
 
 - `cache_depth`: 12–24. Me ~2^thellësi nyje në RAM, 20 do të thotë ~1M nyje (~150 MB).
