@@ -1,4 +1,11 @@
 //! Motori me faqe (`PageTree`): i njëjti sjellje si pema në RAM, në çdo rast.
+//!
+//! P-03: dy lloje testesh qëndrueshmërie, me emra të ndarë:
+//! - `crash_*`: rrëzim i **procesit** (SIGKILL, panic). Çdo shkrim i kryer është në disk; humbet
+//!   vetëm puna që s'u mbyll. Rihapja duhet të japë slotin e fundit të konfirmuar.
+//! - `unsynced_loss_*`: simulim i **ikjes së rrymës**: humbin bajtet që s'u bënë fsync (bishti i
+//!   log-ut, rekordet e fundit). Rihapja duhet të japë një slot të plotë para tyre.
+//! Dëmtimi i qëllimshëm (CRC, format, rend) testohet në `recovery.rs`.
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::collections::BTreeMap;
@@ -208,7 +215,7 @@ fn crash_between_pages_and_log_record() {
 
 /// Bishti i log-ut i prerë në çdo bajt: rihapja jep gjithmonë një slot të plotë dhe të saktë.
 #[test]
-fn torn_log_tail_at_every_offset() {
+fn unsynced_loss_torn_log_tail_at_every_offset() {
     let src = tempfile::tempdir().unwrap();
     let mut rng = StdRng::seed_from_u64(31);
     let keys: Vec<Key> = (0..800).map(|_| rng.gen()).collect();
@@ -253,7 +260,7 @@ fn torn_log_tail_at_every_offset() {
 
 /// Rrëzim pas checkpoint-it, para zbrazjes së log-ut: rekordet e vjetra kapërcehen.
 #[test]
-fn stale_log_after_checkpoint_is_skipped() {
+fn crash_between_checkpoint_and_log_truncate() {
     let dir = tempfile::tempdir().unwrap();
     let mut rng = StdRng::seed_from_u64(41);
     let mut keys = Vec::new();
@@ -464,7 +471,7 @@ fn invalidate_rebuilds_on_next_open() {
     let mut t = PageTree::open(dir.path(), opts(4, 4)).unwrap();
     t.stage_snapshot(1, vec![([1; 32], Some(AccountMeta::default()))]).unwrap();
     t.finish_snapshot(1, true).unwrap();
-    t.invalidate("test");
+    t.invalidate("test").unwrap();
     drop(t);
     let t = PageTree::open(dir.path(), opts(4, 4)).unwrap();
     assert!(t.resume_point().is_none());
@@ -653,7 +660,7 @@ fn three_way_differential_many_seeds() {
 
 /// Ngarkesë e gjatë: 50 000 llogari, 400 slote, rihapje të shpeshta dhe rrëzime; hapësira mbetet e kufizuar.
 #[test]
-fn long_churn_with_crashes_and_reopens() {
+fn crash_long_churn_with_reopens() {
     let dir = tempfile::tempdir().unwrap();
     let mut rng = StdRng::seed_from_u64(93);
     let mut keys: Vec<Key> = (0..50_000).map(|_| rng.gen()).collect();
@@ -697,7 +704,7 @@ fn long_churn_with_crashes_and_reopens() {
 /// Ikje rryme: humbin `slack + 1` rekordet e fundit (edhe me boshllëqe mes sloteve dhe pa
 /// histori). Versioni para tyre duhet të jetë i plotë, dhe pema vazhdon saktë prej tij.
 #[test]
-fn power_loss_of_last_records_within_slack() {
+fn unsynced_loss_of_last_records_within_slack() {
     for slack in [0u64, 1, 3] {
         let src = tempfile::tempdir().unwrap();
         let mut rng = StdRng::seed_from_u64(95 + slack);

@@ -26,7 +26,7 @@
 use super::*;
 use std::collections::{BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::sync::{Mutex, RwLock};
 
@@ -434,21 +434,69 @@ fn frame(magic: &[u8; 4], payload: &[u8]) -> Vec<u8> {
     v
 }
 
-/// Lexon një rekord të kornizuar; `None` = fund ose rekord i prerë/dëmtuar.
-fn read_frame(r: &mut impl Read, magic: &[u8; 4]) -> Option<Vec<u8>> {
-    let mut hdr = [0u8; 16];
-    r.read_exact(&mut hdr).ok()?;
-    if &hdr[..4] != magic {
-        return None;
+/// P-02: buxheti i deklaruar. Një rekord log-u s'kalon 64 MB; log-u s'kalon 256 MB (ose 2× pragun e
+/// checkpoint-it, nëse është më i madh); checkpoint-i s'kalon 8 GB (≈ 2 B për bllok 4 KB + lista).
+const MAX_RECORD: u64 = 64 << 20;
+const MIN_LOG_BUDGET: u64 = 256 << 20;
+const MAX_CKPT: u64 = 8 << 30;
+
+/// Rezultati i leximit të një kornize në fillim të `buf`.
+#[derive(Debug, PartialEq, Eq)]
+enum Frame<'a> {
+    /// Korniza e plotë dhe e saktë: trupi dhe gjatësia gjithsej.
+    Ok(&'a [u8], usize),
+    /// Bisht i papërfunduar që shtrihet deri në fund të skedarit: kokë e prerë, trup i prerë, vetëm
+    /// zero, ose korniza e fundit me CRC të gabuar që mbaron saktë në fund të skedarit.
+    Torn(&'static str),
+    /// Dëmtim ose format i panjohur.
+    Bad(String),
+}
+
+fn parse_frame<'a>(buf: &'a [u8], magic: &[u8; 4], max: u64) -> Frame<'a> {
+    if buf.iter().all(|b| *b == 0) {
+        return Frame::Torn("vetëm zero");
     }
-    let len = u64::from_le_bytes(hdr[4..12].try_into().unwrap());
-    if len > 1 << 34 {
-        return None;
+    if buf.len() < 16 {
+        let n = buf.len().min(4);
+        return if buf[..n] == magic[..n] { Frame::Torn("kokë e prerë") } else { Frame::Bad("magji e panjohur".into()) };
     }
-    let crc = u32::from_le_bytes(hdr[12..16].try_into().unwrap());
-    let mut p = vec![0u8; len as usize];
-    r.read_exact(&mut p).ok()?;
-    (crc32fast::hash(&p) == crc).then_some(p)
+    if &buf[..4] != magic {
+        return if buf[..3] == magic[..3] {
+            Frame::Bad(format!("format i panjohur {:?} (pritej {:?})", String::from_utf8_lossy(&buf[..4]), String::from_utf8_lossy(magic)))
+        } else {
+            Frame::Bad("magji e panjohur (jo një rekord i Ziles)".into())
+        };
+    }
+    let len = u64::from_le_bytes(buf[4..12].try_into().unwrap());
+    if len > max {
+        return Frame::Bad(format!("gjatësi e pamundshme {len} B (kufiri {max} B)"));
+    }
+    let end = 16 + len as usize;
+    if end > buf.len() {
+        return Frame::Torn("trup i prerë");
+    }
+    let crc = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+    let body = &buf[16..end];
+    if crc32fast::hash(body) != crc {
+        return if end == buf.len() { Frame::Torn("CRC e gabuar në kornizën e fundit") } else { Frame::Bad("CRC e gabuar".into()) };
+    }
+    Frame::Ok(body, end)
+}
+
+/// Lexon një skedar të tërë brenda buxhetit; mungesa = `None`.
+fn read_budget(path: &Path, budget: u64, what: &str) -> Result<Option<Vec<u8>>, String> {
+    let f = match File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{what}: hapja e {}: {e}", path.display())),
+    };
+    let len = f.metadata().map_err(|e| format!("{what}: {e}"))?.len();
+    if len > budget {
+        return Err(format!("{what} {} ka {len} B, mbi buxhetin {budget} B; skedarët u ruajtën", path.display()));
+    }
+    let mut b = Vec::with_capacity(len as usize);
+    (&f).read_to_end(&mut b).map_err(|e| format!("{what}: leximi i {}: {e}", path.display()))?;
+    Ok(Some(b))
 }
 
 /// Kujtesa e versioneve: (sloti, faqja rrënjë, ref-i i root-it).
@@ -772,6 +820,11 @@ fn io<E: std::fmt::Display>(what: &str) -> impl Fn(E) -> String + '_ {
 impl PageTree {
     pub fn open(dir: impl AsRef<Path>, o: PageOptions) -> Result<Self, String> {
         let dir = dir.as_ref().to_path_buf();
+        if o.durable && o.sync_every != 1 {
+            // P-03: release-i fillestar mbështet vetëm sync_every = 1. Ripërdorimi i blloqeve supozon
+            // që çdo rekord i shkruar është në disk para se të shkruhet tjetri.
+            return Err(format!("motori me faqe kërkon sync_every = 1 (u dha {}); mënyra asinkrone s'mbështetet ende", o.sync_every));
+        }
         std::fs::create_dir_all(&dir).map_err(io("krijimi i dosjes"))?;
         let lock = lock_exclusive(&dir.join("LOCK"))?;
         if let Ok(why) = std::fs::read_to_string(dir.join("INVALID")) {
@@ -782,6 +835,10 @@ impl PageTree {
         let open = |name: &str| OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join(name));
         let data = open("pages.dat").map_err(io("hapja e faqeve"))?;
         let log = open("meta.log").map_err(io("hapja e log-ut"))?;
+        if o.durable {
+            // Skedarët e sapokrijuar duhet të mbijetojnë një ikje rryme.
+            sync_dir(&dir)?;
+        }
         let mut t = PageTree {
             dir,
             _lock: lock,
@@ -812,63 +869,101 @@ impl PageTree {
         };
         t.recover()?;
         match t.state.clone() {
+            // Pa checkpoint: asnjë snapshot s'u mbyll (p.sh. rrëzim gjatë ndërtimit). S'ka gjendje për
+            // të humbur: nis nga e para.
             None => t.clear()?,
             Some(st) => {
                 // Thellësia e cache-së është e diskut, jo e opsioneve (si te `DiskTree`).
                 t.o.cache_depth = st.cache_depth;
-                if let Err(e) = t.load_pinned() {
-                    log::error!("zilja-pages: disku nuk përputhet me gjendjen ({e}); do të rindërtohet");
-                    t.clear()?;
-                } else {
-                    t.cache_since = st.version;
-                }
+                // P-02: faqe që s'përputhen me checkpoint-in/log-un = dëmtim. Asgjë s'fshihet.
+                t.load_pinned().map_err(|e| corrupt(&t.dir, &format!("faqet nuk përputhen me gjendjen e ruajtur: {e}")))?;
+                t.cache_since = st.version;
             }
         }
         Ok(t)
     }
 
-    /// Checkpoint-i + rekordet pas tij. Një rekord i prerë në fund (rrëzim) hidhet.
+    /// Checkpoint-i + rekordet pas tij (P-02).
+    ///
+    /// - Çdo rekord duhet të jetë i plotë, me CRC të saktë, i formatit të njohur, dhe në rend:
+    ///   numrat rendorë rriten rreptësisht; i pari pas checkpoint-it është `seq + 1`, pastaj pa
+    ///   boshllëqe; sloti rritet rreptësisht.
+    /// - I vetmi rast i toleruar është bishti pas rekordit të fundit të vlefshëm që shtrihet deri në
+    ///   fund të skedarit (shih [`Frame::Torn`]). Me `sync_every = 1` ai është gjithmonë një slot që s'u
+    ///   konfirmua kurrë (commit-i kthehet vetëm pas fsync-ut të rekordit). Bishti ruhet në
+    ///   `meta.log.tail-<offset>` dhe hiqet nga log-u.
+    /// - Çdo gjë tjetër ndalon hapjen me gabim, pa ndryshuar asnjë skedar.
     fn recover(&mut self) -> Result<(), String> {
         let mut alloc = Alloc::default();
-        match std::fs::read(self.dir.join("meta.ckpt")) {
-            Ok(b) => {
-                let p = read_frame(&mut &b[..], CKPT_MAGIC).ok_or_else(|| {
-                    // F-13: kurrë mos fshi diçka që s'e kuptojmë.
-                    format!(
-                        "checkpoint-i në {} është i dëmtuar ose i një versioni të panjohur; fshije dosjen me dorë për ta rindërtuar",
-                        self.dir.display()
-                    )
-                })?;
-                let c = Ckpt::dec_payload(&p).ok_or("checkpoint-i nuk dekodohet")?;
-                self.state = Some(c.st);
-                self.root_id = c.root_id;
-                self.ring = c.ring;
-                self.rec_seq = c.seq;
-                alloc = c.alloc;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("leximi i checkpoint-it: {e}")),
+        let mut have_ckpt = false;
+        if let Some(b) = read_budget(&self.dir.join("meta.ckpt"), MAX_CKPT, "checkpoint-i")? {
+            let c = match parse_frame(&b, CKPT_MAGIC, MAX_CKPT) {
+                Frame::Ok(p, n) if n == b.len() => Ckpt::dec_payload(p).ok_or_else(|| corrupt(&self.dir, "checkpoint-i nuk dekodohet"))?,
+                Frame::Ok(..) => return Err(corrupt(&self.dir, "checkpoint-i ka bajte pas kornizës")),
+                Frame::Torn(w) => return Err(corrupt(&self.dir, &format!("checkpoint-i është i papërfunduar ({w})"))),
+                Frame::Bad(w) => return Err(corrupt(&self.dir, &format!("checkpoint-i: {w}"))),
+            };
+            self.state = Some(c.st);
+            self.root_id = c.root_id;
+            self.ring = c.ring;
+            self.rec_seq = c.seq;
+            alloc = c.alloc;
+            have_ckpt = true;
         }
-        let mut r = BufReader::new(&self.log);
-        r.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-        let mut good = 0u64;
-        while let Some(p) = read_frame(&mut r, LOG_MAGIC) {
-            let rec = LogRec::dec_payload(&p).ok_or("rekord i log-ut që nuk dekodohet")?;
-            let len = 16 + p.len() as u64;
-            // Rekordet deri te checkpoint-i janë përfshirë tashmë në të.
+        let budget = MIN_LOG_BUDGET.max(2 * (self.o.ckpt_log_mb << 20));
+        let lp = self.dir.join("meta.log");
+        let log = read_budget(&lp, budget, "log-u")?.unwrap_or_default();
+        let mut pos = 0usize;
+        let mut last_seq: Option<u64> = None;
+        let mut tail: Option<&'static str> = None;
+        while pos < log.len() {
+            let at = |w: &str| corrupt(&self.dir, &format!("meta.log, bajti {pos}: {w}"));
+            let (body, n) = match parse_frame(&log[pos..], LOG_MAGIC, MAX_RECORD) {
+                Frame::Ok(b, n) => (b, n),
+                Frame::Torn(w) => {
+                    tail = Some(w);
+                    break;
+                }
+                Frame::Bad(w) => return Err(at(&w)),
+            };
+            let rec = LogRec::dec_payload(body).ok_or_else(|| at("rekord që nuk dekodohet"))?;
+            if last_seq.is_some_and(|l| rec.seq <= l) {
+                return Err(at(&format!("rend i gabuar: rekordi {} pas {}", rec.seq, last_seq.unwrap())));
+            }
+            last_seq = Some(rec.seq);
+            // Rekordet deri te checkpoint-i janë përfshirë tashmë në të (rrëzim mes rename-it të
+            // checkpoint-it dhe zbrazjes së log-ut).
             if rec.seq > self.rec_seq {
-                apply_rec(&mut alloc, &mut self.ring, self.state.as_ref().map(|s| s.version), &rec);
+                if !have_ckpt {
+                    return Err(at("rekord log-u pa checkpoint"));
+                }
+                if rec.seq != self.rec_seq + 1 {
+                    return Err(at(&format!("rend i gabuar: pritej rekordi {}, u gjet {}", self.rec_seq + 1, rec.seq)));
+                }
+                let prev = self.state.as_ref().map(|s| s.version);
+                if prev.is_some_and(|v| rec.st.version <= v) {
+                    return Err(at(&format!("rend i gabuar: sloti {} pas slotit {}", rec.st.version, prev.unwrap())));
+                }
+                apply_rec(&mut alloc, &mut self.ring, prev, &rec);
                 self.rec_seq = rec.seq;
                 self.root_id = rec.root_id;
                 self.state = Some(rec.st);
                 self.records_since_ckpt += 1;
             }
-            good += len;
+            pos += n;
         }
-        drop(r);
-        // Bishti i prerë (nëse ka) hiqet, që rekordet e reja të vijnë pas një rekordi të plotë.
-        self.log.set_len(good).map_err(io("shkurtimi i log-ut"))?;
-        self.log_len = good;
+        if let Some(w) = tail {
+            // Bishti ruhet për diagnozë, pastaj hiqet, që rekordet e reja të vijnë pas një rekordi të plotë.
+            let keep = self.dir.join(format!("meta.log.tail-{pos}"));
+            std::fs::write(&keep, &log[pos..]).map_err(io("ruajtja e bishtit të log-ut"))?;
+            log::warn!("zilja-pages: u hoq bishti i papërfunduar i log-ut ({w}, {} B nga bajti {pos}); u ruajt në {}", log.len() - pos, keep.display());
+            self.log.set_len(pos as u64).map_err(io("shkurtimi i log-ut"))?;
+            if self.o.durable {
+                self.log.sync_all().map_err(io("fsync i log-ut"))?;
+                sync_dir(&self.dir)?;
+            }
+        }
+        self.log_len = pos as u64;
         self.alloc = Mutex::new(alloc);
         Ok(())
     }
@@ -1151,8 +1246,8 @@ impl PageTree {
         self.data.set_len(0).map_err(io("fshirja e faqeve"))?;
         self.log.set_len(0).map_err(io("fshirja e log-ut"))?;
         self.log_len = 0;
-        let _ = std::fs::remove_file(self.dir.join("meta.ckpt"));
-        let _ = std::fs::remove_dir_all(self.dir.join("staging"));
+        remove_file(&self.dir.join("meta.ckpt"))?;
+        remove_dir_all(&self.dir.join("staging"))?;
         *self.alloc.get_mut().unwrap() = Alloc::default();
         self.pinned.clear();
         self.work.get_mut().unwrap().clear();
@@ -1327,7 +1422,7 @@ impl PageTree {
         let n = live.len() as u64;
         let sub = mbuild(BUCKET_BITS as usize, &live);
         drop(live);
-        let _ = std::fs::remove_file(&path);
+        remove_file(&path)?;
         let mut bits = [0u8; 32];
         bits[0] = (b << (8 - BUCKET_BITS)) as u8;
         let bpath = NPath { depth: BUCKET_BITS, bits };
@@ -1402,11 +1497,41 @@ pub(crate) fn lock_exclusive(path: &Path) -> Result<File, String> {
 
 /// Fshin skedarët e pemës (jo `LOCK`). Thirret vetëm nga mbajtësi i lock-ut.
 fn wipe(dir: &Path) -> Result<(), String> {
+    // `INVALID` fshihet i fundit: nëse ndërpritet, nisja e ardhshme e provon sërish.
     for name in ["pages.dat", "meta.log", "meta.ckpt", "meta.ckpt.tmp", "INVALID"] {
-        let _ = std::fs::remove_file(dir.join(name));
+        remove_file(&dir.join(name))?;
     }
-    let _ = std::fs::remove_dir_all(dir.join("staging"));
-    Ok(())
+    remove_dir_all(&dir.join("staging"))?;
+    sync_dir(dir)
+}
+
+/// Fshin një skedar; mungesa s'është gabim, çdo gjë tjetër po (P-03).
+fn remove_file(p: &Path) -> Result<(), String> {
+    match std::fs::remove_file(p) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("fshirja e {}: {e}", p.display())),
+        _ => Ok(()),
+    }
+}
+
+fn remove_dir_all(p: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(p) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("fshirja e {}: {e}", p.display())),
+        _ => Ok(()),
+    }
+}
+
+/// fsync i dosjes: krijimet, fshirjet dhe rename-t e skedarëve në të bëhen të qëndrueshme.
+fn sync_dir(dir: &Path) -> Result<(), String> {
+    File::open(dir).and_then(|d| d.sync_all()).map_err(|e| format!("fsync i dosjes {}: {e}", dir.display()))
+}
+
+/// Gabimi i dëmtimit: skedarët ruhen, dhe operatori vendos.
+fn corrupt(dir: &Path, what: &str) -> String {
+    format!(
+        "zilja-pages: ruajtja në {} është e dëmtuar ose e paqëndrueshme: {what}. Asnjë skedar s'u ndryshua (u ruajtën për diagnozë). \
+         Për rindërtim nga snapshot-i: ndalo validatorin, zhvendose dosjen dhe rinise (shih docs/OPERIMI.md)",
+        dir.display()
+    )
 }
 
 impl Source for PageTree {
@@ -1504,7 +1629,7 @@ impl StateTree for PageTree {
         self.staged = 0;
         self.seq = 0;
         self.rec_seq = 1;
-        let _ = std::fs::remove_dir_all(self.dir.join("staging"));
+        remove_dir_all(&self.dir.join("staging"))?;
         self.load_pinned()?;
         self.cache_since = slot;
         // Snapshot-i ruhet drejtpërdrejt si checkpoint (me fsync të faqeve para tij).
@@ -1781,15 +1906,16 @@ impl StateTree for PageTree {
         })
     }
 
-    fn invalidate(&mut self, why: &str) {
-        // F-13: asgjë nuk fshihet tani; nisja e ardhshme e rindërton.
-        let r = File::create(self.dir.join("INVALID")).and_then(|mut f| {
-            f.write_all(why.as_bytes())?;
-            f.sync_all()
-        });
-        if let Err(e) = r {
-            log::error!("zilja-pages: shënimi 'i pavlefshëm' dështoi: {e}");
-        }
+    fn invalidate(&mut self, why: &str) -> Result<(), String> {
+        // F-13: asgjë nuk fshihet tani; nisja e ardhshme e rindërton. P-03: gabimi raportohet.
+        let p = self.dir.join("INVALID");
+        File::create(&p)
+            .and_then(|mut f| {
+                f.write_all(why.as_bytes())?;
+                f.sync_all()
+            })
+            .map_err(|e| format!("shënimi 'i pavlefshëm' {}: {e}", p.display()))?;
+        sync_dir(&self.dir)
     }
 }
 

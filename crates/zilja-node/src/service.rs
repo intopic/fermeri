@@ -108,6 +108,8 @@ pub struct Metrics {
     pub startup_done: AtomicBool,
     /// `true` kur kanali u mbush (validatori shkon më shpejt se pema).
     pub queue_overflow: AtomicBool,
+    /// `true` kur shënimi "i pavlefshëm" i pemës në disk s'u shkrua (P-03).
+    pub invalidate_failed: AtomicBool,
 }
 
 fn now_unix() -> u64 {
@@ -157,6 +159,10 @@ impl Metrics {
             g("provable_from_slot", "Sloti më i vjetër për të cilin jepen dëftesa", &self.provable_from_slot),
             g("ambiguous_banks", "Herët kur një slot kishte disa banka të gjalla (rrugë rezervë)", &self.ambiguous_banks),
             g("resume_verified", "1 kur pas rinisjes u konfirmua që jemi në të njëjtin zinxhir (SlotHashes)", &self.resume_verified),
+            format!(
+                "# HELP zilja_invalidate_failed 1 kur shënimi 'i pavlefshëm' i pemës në disk dështoi (rindërtoje me dorë)\n# TYPE zilja_invalidate_failed gauge\nzilja_invalidate_failed {}\n",
+                self.invalidate_failed.load(Ordering::Relaxed) as u8
+            ),
         ]
         .concat()
     }
@@ -335,7 +341,12 @@ fn halt(shared: &Shared, tracker: &mut Tracker, why: String) {
     let mut st = shared.state.write().unwrap_or_else(|e| e.into_inner());
     if st.broken.is_none() {
         st.ready = false;
-        st.tree.invalidate(&why);
+        // P-03: nëse shënimi s'shkruhet, nisja e ardhshme s'e di që duhet rindërtim. Fail-closed:
+        // metrika e tregon, dhe fingerprint-i i zinxhirit e ndalon përsëri pas rinisjes.
+        if let Err(e) = st.tree.invalidate(&why) {
+            m.invalidate_failed.store(true, Ordering::Relaxed);
+            log::error!("zilja: shënimi 'i pavlefshëm' i pemës dështoi: {e}. Rindërtoje me dorë para rinisjes.");
+        }
         st.broken = Some(why);
     }
 }
