@@ -111,6 +111,30 @@ pub struct Metrics {
     pub queue_overflow: AtomicBool,
     /// `true` kur shënimi "i pavlefshëm" i pemës në disk s'u shkrua (P-03).
     pub invalidate_failed: AtomicBool,
+    /// P-08: faza e shërbimit (`PHASE_*`).
+    pub phase: AtomicU64,
+    /// P-10: pragu i freskisë së root-it në sekonda (0 = pa kontroll). Mbi të, /health = 503.
+    pub max_root_age_secs: AtomicU64,
+    /// Ndalim i rregullt (`shutdown`): fundi i punëtorit s'është rënie.
+    pub stopping: AtomicBool,
+    /// P-10: `false` pasi thread-i i punëtorit mbaron (normalisht ose me panic).
+    pub worker_alive: AtomicBool,
+}
+
+/// P-08: fazat. `starting`: pema po ndërtohet (snapshot/genesis). `recovered`: pema u hap nga disku,
+/// por zinxhiri s'e ka konfirmuar ende (s'shërbehet). `serving`: jep dëftesa. `halted`: ndaloi, s'shërben.
+pub const PHASE_STARTING: u64 = 0;
+pub const PHASE_RECOVERED: u64 = 1;
+pub const PHASE_SERVING: u64 = 2;
+pub const PHASE_HALTED: u64 = 3;
+
+pub fn phase_name(p: u64) -> &'static str {
+    match p {
+        PHASE_STARTING => "starting",
+        PHASE_RECOVERED => "recovered",
+        PHASE_SERVING => "serving",
+        _ => "halted",
+    }
 }
 
 fn now_unix() -> u64 {
@@ -161,6 +185,8 @@ impl Metrics {
             g("partial_banks_skipped", "Banka të krijuara para ngarkimit të plugin-it (pa SlotHashes) që s'u aplikuan (nisje pa bazë)", &self.partial_banks_skipped),
             g("ambiguous_banks", "Herët kur një slot kishte disa banka të gjalla që SlotHashes s'i dallonte (ndalim, P-07)", &self.ambiguous_banks),
             g("resume_verified", "1 kur pas rinisjes u konfirmua që jemi në të njëjtin zinxhir (SlotHashes)", &self.resume_verified),
+            g("phase", "Faza: 0 starting, 1 recovered (nga disku, e paverifikuar), 2 serving, 3 halted", &self.phase),
+            g("max_root_age_secs", "Pragu i freskisë së root-it për /health (0 = pa kontroll)", &self.max_root_age_secs),
             format!(
                 "# HELP zilja_invalidate_failed 1 kur shënimi 'i pavlefshëm' i pemës në disk dështoi (rindërtoje me dorë)\n# TYPE zilja_invalidate_failed gauge\nzilja_invalidate_failed {}\n",
                 self.invalidate_failed.load(Ordering::Relaxed) as u8
@@ -186,6 +212,8 @@ pub struct Options {
     pub attest: Option<AttestOptions>,
     /// Pema: `None` = në RAM.
     pub tree: Option<Box<dyn StateTree>>,
+    /// P-10: /health = 503 kur root-i i fundit është më i vjetër se kaq sekonda.
+    pub max_root_age_secs: Option<u64>,
     /// Plugin-i u ngarkua ndërsa validatori punonte (`reloadPlugin`): bankat që po përpunoheshin
     /// u krijuan para ngarkimit dhe vëzhgohen vetëm pjesërisht.
     pub mid_run_load: bool,
@@ -224,14 +252,14 @@ impl Service {
                 tracker.resume(r.slot, r.fingerprint, r.complete);
                 st.slot = r.slot;
                 st.roots.insert(r.slot, r.root);
-                st.ready = true;
+                // P-08: e hapur nga disku ≠ e verifikuar. Shërbehet vetëm pasi SlotHashes ta konfirmojë.
                 st.complete = r.complete;
                 let m = &shared.metrics;
                 m.resumed.store(1, Ordering::Relaxed);
                 m.accounts.store(r.len as u64, Ordering::Relaxed);
                 m.last_rooted_slot.store(r.slot, Ordering::Relaxed);
                 m.complete.store(r.complete as u64, Ordering::Relaxed);
-                m.ready.store(1, Ordering::Relaxed);
+                m.phase.store(PHASE_RECOVERED, Ordering::Relaxed);
                 m.startup_done.store(true, Ordering::Relaxed);
                 log::info!("zilja: vazhdon nga pema në disk, slot {}, {} llogari", r.slot, r.len);
             }
@@ -241,12 +269,29 @@ impl Service {
             Some(p) => Some(RootsLog::open(p)?),
             None => None,
         };
+        shared.metrics.max_root_age_secs.store(opts.max_root_age_secs.unwrap_or(0), Ordering::Relaxed);
+        shared.metrics.worker_alive.store(true, Ordering::Relaxed);
         let s2 = shared.clone();
+        let s3 = shared.clone();
         let signer = attester;
-        let worker = std::thread::Builder::new()
-            .name("zilja-worker".into())
-            .stack_size(WORKER_STACK)
-            .spawn(move || worker_loop(rx, s2, log, signer, tracker))?;
+        let worker = std::thread::Builder::new().name("zilja-worker".into()).stack_size(WORKER_STACK).spawn(move || {
+            // P-10: një rënie e punëtorit (panic) ose një fund i papritur ndalon shërbimin.
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker_loop(rx, s2, log, signer, tracker)));
+            let m = &s3.metrics;
+            let why = match r {
+                Err(e) => {
+                    let msg = e.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| e.downcast_ref::<String>().cloned()).unwrap_or_default();
+                    Some(format!("punëtori i Ziles ra (panic: {msg})"))
+                }
+                Ok(()) if !m.stopping.load(Ordering::Relaxed) => Some("punëtori i Ziles mbaroi papritur".to_string()),
+                Ok(()) => None,
+            };
+            if let Some(why) = why {
+                stop_serving(&s3, why);
+            }
+            m.ready.store(0, Ordering::Relaxed);
+            m.worker_alive.store(false, Ordering::Relaxed);
+        })?;
         Ok(Service { shared, resumed: resume.is_some(), tx: Some(tx), worker: Some(worker) })
     }
 
@@ -258,13 +303,28 @@ impl Service {
             return;
         }
         let Some(tx) = &self.tx else { return };
-        if !m.startup_done.load(Ordering::Relaxed) {
-            let _ = tx.send(ev);
-        } else if let Err(TrySendError::Full(_)) = tx.try_send(ev) {
-            // Punëtori e kryen ndalimin; këtu vetëm ndalojmë së dërguari, pa kyçur asgjë.
+        let disconnected = if !m.startup_done.load(Ordering::Relaxed) {
+            tx.send(ev).is_err()
+        } else {
+            match tx.try_send(ev) {
+                Err(TrySendError::Full(_)) => {
+                    // Punëtori e kryen ndalimin; këtu vetëm ndalojmë së dërguari, pa kyçur asgjë.
+                    m.ready.store(0, Ordering::Relaxed);
+                    m.queue_overflow.store(true, Ordering::Relaxed);
+                    m.halted.store(true, Ordering::Relaxed);
+                    m.phase.store(PHASE_HALTED, Ordering::Relaxed);
+                    false
+                }
+                Err(TrySendError::Disconnected(_)) => true,
+                Ok(()) => false,
+            }
+        };
+        if disconnected {
+            // P-10: s'ka më punëtor. Vetëm atomike: validatori s'pret kurrë këtu.
             m.ready.store(0, Ordering::Relaxed);
-            m.queue_overflow.store(true, Ordering::Relaxed);
             m.halted.store(true, Ordering::Relaxed);
+            m.broken.store(1, Ordering::Relaxed);
+            m.phase.store(PHASE_HALTED, Ordering::Relaxed);
         }
         m.queue_len.store(tx.len() as u64, Ordering::Relaxed);
     }
@@ -275,6 +335,7 @@ impl Service {
 
     /// Mbyll kanalin dhe pret që punëtori të mbarojë gjithçka në radhë.
     pub fn shutdown(&mut self) {
+        self.shared.metrics.stopping.store(true, Ordering::Relaxed);
         self.tx.take();
         if let Some(w) = self.worker.take() {
             let _ = w.join();
@@ -335,17 +396,24 @@ fn update_range(st: &State, m: &Metrics) {
     }
 }
 
-/// Safer-1: rruga e vetme e ndalimit. E dukshme te /health, te metrikat dhe te logu.
-/// Pema në disk shënohet e pavlefshme (rindërtohet në nisjen e ardhshme), por nuk fshihet (F-13).
+/// Safer-1: ndalimi nga punëtori (tracker-i nuk pranon më asgjë), përmes rrugës qendrore.
 fn halt(shared: &Shared, tracker: &mut Tracker, why: String) {
+    tracker.halt();
+    stop_serving(shared, why);
+}
+
+/// P-10: rruga qendrore e ndalimit kur korrektësia s'garantohet më: punëtori (zinxhir/boshllëk),
+/// RPC-ja (gabim ruajtjeje), rënia e punëtorit. E dukshme te /health, te metrikat dhe te logu.
+/// Pema në disk shënohet e pavlefshme (rindërtohet në nisjen e ardhshme), por nuk fshihet (F-13).
+pub fn stop_serving(shared: &Shared, why: String) {
     let m = &shared.metrics;
     m.halted.store(true, Ordering::Relaxed);
     m.ready.store(0, Ordering::Relaxed);
     m.broken.store(1, Ordering::Relaxed);
-    tracker.halt();
-    log::error!("zilja: NDALOI: {why}. Pema u shënua e pavlefshme; rinis validatorin që zilja të rindërtohet nga snapshot-i.");
+    m.phase.store(PHASE_HALTED, Ordering::Relaxed);
     let mut st = shared.state.write().unwrap_or_else(|e| e.into_inner());
     if st.broken.is_none() {
+        log::error!("zilja: NDALOI: {why}. Pema u shënua e pavlefshme; rinis validatorin që zilja të rindërtohet nga snapshot-i.");
         st.ready = false;
         // P-03: nëse shënimi s'shkruhet, nisja e ardhshme s'e di që duhet rindërtim. Fail-closed:
         // metrika e tregon, dhe fingerprint-i i zinxhirit e ndalon përsëri pas rinisjes.
@@ -414,6 +482,7 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
                     m.last_rooted_slot.store(slot, Ordering::Relaxed);
                     m.last_root_unix.store(now_unix(), Ordering::Relaxed);
                     m.ready.store(1, Ordering::Relaxed);
+                    m.phase.store(PHASE_SERVING, Ordering::Relaxed);
                     m.startup_done.store(true, Ordering::Relaxed);
                     log::info!("zilja: pema fillestare me {n} llogari u ndërtua në {ms} ms, slot {slot}");
                     write_root(&mut log, slot, &root);
@@ -454,6 +523,7 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
                     m.last_rooted_slot.store(slot, Ordering::Relaxed);
                     m.last_root_unix.store(now_unix(), Ordering::Relaxed);
                     m.ready.store(1, Ordering::Relaxed);
+                    m.phase.store(PHASE_SERVING, Ordering::Relaxed);
                     write_root(&mut log, slot, &root);
                 }
                 Output::Broken(why) => {
@@ -467,6 +537,14 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
         m.dead_banks.store(tracker.stats.dead_banks, Ordering::Relaxed);
         m.queue_len.store(rx.len() as u64, Ordering::Relaxed);
         m.resume_verified.store(tracker.resume_verified() as u64, Ordering::Relaxed);
+        // P-08: gjendja nga disku shërbehet vetëm pasi zinxhiri ta konfirmojë.
+        if tracker.resume_verified() && m.phase.load(Ordering::Relaxed) == PHASE_RECOVERED {
+            shared.state.write().unwrap().ready = true;
+            m.last_root_unix.store(now_unix(), Ordering::Relaxed);
+            m.ready.store(1, Ordering::Relaxed);
+            m.phase.store(PHASE_SERVING, Ordering::Relaxed);
+            log::info!("zilja: gjendja nga disku u konfirmua nga zinxhiri; po shërben");
+        }
         m.ambiguous_banks.store(tracker.stats.ambiguous_banks, Ordering::Relaxed);
         m.partial_banks_skipped.store(tracker.stats.partial_banks_skipped, Ordering::Relaxed);
     }

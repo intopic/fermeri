@@ -68,7 +68,8 @@ fn resume_history_and_wrong_chain() {
         // Jashtë kujtesës (8 slote).
         let pk = bs58::encode([2u8; 32]).into_string();
         let r = rpc(&sh, &format!(r#"{{"id":1,"method":"getAccountProof","params":["{pk}",{{"slot":5}}]}}"#));
-        assert_eq!(r["error"]["code"], -32602);
+        // P-09: "jashtë historisë" ka kodin e vet; -32602 vetëm për parametra të pavlefshëm.
+        assert_eq!(r["error"]["code"], -32007);
     }
     {
         // E njëjta histori në RAM, për krahasim.

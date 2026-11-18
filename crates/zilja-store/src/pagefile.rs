@@ -1922,7 +1922,10 @@ impl StateTree for PageTree {
         Ok(self.root())
     }
 
-    fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, String> {
+    fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, zilja_tree::ProveError> {
+        // P-09: gjendje që mungon / jashtë historisë dallohen nga gabimet e ruajtjes.
+        zilja_tree::check_provable(self.provable_range(), at)?;
+        let inner = || -> Result<ProofAt, String> {
         let st = self.state.as_ref().ok_or("pema ende s'është ndërtuar")?;
         let v = at.unwrap_or(st.version);
         let (lo, hi) = self.provable_range().unwrap();
@@ -1971,6 +1974,8 @@ impl StateTree for PageTree {
                 }
             }
         }
+    };
+        inner().map_err(zilja_tree::ProveError::Storage)
     }
 
     fn provable_range(&self) -> Option<(u64, u64)> {
