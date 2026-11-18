@@ -150,8 +150,50 @@ historinë dhe me `reuse_slack`. Ky ndryshim s'është bërë ende.
   firmosjeje me log-e të ndryshme, dhe nuk garantohet mbi sisteme skedarësh të ndarë (NFS etj.).
   Një çelës firmosjeje duhet të jetë aktiv në një host të vetëm. Për rezervë (failover), përdor
   çelës tjetër me autorizim të vetin.
-- Gjatë ringarkimit të plugin-it, `on_unload` ndalon serverët dhe punëtorin, dhe i liron të dy
-  lock-et para se të hapet instanca e re.
+- Gjatë ringarkimit të plugin-it (`reloadPlugin`), `on_unload` ndalon serverët dhe punëtorin, dhe
+  i liron të dy lock-et para se të hapet instanca e re.
+- **Kufizim i ringarkimit me pemë në disk:** bankat që po përpunoheshin gjatë ringarkimit i mori
+  instanca e vjetër, ndaj e reja s'mund ta lidhë zinxhirin dhe ndalon menjëherë, fail-closed
+  (`zilja_broken` = 1, `/health` = 503). Pema shënohet për rindërtim në rinisjen e ardhshme të
+  validatorit. E verifikuar në e2e (`disk=pages`, hapat 9–10). Për ndryshime konfigurimi,
+  rinis validatorin në vend të `reloadPlugin`.
+
+## Konteksti: genesis, identiteti, çelësi (P-05)
+
+**Pema me faqe** (`db_path/MANIFEST`) ruan formatin (`zilja-pages`, `format_version`) dhe
+genesis-in. Me `tree_engine: "pages"`, `genesis_path` (ose `genesis_hash`) është i
+detyrueshëm. Në hapje:
+- format ose version tjetër → refuzohet;
+- genesis tjetër → refuzohet;
+- dosje RocksDB → refuzohet, s'hapet kurrë si instalim i ri pages;
+- dosje me të dhëna por pa `MANIFEST` → refuzohet.
+
+Asnjë skedar s'ndryshohet në këto raste.
+
+**Log-u i firmave** (`attest_state`) e nis me rreshtin
+`# zilja-attest-log v1 genesis=… identity=… signer=…`. Hapja me genesis, identitet ose çelës
+tjetër refuzohet, dhe mesazhi emërton fushat që ndryshojnë. Kështu root-et e vjetra
+s'rifirmosen kurrë në një kontekst tjetër.
+
+**Genesis-i real i validatorit:** përdor `genesis_path` = `<ledger>/genesis.bin`, sepse ky
+skedar i përket vetë rrjetit ku punon validatori. Kur jepen edhe `genesis_hash` edhe
+`genesis_path`, ato duhet të përputhen; ndryshe plugin-i s'ngarkohet.
+
+**Procedurat:**
+- **Ndryshimi i çelësit të firmosjes:**
+  1. Krijo autorizimin e ri me `zilja-authorize`.
+  2. Vendos një `attest_state` **të ri**.
+  3. **Ruaje** log-un e vjetër: nëse çelësi i vjetër përdoret ndonjëherë sërish, duhet të
+     përdoret me log-un e tij, që të mbetet mbrojtja kundër firmosjes së dyfishtë.
+- **Rrjet tjetër (genesis i ri):**
+  1. Ndalo validatorin.
+  2. Zhvendos `db_path`, dhe vendos `attest_state` të ri (ose autorizim të ri).
+  3. Rinise. Pema ndërtohet nga snapshot-i i rrjetit të ri.
+- **Log firmash pa kontekst (version para P-05):** plugin-i e refuzon. Kur je i sigurt që log-u
+  u krijua nga ky çelës për këtë rrjet, vendos `"attest_adopt_legacy": true` **një herë**.
+  Plugin-i e rishkruan log-un me kokën, pa humbur historinë. Pastaj hiqe opsionin.
+- **Migrimi i formatit të pemës** (`format_version` i ri në një version të ardhshëm): s'ka
+  migrim në vend. Zhvendos dosjen dhe rindërto nga snapshot-i.
 
 ## Kufijtë e konfigurimit (L-08)
 

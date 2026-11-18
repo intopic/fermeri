@@ -4871,11 +4871,13 @@ name = "zilja-store"
 version = "0.2.0"
 dependencies = [
  "ahash",
+ "bs58",
  "crc32fast",
  "log",
  "rand 0.8.8",
  "rayon",
  "rocksdb",
+ "serde_json",
  "tempfile",
  "zilja-tree",
  "zilja-verifier",

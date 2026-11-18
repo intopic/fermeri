@@ -181,6 +181,7 @@ fn page_scenario(seed: u64) -> u64 {
         ckpt_every: rng.gen_range(1..20),
         ckpt_log_mb: 64,
         reuse_slack: rng.gen_range(0..4),
+        genesis: None,
     };
     let mut t = PageTree::open(&dir, o.clone()).unwrap();
     // Rekordet që i kanë mbijetuar një rihapjeje janë në disk: një ikje rryme e mëvonshme s'i humb.

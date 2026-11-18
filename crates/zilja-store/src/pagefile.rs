@@ -727,6 +727,9 @@ pub struct PageOptions {
     /// Rekorde shtesë para se një vend i liruar të ripërdoret. Kështu, edhe nëse humbasin deri në
     /// `reuse_slack + 1` rekordet e fundit pa fsync (ikje e rrymës), versioni para tyre është i plotë në disk.
     pub reuse_slack: u64,
+    /// P-05: genesis-i i rrjetit. Ruhet në `MANIFEST` kur krijohet dosja, dhe çdo hapje pas saj duhet
+    /// të japë të njëjtin; ndryshe refuzohet. `None` vetëm për teste dhe matje.
+    pub genesis: Option<Hash>,
 }
 
 impl Default for PageOptions {
@@ -739,6 +742,7 @@ impl Default for PageOptions {
             ckpt_every: 256,
             ckpt_log_mb: 64,
             reuse_slack: 2,
+            genesis: None,
         }
     }
 }
@@ -827,6 +831,7 @@ impl PageTree {
         }
         std::fs::create_dir_all(&dir).map_err(io("krijimi i dosjes"))?;
         let lock = lock_exclusive(&dir.join("LOCK"))?;
+        check_manifest(&dir, &o)?;
         if let Ok(why) = std::fs::read_to_string(dir.join("INVALID")) {
             // F-13: gjendja u shënua e pavlefshme në nisjen e kaluar: rindërtim i pastër.
             log::warn!("zilja-pages: pema u shënua e pavlefshme ({why}); po rindërtohet nga e para");
@@ -1495,7 +1500,86 @@ pub(crate) fn lock_exclusive(path: &Path) -> Result<File, String> {
     }
 }
 
-/// Fshin skedarët e pemës (jo `LOCK`). Thirret vetëm nga mbajtësi i lock-ut.
+/// P-05: versioni i formatit të dosjes (blloqe 4 KB, `ZLR3`/`ZCK3`). Ndryshon kur ndryshon formati.
+pub const FORMAT_VERSION: u64 = 1;
+const FORMAT_NAME: &str = "zilja-pages";
+
+/// P-05: `MANIFEST` lidh dosjen me formatin dhe me genesis-in.
+///
+/// - Dosje RocksDB → refuzohet (s'hapet kurrë si instalim i ri pages).
+/// - `MANIFEST` ekziston → formati, versioni dhe genesis-i duhet të përputhen.
+/// - S'ekziston, por ka të dhëna pages → refuzohet (s'dihet për cilin rrjet janë).
+/// - Dosje bosh → krijohet.
+fn check_manifest(dir: &Path, o: &PageOptions) -> Result<(), String> {
+    let path = dir.join("MANIFEST");
+    let rocks = std::fs::read_dir(dir).map_err(io("leximi i dosjes"))?.filter_map(Result::ok).any(|e| {
+        let n = e.file_name().to_string_lossy().into_owned();
+        n == "CURRENT" || n == "IDENTITY" || n.starts_with("OPTIONS-") || n.ends_with(".sst")
+    });
+    if rocks {
+        return Err(format!(
+            "{} është një dosje RocksDB (motori i vjetër), jo e motorit me faqe; s'hapet si instalim i ri. \
+             Vendos një db_path tjetër, ose zhvendose dosjen që zilja të ndërtohet nga snapshot-i",
+            dir.display()
+        ));
+    }
+    let g = |h: &Option<Hash>| h.map_or("asnjë".to_string(), |h| bs58::encode(h).into_string());
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("{} s'lexohet: {e}", path.display()))?;
+            if v["format"] != FORMAT_NAME {
+                return Err(format!("{}: format i panjohur {}", path.display(), v["format"]));
+            }
+            if v["format_version"].as_u64() != Some(FORMAT_VERSION) {
+                return Err(format!(
+                    "{}: format_version {} s'mbështetet nga ky version (pritej {FORMAT_VERSION}); shih docs/OPERIMI.md për migrimin",
+                    path.display(),
+                    v["format_version"]
+                ));
+            }
+            let stored = match &v["genesis"] {
+                serde_json::Value::Null => None,
+                serde_json::Value::String(s) => Some(
+                    bs58::decode(s).into_vec().ok().and_then(|b| Hash::try_from(b).ok()).ok_or_else(|| format!("{}: genesis i pavlefshëm", path.display()))?,
+                ),
+                _ => return Err(format!("{}: genesis i pavlefshëm", path.display())),
+            };
+            if stored != o.genesis {
+                return Err(format!(
+                    "pema në {} është për genesis {}, por konfigurimi jep genesis {}; s'hapet (rrjet tjetër)",
+                    dir.display(),
+                    g(&stored),
+                    g(&o.genesis)
+                ));
+            }
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let has_data = ["pages.dat", "meta.log", "meta.ckpt"].iter().any(|n| std::fs::metadata(dir.join(n)).is_ok_and(|m| m.len() > 0));
+            if has_data {
+                return Err(format!(
+                    "{} ka të dhëna pages por s'ka MANIFEST (version i vjetër): s'dihet për cilin rrjet janë. Zhvendose dosjen që zilja të ndërtohet nga snapshot-i",
+                    dir.display()
+                ));
+            }
+            let body = serde_json::json!({ "format": FORMAT_NAME, "format_version": FORMAT_VERSION, "genesis": o.genesis.map(|h| bs58::encode(h).into_string()) });
+            let tmp = dir.join("MANIFEST.tmp");
+            let mut f = File::create(&tmp).map_err(io("krijimi i MANIFEST"))?;
+            f.write_all(serde_json::to_string_pretty(&body).unwrap().as_bytes()).map_err(io("shkrimi i MANIFEST"))?;
+            if o.durable {
+                f.sync_all().map_err(io("fsync i MANIFEST"))?;
+            }
+            std::fs::rename(&tmp, &path).map_err(io("rename i MANIFEST"))?;
+            if o.durable {
+                sync_dir(dir)?;
+            }
+            Ok(())
+        }
+        Err(e) => Err(format!("leximi i {}: {e}", path.display())),
+    }
+}
+
+/// Fshin skedarët e pemës (jo `LOCK` dhe jo `MANIFEST`). Thirret vetëm nga mbajtësi i lock-ut.
 fn wipe(dir: &Path) -> Result<(), String> {
     // `INVALID` fshihet i fundit: nëse ndërpritet, nisja e ardhshme e provon sërish.
     for name in ["pages.dat", "meta.log", "meta.ckpt", "meta.ckpt.tmp", "INVALID"] {
