@@ -727,6 +727,9 @@ type WorkPage = Option<(PageId, Arc<FPage>)>;
 
 pub struct PageTree {
     dir: PathBuf,
+    /// P-01: lock ekskluziv mbi `LOCK`, i marrë para çdo recovery, wipe ose shkrimi dhe i mbajtur
+    /// gjatë gjithë jetës së instancës. Rindërtimi s'e fshin kurrë këtë skedar.
+    _lock: File,
     data: File,
     log: File,
     log_len: u64,
@@ -770,6 +773,7 @@ impl PageTree {
     pub fn open(dir: impl AsRef<Path>, o: PageOptions) -> Result<Self, String> {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir).map_err(io("krijimi i dosjes"))?;
+        let lock = lock_exclusive(&dir.join("LOCK"))?;
         if let Ok(why) = std::fs::read_to_string(dir.join("INVALID")) {
             // F-13: gjendja u shënua e pavlefshme në nisjen e kaluar: rindërtim i pastër.
             log::warn!("zilja-pages: pema u shënua e pavlefshme ({why}); po rindërtohet nga e para");
@@ -780,6 +784,7 @@ impl PageTree {
         let log = open("meta.log").map_err(io("hapja e log-ut"))?;
         let mut t = PageTree {
             dir,
+            _lock: lock,
             data,
             log,
             log_len: 0,
@@ -1381,6 +1386,21 @@ fn kid_ref(pg: &FPage, j: usize) -> Result<Ref, String> {
     }
 }
 
+/// P-01: lock ekskluziv (flock) mbi `path`, pa pritur. Lirohet vetëm kur mbyllet skedari (fundi i
+/// instancës ose i procesit). Mbron vetëm brenda një host-i: një sistem skedarësh i ndarë mes
+/// makinave (NFS etj.) nuk garantohet.
+pub(crate) fn lock_exclusive(path: &Path) -> Result<File, String> {
+    let f = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path).map_err(|e| format!("hapja e {}: {e}", path.display()))?;
+    match f.try_lock() {
+        Ok(()) => Ok(f),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            Err(format!("{} është në përdorim nga një instancë tjetër (lock-u {} është i zënë); asgjë s'u ndryshua", path.parent().unwrap_or(path).display(), path.display()))
+        }
+        Err(std::fs::TryLockError::Error(e)) => Err(format!("lock-u {}: {e}", path.display())),
+    }
+}
+
+/// Fshin skedarët e pemës (jo `LOCK`). Thirret vetëm nga mbajtësi i lock-ut.
 fn wipe(dir: &Path) -> Result<(), String> {
     for name in ["pages.dat", "meta.log", "meta.ckpt", "meta.ckpt.tmp", "INVALID"] {
         let _ = std::fs::remove_file(dir.join(name));
