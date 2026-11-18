@@ -20,6 +20,10 @@ fn slot(svc: &Service, s: u64, key: u8, lamports: u64) {
     svc.send(Event::SlotHashes { slot: s, bank_id: s, entries });
     svc.send(Event::Status { slot: s, parent: Some(s - 1), bank_id: Some(s), status: Status::CreatedBank });
     svc.send(Event::Account { slot: s, bank_id: s, pubkey: [key; 32], write_version: s, meta: m(lamports) });
+    // Si në validator: rrënjosja vjen pasi fëmija (s+1) ekziston, ndaj SlotHashes i tij jep hash-in e
+    // bankës së s (gjurma e saktë, P-06).
+    let child = (s.saturating_sub(19)..=s).rev().map(|p| (p, [p as u8; 32])).collect();
+    svc.send(Event::SlotHashes { slot: s + 1, bank_id: s + 1, entries: child });
     svc.send(Event::Status { slot: s, parent: Some(s - 1), bank_id: Some(s), status: Status::Rooted });
 }
 

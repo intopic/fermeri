@@ -157,7 +157,7 @@ impl Metrics {
             g("resumed", "1 kur zilja vazhdoi nga pema në disk pa snapshot", &self.resumed),
             g("broken", "1 kur zilja ndaloi (boshllëk ose zinxhir tjetër)", &self.broken),
             g("provable_from_slot", "Sloti më i vjetër për të cilin jepen dëftesa", &self.provable_from_slot),
-            g("ambiguous_banks", "Herët kur një slot kishte disa banka të gjalla (rrugë rezervë)", &self.ambiguous_banks),
+            g("ambiguous_banks", "Herët kur një slot kishte disa banka të gjalla që SlotHashes s'i dallonte (ndalim, P-07)", &self.ambiguous_banks),
             g("resume_verified", "1 kur pas rinisjes u konfirmua që jemi në të njëjtin zinxhir (SlotHashes)", &self.resume_verified),
             format!(
                 "# HELP zilja_invalidate_failed 1 kur shënimi 'i pavlefshëm' i pemës në disk dështoi (rindërtoje me dorë)\n# TYPE zilja_invalidate_failed gauge\nzilja_invalidate_failed {}\n",

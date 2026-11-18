@@ -195,6 +195,26 @@ skedar i përket vetë rrjetit ku punon validatori. Kur jepen edhe `genesis_hash
 - **Migrimi i formatit të pemës** (`format_version` i ri në një version të ardhshëm): s'ka
   migrim në vend. Zhvendos dosjen dhe rindërto nga snapshot-i.
 
+## Lidhja me bankat dhe fork-et (P-06, P-07)
+
+Agave 4.3.2 i jep plugin-it `bank_id` për çdo status dhe ndryshim llogarie, por prindin e
+jep vetëm si **slot**. Zilja e merr lidhjen e saktë bankë → bankë prind nga sysvar-i
+SlotHashes i çdo banke: `(slot_prind, hash_banke_prind)` dhe paraardhësit më tej.
+
+- Lidhja e parë e çdo zinxhiri të rrënjosur duhet të jetë me **hash-in** e bankës së fundit të
+  rrënjosur, jo vetëm me slotin e saj.
+- Kur një slot ka disa banka të gjalla, zgjidhet vetëm ajo që përputhet me SlotHashes e
+  fëmijës. Nëse mbeten disa, zilja **ndalon**, rritet `zilja_ambiguous_banks`, dhe pema
+  rindërtohet në rinisje. Asnjë degë s'zgjidhet me hamendje.
+- Gjurma e ruajtur është hash-i i bankës së vetë slotit, nga SlotHashes i pasardhësve, kurrë
+  hash-i i prindit. Pas rinisjes, një gjurmë e prindit (gjendje të vjetra) ose një gjurmë që
+  mungon s'e verifikon gjendjen: pema rindërtohet.
+
+Kufizim: rastet me banka të dyfishta (bllok i dyfishtë, UpdateParent pa njoftim pastrimi)
+janë testuar me ngjarje sintetike (`zilja-node/tests/forks.rs`) që ndjekin kontratën e
+ndërfaqes. Ato s'mund të prodhohen me një validator të vetëm në e2e, dhe kërkojnë një
+cluster testues me fork-e.
+
 ## Kufijtë e konfigurimit (L-08)
 
 - `cache_depth`: 12–24. Me ~2^thellësi nyje në RAM, 20 do të thotë ~1M nyje (~150 MB).

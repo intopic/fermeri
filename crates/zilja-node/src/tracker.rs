@@ -63,6 +63,9 @@ struct Bank {
     dead: bool,
     /// Hyrja e parë e SlotHashes: (prindi, hash-i i bankës së prindit).
     parent_hash: Option<(Slot, [u8; 32])>,
+    /// P-07: paraardhësit nga SlotHashes (nga më i riu), deri te sloti i fundit i rrënjosur. Lidhja e
+    /// vetme e saktë bankë → bankë prind që jep Agave 4.3 (statuset japin vetëm slotin e prindit).
+    ancestors: Vec<(Slot, [u8; 32])>,
     /// pubkey → (write_version, meta)
     updates: HashMap<Key, (u64, Option<AccountMeta>)>,
 }
@@ -74,7 +77,7 @@ pub struct TrackerStats {
     pub missing_parents: u64,
     pub dead_banks: u64,
     pub stale_roots_ignored: u64,
-    /// Herët kur një slot kishte disa banka të gjalla dhe u zgjodh më e reja (rrugë rezervë).
+    /// P-07: herët kur një slot kishte disa banka të gjalla që SlotHashes s'i dallonte (ndalim).
     pub ambiguous_banks: u64,
     pub parents_from_slot_hashes: u64,
 }
@@ -93,6 +96,9 @@ pub struct Tracker {
     complete: bool,
     /// Pas rinisjes nga disku: sloti i ruajtur dhe gjurma që duhet ta gjejmë në SlotHashes.
     resume_check: Option<(Slot, Option<Fingerprint>)>,
+    /// P-06: hash-i i bankës së slotit të fundit të rrënjosur, kur dihet. Lidhja e parë e çdo
+    /// zinxhiri të ri duhet të jetë pikërisht me këtë bankë, jo vetëm me këtë slot.
+    last_fp: Option<Fingerprint>,
     resumed: bool,
     broken: bool,
     pub stats: TrackerStats,
@@ -115,7 +121,9 @@ impl Tracker {
         self.resumed = true;
         self.complete = complete;
         self.last_rooted = Some(slot);
-        self.resume_check = Some((slot, fingerprint));
+        // P-06: vetëm gjurma e vetë bankës së slotit të ruajtur e konfirmon atë. Një gjurmë e prindit
+        // (gjendje të vjetra) s'mjafton: trajtohet si mungesë, dhe pema rindërtohet.
+        self.resume_check = Some((slot, fingerprint.filter(|(s, _)| *s == slot)));
     }
 
     /// A u konfirmua që pas rinisjes jemi në të njëjtin zinxhir?
@@ -206,7 +214,10 @@ impl Tracker {
                         _ => None,
                     };
                     match verdict {
-                        Some(true) => self.resume_check = None,
+                        Some(true) => {
+                            self.resume_check = None;
+                            self.last_fp = Some((ps, ph));
+                        }
                         Some(false) => {
                             return self.break_with(format!(
                                 "pas rinisjes, hash-i i bankës së slotit {ps} nuk gjendet në SlotHashes: zinxhir tjetër ose boshllëk"
@@ -216,7 +227,9 @@ impl Tracker {
                     }
                 }
                 if !self.is_old(slot) && !self.broken {
+                    let floor = self.last_rooted.unwrap_or(0);
                     let bank = self.banks.entry(bank_id).or_insert_with(|| Bank { slot, ..Default::default() });
+                    bank.ancestors = entries.iter().take_while(|(s, _)| *s >= floor).take(1024).copied().collect();
                     if let Some(first) = entries.first() {
                         bank.parent_hash = Some(*first);
                         if bank.parent != Some(first.0) {
@@ -299,20 +312,32 @@ impl Tracker {
         }
     }
 
-    fn live_bank_at(&mut self, slot: Slot) -> Option<BankId> {
-        let mut live = self.banks.iter().filter(|(_, b)| b.slot == slot && !b.dead).map(|(id, _)| *id);
-        let first = live.next()?;
-        let mut best = first;
-        let mut n = 1;
-        for id in live {
-            best = best.max(id);
-            n += 1;
+    /// P-07: banka e gjallë në `slot` që është paraardhësi i `child` (kur jepet). Kandidatët filtrohen
+    /// sipas SlotHashes: paraardhësit e kandidatit duhet të përputhen me ata të fëmijës. Kur mbetet
+    /// më shumë se një, s'zgjidhet asnjë me hamendje: gabim (ndalim).
+    fn bank_at(&mut self, slot: Slot, child: Option<BankId>) -> Result<Option<BankId>, String> {
+        let want: Vec<(Slot, [u8; 32])> = child.and_then(|c| self.banks.get(&c)).map(|c| c.ancestors.clone()).unwrap_or_default();
+        // Te fëmija, hyrja pas `slot` është prindi i vërtetë i bankës që kërkojmë.
+        let want_parent = want.iter().position(|(s, _)| *s == slot).and_then(|i| want.get(i + 1)).copied();
+        let consistent = |b: &Bank| {
+            let parent_ok = match (b.ancestors.first(), want_parent) {
+                (Some(got), Some(w)) => *got == w,
+                _ => true,
+            };
+            // Çdo paraardhës i përbashkët duhet të ketë të njëjtin hash.
+            parent_ok && b.ancestors.iter().all(|(s, h)| want.iter().find(|(ws, _)| ws == s).is_none_or(|(_, wh)| wh == h))
+        };
+        let cands: Vec<BankId> = self.banks.iter().filter(|(_, b)| b.slot == slot && !b.dead && consistent(b)).map(|(id, _)| *id).collect();
+        match cands.len() {
+            0 => Ok(None),
+            1 => Ok(Some(cands[0])),
+            n => {
+                self.stats.ambiguous_banks += 1;
+                Err(format!(
+                    "sloti {slot} ka {n} banka të gjalla që SlotHashes s'i dallon (bankat {cands:?}): s'zgjidhet asnjë me hamendje"
+                ))
+            }
         }
-        if n > 1 {
-            // Rrallë: disa banka të gjalla në një slot. Merr më të renë (id më i madh).
-            self.stats.ambiguous_banks += 1;
-        }
-        Some(best)
     }
 
     fn root(&mut self, slot: Slot, bank_id: Option<BankId>) -> Vec<Output> {
@@ -332,7 +357,10 @@ impl Tracker {
         }
         let start = match bank_id.filter(|b| self.banks.contains_key(b)) {
             Some(b) => Some(b),
-            None => self.live_bank_at(slot),
+            None => match self.bank_at(slot, None) {
+                Ok(b) => b,
+                Err(e) => return self.break_with(e),
+            },
         };
         let Some(start) = start else {
             self.stats.missing_parents += 1;
@@ -344,19 +372,40 @@ impl Tracker {
         loop {
             let parent = self.banks[&cur].parent;
             match (parent, self.last_rooted) {
-                (Some(p), Some(r)) if p == r => break,
+                (Some(p), Some(r)) if p == r => {
+                    // P-06: lidhja me bankën e rrënjosur, jo vetëm me slotin e saj.
+                    if let Some((_, want)) = self.last_fp {
+                        match self.banks[&cur].parent_hash {
+                            Some((_, got)) if got == want => {}
+                            Some(_) => {
+                                return self.break_with(format!(
+                                    "sloti {} rrjedh nga një bankë tjetër në slotin {r} (hash-i s'përputhet me bankën e rrënjosur)",
+                                    self.banks[&cur].slot
+                                ))
+                            }
+                            None => {
+                                return self.break_with(format!(
+                                    "banka e slotit {} s'ka SlotHashes: lidhja me bankën e rrënjosur në {r} s'mund të verifikohet",
+                                    self.banks[&cur].slot
+                                ))
+                            }
+                        }
+                    }
+                    break;
+                }
                 (Some(p), Some(r)) if p < r => {
                     return self.break_with(format!(
                         "zinxhiri i slotit {slot} kalon nga sloti {p}, nën slotin e fundit të ruajtur {r}: zinxhir tjetër ose boshllëk"
                     ));
                 }
-                (Some(p), _) => match self.live_bank_at(p) {
-                    Some(next) => {
+                (Some(p), _) => match self.bank_at(p, Some(cur)) {
+                    Err(e) => return self.break_with(e),
+                    Ok(Some(next)) => {
                         chain.push(next);
                         cur = next;
                     }
-                    None if self.last_rooted.is_none() => break, // nisje nga genesis: s'ka gjë më poshtë
-                    None => {
+                    Ok(None) if self.last_rooted.is_none() => break, // nisje nga genesis: s'ka gjë më poshtë
+                    Ok(None) => {
                         self.stats.missing_parents += 1;
                         return self.break_with(format!(
                             "boshllëk: sloti {p} (paraardhës i slotit të rrënjosur {slot}) mungon pas slotit të fundit të ruajtur {}",
@@ -374,7 +423,6 @@ impl Tracker {
                 }
             }
         }
-        let start_parent_hash = self.banks[&start].parent_hash;
         chain.reverse();
         let slots_in_batch = chain.len();
         let mut merged: HashMap<Key, Option<AccountMeta>> = HashMap::new();
@@ -391,10 +439,21 @@ impl Tracker {
         self.stats.abandoned_banks += (before - self.banks.len()) as u64;
         self.stats.rooted_slots += 1;
         self.last_rooted = Some(slot);
-        // Gjurma: hash-i i bankës së vetë slotit S, nga SlotHashes i një fëmije të S (F-11).
-        // Kur fëmija ende s'është parë, merret hash-i i prindit të S nga SlotHashes i vetë S.
-        let fingerprint =
-            self.banks.values().find_map(|b| b.parent_hash.filter(|(ps, _)| *ps == slot)).or(start_parent_hash);
+        // Gjurma (F-11, P-06): hash-i i bankës së vetë slotit S, nga SlotHashes i bankave pasardhëse.
+        // Kurrë hash-i i prindit. Kur s'dihet (asnjë pasardhës ende) ose kur pasardhësit s'bien dakord,
+        // gjurma mungon: gjendja mbetet e paverifikueshme pas rinisjes dhe rindërtohet.
+        let mut seen: Vec<[u8; 32]> = self.banks.values().filter(|b| !b.dead).filter_map(|b| b.ancestors.iter().find(|(s, _)| *s == slot).map(|(_, h)| *h)).collect();
+        seen.sort();
+        seen.dedup();
+        let fingerprint = match seen.as_slice() {
+            [h] => Some((slot, *h)),
+            _ => None,
+        };
+        if let Some((_, h)) = fingerprint {
+            // Bankat që njohin një bankë tjetër në S s'rrjedhin nga rrënja: hidhen.
+            self.banks.retain(|_, b| b.ancestors.iter().find(|(s, _)| *s == slot).is_none_or(|(_, x)| *x == h));
+        }
+        self.last_fp = fingerprint;
         vec![Output::Rooted { slot, slots_in_batch, updates: merged.into_iter().collect(), fingerprint }]
     }
 }
