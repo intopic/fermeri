@@ -345,7 +345,8 @@ mod tests {
     #[test]
     fn log_is_bound_to_genesis_identity_and_signer() {
         use ed25519_dalek::Verifier;
-        let variants: [(&str, fn(&mut AttestOptions)); 3] = [
+        type Change = fn(&mut AttestOptions);
+        let variants: [(&str, Change); 3] = [
             ("genesis", |o| o.genesis = [2; 32]),
             ("signer", |o| o.key = SigningKey::from_bytes(&[4; 32])),
             ("identity", |o| {
