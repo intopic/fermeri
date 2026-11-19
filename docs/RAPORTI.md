@@ -235,6 +235,12 @@ politike/formati, jo optimizim kodi.
 
 1. **Node mainnet ose testnet me Ziles për 72 orë:** CPU shtesë, numri real i ndryshimeve për slot, koha e nisjes nga snapshot-i i plotë.
 2. **Pema në disk më e shpejtë:** faqet me 4 nivele dhe matja në NVMe (shih seksionin më lart).
+   **`io_uring`** (R5, i shtyrë): leximi paraprak sot bën `pread` paralelë me Rayon (një fije për
+   bërthamë). Kur faqet janë në page cache, `io_uring` fiton pak. Fitimi pritet në NVMe me lexime të
+   ftohta (thellësi radhe 32–128 në vend të 2), dhe vetëm aty duhet matur: faza `leximi` te
+   `ZILJA_PROFILE`, me cache të ftohtë, 5M dhe 50M llogari. Pranohet vetëm nëse p99 i zbatimit bie
+   ≥ 30% dhe pa ndryshim formati; zbatohet pas një feature-i `io-uring`, me `pread` si rrugë rezervë.
+   Pa server me NVMe këtu, s'u fut në main.
 3. **Fork-u i Agave** me root-in në bank hash, dhe matja me cluster me shumë validatorë.
 4. **Aplikacioni i telefonit** dhe matja në një Android mesatar.
 5. **Rishikimi** nga një ekip validatorësh (Anza ose Firedancer).

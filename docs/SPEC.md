@@ -216,3 +216,38 @@ dy zile të pavarura të japin të njëjtin root për të njëjtin slot (`minTru
 L-01). Kjo funksionon sepse pema është kanonike. Me `quorum`, root-i pranohet vetëm me firmat
 e > 2/3 të stake-ut. Tabela e stake-ut sot merret nga një RPC dhe i besohet atij; ta provosh
 edhe atë (light client mbi votat) është punë e ardhshme.
+
+## 9. Propozim: tabela e stake-ut pa i besuar RPC-së (light client, i pazbatuar)
+
+Sot kuorumi peshohet me `getVoteAccounts` të një RPC-je (A10). Ky është hallka e fundit e besimit.
+Dy rrugë u shqyrtuan:
+
+**(a) E provuar nga vetë pema e Ziles.** Tabela është funksion i të gjitha llogarive të stake-ut
+(qindra mijëra në mainnet), plus `StakeHistory` për warmup/cooldown. Çdo llogari mund të provohet
+me një dëftesë, por klienti duhet t'i shkarkojë dhe provojë të gjitha, dhe të provojë edhe që s'ka
+të tjera. Kjo është e mundur për një server light-client, jo për një telefon.
+
+**(b) Zinxhir checkpoint-esh të tabelës (i rekomanduar).** Gjatë epokës *E*, çdo zile firmos edhe:
+
+```
+"zilja/epoch-stakes/v1" ‖ genesis_hash ‖ epoch (E+1) u64 LE ‖ SHA256(tabela kanonike e E+1)
+tabela kanonike = renditur sipas identitetit: identity[32] ‖ stake u64 LE, pa stake 0
+```
+
+Klienti nis nga një checkpoint i besuar (tabela e një epoke, e shpërndarë me SDK-në ose e
+verifikuar një herë). Për çdo epokë pasuese: firmat > 2/3 sipas tabelës së *E* mbi hash-in e
+tabelës *E+1* → shkarko tabelën nga cilido burim (aggregator, CDN) dhe krahaso hash-in. Kështu
+zinxhiri ecën përpara pa i besuar RPC-së, me një shkarkim tabele (~2 000 validatorë × 40 B ≈ 80 KB)
+për epokë.
+
+Çfarë kërkon, dhe pse s'është bërë ende:
+- Plugin-i Geyser s'merr `epoch_stakes` nga Agave. Tabela duhet rindërtuar nga llogaritë e
+  stake-ut dhe vote-it që zilja i sheh tashmë, me të njëjtat rregulla si Agave (aktivizimi,
+  `StakeHistory`, `epochVoteAccount`). Çdo mospërputhje do ta ndante zilen nga rrjeti.
+- Prova: krahasim bajt për bajt me `getVoteAccounts` në çdo kufi epoke, në një klaster me shumë
+  validatorë dhe me stake që aktivizohet dhe çaktivizohet.
+- Rreziku i kapjes afatgjatë (long-range): një checkpoint shumë i vjetër mund të ndjekë një zinxhir
+  tabelash të firmosur nga çelësa të vjetër. SDK-ja duhet të kërkojë checkpoint të freskët.
+
+Me Fazën B (root-i në bank hash, `SIMD-DRAFT.md`) problemi mbetet i njëjtë: votat duhen peshuar me
+tabelën e epokës. Rruga (b) i shërben të dyja fazave.
