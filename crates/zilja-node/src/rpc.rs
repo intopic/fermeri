@@ -4,6 +4,7 @@
 //! - `getAccountProof [pubkey_base58, {"slot": n}?]` → dëftesa në slotin e fundit të rrënjosur,
 //!   ose në gjendjen e një sloti të kaluar brenda kujtesës (vetëm me pemën në disk). `slot` në
 //!   përgjigje është sloti i rrënjosur që u përdor vërtet (≤ i kërkuari, L-05).
+//! - `getMultipleAccountProofs [[pubkey, ...], {slot}?]` → `{slot, root, complete, accounts, proof}` (R5-2)
 //! - `getZiljaRoot [slot?]` → `{slot, root, complete, provableFrom, accounts?}`; me `slot`, root-i i atij
 //!   sloti nga unaza e sloteve të fundit (Simpler-5). A19: `accounts` (i pemës aktuale) jepet vetëm për
 //!   slotin aktual; mbi majë `-32008`.
@@ -25,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use zilja_verifier::Key;
+use zilja_verifier::{AccountMeta, Key};
 
 /// Gabim RPC: (kodi, mesazhi).
 pub type RpcError = (i64, String);
@@ -40,9 +41,9 @@ pub const CODE_NOT_YET_ROOTED: i64 = -32008;
 pub const CODE_STORAGE: i64 = -32010;
 
 /// Ndërton përgjigjen e `getAccountProof` nga gjendja (`at = None` = sloti i fundit).
-pub fn account_proof_json(st: &State, pubkey: &Key, at: Option<u64>) -> Result<Value, RpcError> {
-    // L-05: gjendja në slotin `v` është ajo e slotit më të fundit të rrënjosur ≤ v; ai etiketohet.
-    let at = match at {
+/// L-05 / A19: sloti i kërkuar → sloti i rrënjosur që i përgjigjet (ose gabimi).
+fn resolve_at(st: &State, at: Option<u64>) -> Result<Option<u64>, RpcError> {
+    Ok(match at {
         None => None,
         Some(v) if v == st.slot => Some(st.slot),
         // A19: mbi majë s'ka përgjigje të qëndrueshme ("i fundit ≤ v" do të ndryshonte me rrënjosjet e reja).
@@ -51,26 +52,80 @@ pub fn account_proof_json(st: &State, pubkey: &Key, at: Option<u64>) -> Result<V
             Some((s, _)) => Some(*s),
             None => return Err((CODE_OUT_OF_HISTORY, format!("sloti {v} është jashtë kujtesës"))),
         },
-    };
-    let (slot, root, proof, meta) = st.tree.prove_at(&zilja_verifier::tree_key(pubkey), at).map_err(|e| match e {
+    })
+}
+
+fn prove_err(e: ProveError) -> RpcError {
+    match e {
         ProveError::NotReady(m) => (CODE_NOT_READY, m),
         ProveError::OutOfHistory(m) => (CODE_OUT_OF_HISTORY, m),
         ProveError::Storage(m) => (CODE_STORAGE, format!("gabim i ruajtjes: {m}")),
-    })?;
+    }
+}
+
+fn meta_json(m: &AccountMeta) -> Value {
+    json!({
+        "lamports": m.lamports.to_string(),
+        "owner": bs58::encode(m.owner).into_string(),
+        "executable": m.executable,
+        "dataLen": m.data_len.to_string(),
+        "dataHash": hex::encode(m.data_hash),
+    })
+}
+
+/// R5-2: një multi-proof për deri në `MAX_MULTI_KEYS` llogari, të gjitha nga i njëjti root (i
+/// njëjti kyç leximi, i njëjti slot). `accounts` del në radhën e kërkesës.
+pub fn multi_proof_json(st: &State, pubkeys: &[Key], at: Option<u64>) -> Result<Value, RpcError> {
+    use zilja_verifier::multi::{MultiProof, MAX_MULTI_KEYS};
+    if pubkeys.is_empty() || pubkeys.len() > MAX_MULTI_KEYS {
+        return Err((-32602, format!("duhen 1..={MAX_MULTI_KEYS} pubkey")));
+    }
+    let at = resolve_at(st, at)?;
+    let mut entries = Vec::with_capacity(pubkeys.len());
+    let mut metas = Vec::with_capacity(pubkeys.len());
+    let mut slot_root = None;
+    for pk in pubkeys {
+        let tk = zilja_verifier::tree_key(pk);
+        let (slot, root, proof, meta) = st.tree.prove_at(&tk, at).map_err(prove_err)?;
+        match slot_root {
+            None => slot_root = Some((slot, root)),
+            Some(x) if x != (slot, root) => return Err((CODE_STORAGE, "gabim i ruajtjes: dëftesat dolën nga root-e të ndryshme".into())),
+            _ => {}
+        }
+        if meta.is_none() && !st.complete {
+            return Err((-32006, "pema e kësaj zileje nuk mbulon çdo llogari (nisi pa snapshot): s'jep dëftesa mospërfshirjeje".into()));
+        }
+        metas.push(meta);
+        entries.push((tk, proof));
+    }
+    let (slot, root) = slot_root.expect("të paktën një pubkey");
+    let (_, mp) = MultiProof::from_proofs(&entries).map_err(|e| (CODE_STORAGE, format!("gabim i ruajtjes: {e}")))?;
+    let bytes = mp.to_bytes();
+    let accounts: Vec<Value> = pubkeys
+        .iter()
+        .zip(&metas)
+        .map(|(pk, m)| json!({"pubkey": bs58::encode(pk).into_string(), "account": m.as_ref().map(meta_json)}))
+        .collect();
+    Ok(json!({
+        "slot": slot,
+        "root": hex::encode(root),
+        "complete": st.complete,
+        "accounts": accounts,
+        "proof": hex::encode(&bytes),
+        "proofBytes": bytes.len(),
+    }))
+}
+
+pub fn account_proof_json(st: &State, pubkey: &Key, at: Option<u64>) -> Result<Value, RpcError> {
+    // L-05: gjendja në slotin `v` është ajo e slotit më të fundit të rrënjosur ≤ v; ai etiketohet.
+    let at = resolve_at(st, at)?;
+    let (slot, root, proof, meta) = st.tree.prove_at(&zilja_verifier::tree_key(pubkey), at).map_err(prove_err)?;
     // L-02: një pemë që s'mbulon çdo llogari nuk jep dëftesa "nuk ekziston".
     if meta.is_none() && !st.complete {
         return Err((-32006, "pema e kësaj zileje nuk mbulon çdo llogari (nisi pa snapshot): s'jep dëftesa mospërfshirjeje".into()));
     }
     let bytes = proof.to_bytes();
-    let account = meta.map(|m| {
-        json!({
-            "lamports": m.lamports.to_string(),
-            "owner": bs58::encode(m.owner).into_string(),
-            "executable": m.executable,
-            "dataLen": m.data_len.to_string(),
-            "dataHash": hex::encode(m.data_hash),
-        })
-    });
+    let account = meta.as_ref().map(meta_json);
     Ok(json!({
         "slot": slot,
         "root": hex::encode(root),
@@ -117,6 +172,34 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
         };
     }
     match method {
+        "getMultipleAccountProofs" => {
+            let (Some(list), true) = (params.first().and_then(|p| p.as_array()), params.len() <= 2) else {
+                return err(id, -32602, "duhet params: [[pubkey, ...], {slot}?]");
+            };
+            let at = match parse_slot_opt(params.get(1)) {
+                Ok(a) => a,
+                Err(e) => return err(id, -32602, &e),
+            };
+            let mut pks = Vec::with_capacity(list.len());
+            for p in list {
+                match p.as_str().ok_or_else(|| "pubkey duhet tekst base58".to_string()).and_then(parse_pubkey) {
+                    Ok(k) => pks.push(k),
+                    Err(e) => return err(id, -32602, &e),
+                }
+            }
+            match multi_proof_json(&st, &pks, at) {
+                Ok(res) => {
+                    shared.metrics.proofs_served.fetch_add(pks.len() as u64, Ordering::Relaxed);
+                    json!({"jsonrpc": "2.0", "id": id, "result": res})
+                }
+                Err((code, e)) if code == CODE_STORAGE => {
+                    drop(st);
+                    crate::service::stop_serving(shared, e.clone());
+                    err(id, code, &e)
+                }
+                Err((code, e)) => err(id, code, &e),
+            }
+        }
         "getAccountProof" => {
             let (Some(pk), true) = (params.first().and_then(|p| p.as_str()), params.len() <= 2) else {
                 return err(id, -32602, "duhet params: [pubkey, {slot}?]");
@@ -211,6 +294,20 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
             }
         }
         _ => err(id, -32601, "metodë e panjohur"),
+    }
+}
+
+/// `{slot}?` si te `getAccountProof`.
+fn parse_slot_opt(o: Option<&Value>) -> Result<Option<u64>, String> {
+    match o {
+        None => Ok(None),
+        Some(o) => match o.as_object() {
+            Some(m) if m.keys().all(|k| k == "slot") => match m.get("slot") {
+                None => Ok(None),
+                Some(s) => s.as_u64().map(Some).ok_or_else(|| "slot duhet numër i plotë jo negativ".to_string()),
+            },
+            _ => Err("opsionet e njohura: {slot}".into()),
+        },
     }
 }
 

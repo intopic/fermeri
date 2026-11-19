@@ -77,6 +77,41 @@ Bajtet e tepërta në fund e bëjnë dëftesën të pavlefshme.
 Kështu e njëjta dëftesë ka një kodim të vetëm bajt për bajt. Verifikuesit Rust, WASM dhe JS i
 refuzojnë të gjitha këto raste.
 
+## 4b. Multi-proof (R5-2)
+
+Një dëftesë për disa llogari nën të njëjtin root. Vëllezërit që verifikuesi i llogarit vetë nga
+çelësat e tjerë nuk dërgohen.
+
+```
+version   u8      = 0x11
+count     u16 LE  = numri i çelësave (1..=256), sipas tree_key rritës, pa dyfishe
+count × { depth u16 LE (0..=256) ‖ leaf_flag u8 (0|1) ‖ [leaf.tree_key[32] ‖ leaf.value_hash[32]] }
+nsib      u32 LE  (≤ count × 256)
+bitmap    ceil(nsib/8): bit 1 (MSB i pari) = vëlla jo-bosh; bitët mbushës 0
+siblings  32 bajte për çdo vëlla jo-bosh, në radhën e konsumimit
+```
+
+Çelësat s'kodohen: verifikuesi llogarit `tree_key` e pubkey-ve që pyeti, i rendit dhe heq dyfishet.
+
+```
+rec(i, K):                               # K = çelësat me prefiks të përbashkët i bit
+  if ndonjë çelës në K mbaron në i:      # depth == i
+    të gjithë në K duhet të kenë të njëjtin përfundim; gjethja (nëse ka) ndan ≥ i bit me secilin
+    return leaf_hash ose empty
+  require i < 256 dhe asnjë depth < i
+  L, R = K sipas bit-it i
+  l = L bosh ? vëllai i radhës : rec(i+1, L)
+  r = R bosh ? vëllai i radhës : rec(i+1, R)
+  require jo (njëri bosh dhe tjetri bosh ose gjethe e llogaritur)     # kanonike
+  return internal(l, r)
+root = rec(0, të gjithë çelësat); të gjithë vëllezërit duhet të jenë konsumuar
+```
+
+Verdikti për çdo pretendim është si te §5, me përfundimin e çelësit të vet. Kur root-i s'del,
+çdo pretendim është i pavlefshëm. Madhësia (200k llogari, çelësa të rastit): −22% për 10
+llogari, −33% për 50, krahasuar me dëftesat e veçanta, plus një thirrje në vend të N. Fitimi s'është
+më i madh sepse `tree_key` është hash: llogaritë e një kulete janë të shpërndara në pemë.
+
 ## 5. Verifikimi
 
 ```
@@ -141,6 +176,23 @@ Rregullat e formatit (F-03, F-08):
 
 Kur llogaria nuk ekziston, `account` është `null` dhe `proof` provon mospërfshirjen. Kur
 pema s'është e plotë, kthehet gabim `-32006`.
+
+### `getMultipleAccountProofs` (R5-2)
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"getMultipleAccountProofs","params":[["<pubkey>", "..."], {"slot": 1234}]}
+```
+
+1..=256 pubkey (të përsëritura lejohen), me kontratën e slotit të `getAccountProof`. Të gjitha
+dëftesat merren nga i njëjti root:
+
+```json
+{"slot": 68, "root": "<hex>", "complete": true,
+ "accounts": [{"pubkey": "<base58>", "account": {...} | null}, ...],
+ "proof": "<hex, §4b>", "proofBytes": 2048}
+```
+
+`accounts` është në radhën e kërkesës. Pema jo e plotë kthen `-32006` kur ndonjëra s'ekziston.
 
 ### `getZiljaRoot`
 

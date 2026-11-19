@@ -383,3 +383,59 @@ fn loopback_is_exempt_from_the_per_address_limit_by_default() {
     drop(held);
     srv.stop();
 }
+
+/// R5-2: `getMultipleAccountProofs`: një dëftesë për disa llogari, e njëjta si dëftesat e veçanta,
+/// me kontratën e slotit të `getAccountProof`.
+#[test]
+fn multiple_account_proofs_match_single_proofs_and_contract() {
+    use zilja_verifier::multi::{verify_accounts, MultiProof};
+    let svc = Service::start_opts(Default::default()).unwrap();
+    for s in 1..=5 {
+        slot(&svc, s, s as u8, 1000 + s);
+    }
+    assert!(wait(|| svc.shared.state.read().unwrap().slot == 5));
+    let meta = |v: &Value| -> Option<AccountMeta> {
+        if v.is_null() {
+            return None;
+        }
+        Some(AccountMeta {
+            lamports: v["lamports"].as_str().unwrap().parse().unwrap(),
+            owner: bs58::decode(v["owner"].as_str().unwrap()).into_vec().unwrap().try_into().unwrap(),
+            executable: v["executable"].as_bool().unwrap(),
+            data_len: v["dataLen"].as_str().unwrap().parse().unwrap(),
+            data_hash: hex::decode(v["dataHash"].as_str().unwrap()).unwrap().try_into().unwrap(),
+        })
+    };
+    let call = |keys: &[u8], opt: &str| {
+        let list: Vec<String> = keys.iter().map(|k| format!("\"{}\"", bs58::encode([*k; 32]).into_string())).collect();
+        rpc_call(&svc.shared, &format!(r#"{{"id":1,"method":"getMultipleAccountProofs","params":[[{}]{opt}]}}"#, list.join(",")))
+    };
+    let check = |r: &Value, keys: &[u8], want_slot: u64| {
+        let res = &r["result"];
+        assert_eq!(res["slot"], want_slot, "{r}");
+        let root: Hash = hex::decode(res["root"].as_str().unwrap()).unwrap().try_into().unwrap();
+        let mp = MultiProof::from_bytes(&hex::decode(res["proof"].as_str().unwrap()).unwrap()).unwrap();
+        let metas: Vec<Option<AccountMeta>> = res["accounts"].as_array().unwrap().iter().map(|a| meta(&a["account"])).collect();
+        let claims: Vec<(Key, Option<&AccountMeta>)> = keys.iter().zip(&metas).map(|(k, m)| ([*k; 32], m.as_ref())).collect();
+        assert!(verify_accounts(&root, &claims, &mp).iter().all(|v| *v == zilja_verifier::Verdict::Exists), "{r}");
+        // E njëjta gjendje si dëftesa e veçantë.
+        for (k, m) in keys.iter().zip(&metas) {
+            let single = proof(&svc.shared, *k, Some(want_slot));
+            assert_eq!(single["result"]["root"], res["root"]);
+            assert_eq!(meta(&single["result"]["account"]), *m);
+        }
+    };
+    // Radha e kërkesës ruhet; dyfishet lejohen.
+    check(&call(&[3, 1, 5, 1], ""), &[3, 1, 5, 1], 5);
+    check(&call(&[2, 4], r#",{"slot":5}"#), &[2, 4], 5);
+    // Pema jo e plotë s'jep mospërfshirje; pema në RAM s'ka histori; mbi majë → -32008.
+    assert_eq!(code(&call(&[1, 9], "")), Some(-32006));
+    assert_eq!(code(&call(&[1], r#",{"slot":3}"#)), Some(-32007));
+    assert_eq!(code(&call(&[1], r#",{"slot":9}"#)), Some(-32008));
+    // Parametrat.
+    assert_eq!(code(&call(&[], "")), Some(-32602));
+    let many: Vec<u8> = (0..=255u8).chain([1]).collect();
+    assert_eq!(code(&call(&many, "")), Some(-32602), "> 256 pubkey");
+    assert_eq!(code(&rpc_call(&svc.shared, r#"{"id":1,"method":"getMultipleAccountProofs","params":["x"]}"#)), Some(-32602));
+    assert_eq!(code(&call(&[1], r#",{"slot":1,"x":2}"#)), Some(-32602));
+}

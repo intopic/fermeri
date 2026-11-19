@@ -87,7 +87,8 @@ fn main() {
             "rast i papritur: {c}"
         );
     }
-    println!("{}", serde_json::to_string_pretty(&json!({"version": 2, "cases": cases, "attest": attest_vectors()})).unwrap());
+    let multi = multi_vectors(&tree, &accs, &mut rng);
+    println!("{}", serde_json::to_string_pretty(&json!({"version": 2, "cases": cases, "attest": attest_vectors(), "multi": multi})).unwrap());
 }
 
 /// Vektorë për firmat e validatorëve: 10 validatorë me çelësa të njohur dhe stake të ndryshëm.
@@ -180,4 +181,85 @@ fn attest_vectors() -> Value {
         "table": table.entries.iter().map(|(k, s)| json!([bs58::encode(k).into_string(), s.to_string()])).collect::<Vec<_>>(),
         "cases": cases,
     })
+}
+
+/// R5-2: vektorë për multi-proof mbi të njëjtën pemë: grupe çelësash (ekzistues, që s'ekzistojnë,
+/// të përsëritur) dhe sulme; verdikti i pritur për çdo pretendim.
+fn multi_vectors(tree: &Tree, accs: &[(Key, AccountMeta)], rng: &mut StdRng) -> Value {
+    use zilja_verifier::multi::{verify_accounts, MultiProof};
+    let root = tree.root();
+    let verdict = |v: &Verdict| match v {
+        Verdict::Exists => "exists",
+        Verdict::DoesNotExist => "does_not_exist",
+        Verdict::Invalid => "invalid",
+    };
+    let mut cases = Vec::new();
+    let mut add = |name: &str, root: &[u8; 32], claims: &[(Key, Option<AccountMeta>)], mp: &MultiProof| {
+        let c: Vec<(Key, Option<&AccountMeta>)> = claims.iter().map(|(k, m)| (*k, m.as_ref())).collect();
+        let got = verify_accounts(root, &c, mp);
+        cases.push(json!({
+            "name": name,
+            "root": hex::encode(root),
+            "claims": claims.iter().map(|(k, m)| json!({"pubkey": bs58::encode(k).into_string(), "account": m.as_ref().map(acc_json)})).collect::<Vec<_>>(),
+            "proof": hex::encode(mp.to_bytes()),
+            "expect": got.iter().map(verdict).collect::<Vec<_>>(),
+        }));
+    };
+    let build = |claims: &[(Key, Option<AccountMeta>)]| -> MultiProof {
+        let e: Vec<_> = claims.iter().map(|(k, _)| (tree_key(k), tree.prove(&tree_key(k)).0)).collect();
+        MultiProof::from_proofs(&e).unwrap().1
+    };
+    for n in [1usize, 2, 5, 12, 40] {
+        let mut claims: Vec<(Key, Option<AccountMeta>)> = (0..n)
+            .map(|_| {
+                if rng.gen_bool(0.7) {
+                    let (k, m) = &accs[rng.gen_range(0..accs.len())];
+                    (*k, Some(m.clone()))
+                } else {
+                    (rng.gen(), None)
+                }
+            })
+            .collect();
+        if n >= 5 {
+            claims.push(claims[0].clone()); // i njëjti pubkey dy herë
+        }
+        let mp = build(&claims);
+        add(&format!("valid_{n}"), &root, &claims, &mp);
+        // Sulme mbi të njëjtin grup.
+        let mut bad = mp.clone();
+        if let Some(s) = bad.siblings.first_mut() {
+            s[0] ^= 1;
+            add(&format!("attack_tampered_sibling_{n}"), &root, &claims, &bad);
+        }
+        let mut wrong = claims.clone();
+        let j = wrong.len() - 1;
+        wrong[j].1 = match &wrong[j].1 {
+            Some(m) => {
+                let mut f = m.clone();
+                f.lamports = f.lamports.wrapping_add(1);
+                Some(f)
+            }
+            None => Some(accs[0].1.clone()),
+        };
+        add(&format!("attack_wrong_claim_{n}"), &root, &wrong, &mp);
+        let mut other = root;
+        other[0] ^= 1;
+        add(&format!("attack_wrong_root_{n}"), &other, &claims, &mp);
+        let mut extra = claims.clone();
+        extra.push((rng.gen(), None));
+        add(&format!("attack_key_not_in_proof_{n}"), &root, &extra, &mp);
+    }
+    for c in &cases {
+        let name = c["name"].as_str().unwrap();
+        let all_invalid = c["expect"].as_array().unwrap().iter().all(|v| v == "invalid");
+        let any_invalid = c["expect"].as_array().unwrap().iter().any(|v| v == "invalid");
+        if name.starts_with("valid") {
+            assert!(!any_invalid, "rast i papritur: {c}");
+        } else if !name.starts_with("attack_wrong_claim") {
+            assert!(all_invalid, "rast i papritur: {c}");
+        } else {
+            assert!(any_invalid, "rast i papritur: {c}");
+        }
+    }
+    json!({"cases": cases})
 }

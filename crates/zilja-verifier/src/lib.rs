@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 #[cfg(feature = "attest")]
 pub mod attest;
 pub mod wire;
+pub mod multi;
 
 pub type Hash = [u8; 32];
 pub type Key = [u8; 32];
@@ -307,7 +308,7 @@ impl<'a> Reader<'a> {
 }
 
 /// Rezultati i verifikimit të një llogarie.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// Llogaria ekziston me pikërisht këto të dhëna.
     Exists,

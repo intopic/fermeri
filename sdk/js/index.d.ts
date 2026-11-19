@@ -60,6 +60,11 @@ export function verifyQuorum(genesisHex: string, epoch: number | bigint, slot: n
 /** Vendi i llogarisë në pemë: SHA256("zilja/key/v2" ‖ pubkey). */
 export function treeKey(pubkeyB58: string): Promise<Uint8Array>;
 export const PROOF_VERSION: 2;
+export const MULTI_VERSION: 0x11;
+export const MAX_MULTI_KEYS: 256;
+/** R5-2: një verdikt për çdo pretendim; të gjithë "invalid" kur dëftesa s'vlen për root-in. */
+export function verifyMultiProof(rootHex: string, claims: { pubkey: string; account: ZiljaAccount | null }[], proofHex: string): Promise<Verdict[]>;
+export function parseMultiProof(bytes: Uint8Array): { terminals: { depth: number; leaf: { key: Uint8Array; valueHash: Uint8Array } | null }[]; siblings: Uint8Array[] };
 export function stakeTableFromVoteAccounts(result: unknown): Map<string, bigint>;
 
 export const TRUST: Readonly<Record<RootTrust, number>>;
@@ -140,4 +145,6 @@ export class ZiljaClient {
   /** Sloti më i lartë i pranuar në këtë instancë: një përgjigje më e vjetër jep "rollback". */
   highestSeen: number | null;
   verifyAccount(pubkey: string, opts?: { slot?: number }): Promise<VerifyResult>;
+  /** R5-2: shumë llogari me një multi-proof (`getMultipleAccountProofs`); një rezultat për çdo pubkey, në radhën e kërkesës. */
+  verifyAccounts(pubkeys: string[], opts?: { slot?: number }): Promise<VerifyResult[]>;
 }
