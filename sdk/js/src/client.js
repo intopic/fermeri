@@ -1,6 +1,6 @@
 // ZiljaClient: një thirrje e vetme për kuletat: verifyAccount(pubkey). Vendimi merret nga
 // politika e përbashkët (policy.js), e njëjta me web-in dhe CLI-në (P-11).
-import { verifyAccount, dataMatches, normalizeAccount, b58decode, bytesToHex, toU64 } from "./verifier.js";
+import { verifyAccount, verifyMultiProof, dataMatches, normalizeAccount, b58decode, bytesToHex, toU64, MAX_MULTI_KEYS } from "./verifier.js";
 import { verifyQuorum, stakeTableFromVoteAccounts } from "./attest.js";
 import { decide, configErrors, DEFAULTS, TRUST } from "./policy.js";
 import { parseJsonExact } from "./json.js";
@@ -130,30 +130,11 @@ export class ZiljaClient {
   }
 
   /**
-   * Verifikon një llogari. `ok` = dëftesa e vlefshme + besim te root-i ≥ minTrust + freski +
-   * (kur u kontrolluan) të dhëna që përputhen. `checks` i jep secilën veç.
-   * @param {string} pubkey base58
-   * @param {{slot?: number}} [opts] slot i kaluar (vetëm zile me pemë në disk)
+   * Hapat 2–4 të verifikimit, të përbashkët për një ose shumë llogari: zilet e tjera (root-i në të
+   * njëjtin slot), kuorumi dhe freskia. Varen vetëm nga (slot, root), jo nga llogaria.
    */
-  async verifyAccount(pubkey, opts = {}) {
-    const warnings = [];
-    const [primary, ...others] = this.endpoints;
-    const reqSlot = opts.slot ?? null;
-    const r = await this.rpc(primary, "getAccountProof", reqSlot != null ? [pubkey, { slot: reqSlot }] : [pubkey]);
-    const slot = Number.isSafeInteger(r?.slot) ? r.slot : null;
-    const rootHex = this.rootOverride ?? r?.root;
-
-    // 1. Dëftesa. Vlerat kontrollohen rreptë (F-03) dhe kthehen ato të kontrolluarat.
-    let account = null;
-    let verdict = "invalid";
-    try {
-      if (r?.account != null) account = normalizeAccount(r.account);
-      verdict = await verifyAccount(rootHex, pubkey, account, r?.proof);
-    } catch (e) {
-      warnings.push(`${primary}: përgjigje e pavlefshme (${e.message})`);
-    }
-    if (verdict === "invalid") warnings.push(`zilja ${primary} dha një dëftesë që nuk përputhet me root-in`);
-
+  async rootTrust(slot, primaryRoot, reqSlot, warnings) {
+    const others = this.endpoints.slice(1);
     // 2. Zilet e tjera, paralelisht: root-i në të njëjtin slot.
     let otherAnswers = [];
     if (slot != null && this.rootOverride == null) {
@@ -163,7 +144,7 @@ export class ZiljaClient {
           warnings.push(`${others[i]}: ${a.reason?.message ?? a.reason}`);
           return { ok: false };
         }
-        if (a.value?.root !== r.root) warnings.push(`${others[i]} jep root tjetër për slotin ${slot}`);
+        if (a.value?.root !== primaryRoot) warnings.push(`${others[i]} jep root tjetër për slotin ${slot}`);
         return { ok: true, slot: a.value?.slot, root: a.value?.root, complete: a.value?.complete === true };
       });
     }
@@ -211,7 +192,7 @@ export class ZiljaClient {
         for (const [root, atts] of byRoot) {
           const q = await verifyQuorum(genesisHex, toU64(e1.epoch), slot, root, atts, table, revs);
           quorum.push({ root, reached: q.reached });
-          if (root === r.root) {
+          if (root === primaryRoot) {
             const pct = q.totalStake > 0n ? Number((q.attestedStake * 10000n) / q.totalStake) / 100 : 0;
             quorumReport = { reached: q.reached, stakePercent: pct, validSignatures: q.validSignatures };
           }
@@ -231,6 +212,36 @@ export class ZiljaClient {
         warnings.push(`sloti i finalizuar s'u mor: ${e.message}`);
       }
     }
+
+    return { otherAnswers, quorum, quorumEpochOk, quorumReport, finalizedSlot };
+  }
+
+  /**
+   * Verifikon një llogari. `ok` = dëftesa e vlefshme + besim te root-i ≥ minTrust + freski +
+   * (kur u kontrolluan) të dhëna që përputhen. `checks` i jep secilën veç.
+   * @param {string} pubkey base58
+   * @param {{slot?: number}} [opts] slot i kaluar (vetëm zile me pemë në disk)
+   */
+  async verifyAccount(pubkey, opts = {}) {
+    const warnings = [];
+    const primary = this.endpoints[0];
+    const reqSlot = opts.slot ?? null;
+    const r = await this.rpc(primary, "getAccountProof", reqSlot != null ? [pubkey, { slot: reqSlot }] : [pubkey]);
+    const slot = Number.isSafeInteger(r?.slot) ? r.slot : null;
+    const rootHex = this.rootOverride ?? r?.root;
+
+    // 1. Dëftesa. Vlerat kontrollohen rreptë (F-03) dhe kthehen ato të kontrolluarat.
+    let account = null;
+    let verdict = "invalid";
+    try {
+      if (r?.account != null) account = normalizeAccount(r.account);
+      verdict = await verifyAccount(rootHex, pubkey, account, r?.proof);
+    } catch (e) {
+      warnings.push(`${primary}: përgjigje e pavlefshme (${e.message})`);
+    }
+    if (verdict === "invalid") warnings.push(`zilja ${primary} dha një dëftesë që nuk përputhet me root-in`);
+
+    const { otherAnswers, quorum, quorumEpochOk, quorumReport, finalizedSlot } = await this.rootTrust(slot, r?.root, reqSlot, warnings);
 
     // 5. Të dhënat nga RPC-ja (L-07, A13). Kur kërkohen, vetëm përputhja jep sukses: një RPC që s'përgjigjet
     // jep "unavailable", jo "unchecked". Krahasohen lamports, owner, executable dhe bajtet (dataLen + hash).
@@ -294,5 +305,111 @@ export class ZiljaClient {
       errors: d.errors,
       warnings: [...warnings, ...d.warnings],
     };
+  }
+
+  /**
+   * R5-2: verifikon shumë llogari me një thirrje (`getMultipleAccountProofs`) dhe një multi-proof.
+   * Besimi te root-i (zilet e tjera, kuorumi, freskia) kontrollohet një herë për të gjitha; të
+   * dhënat, kur kërkohen, krahasohen me një `getMultipleAccounts`. Kthen një rezultat për çdo
+   * pubkey, në radhën e kërkesës, me të njëjtën formë si `verifyAccount`.
+   * @param {string[]} pubkeys base58, 1..=256
+   * @param {{slot?: number}} [opts]
+   */
+  async verifyAccounts(pubkeys, opts = {}) {
+    if (!Array.isArray(pubkeys) || pubkeys.length === 0 || pubkeys.length > MAX_MULTI_KEYS) {
+      throw new Error(`duhen 1..=${MAX_MULTI_KEYS} pubkey`);
+    }
+    const warnings = [];
+    const primary = this.endpoints[0];
+    const reqSlot = opts.slot ?? null;
+    const r = await this.rpc(primary, "getMultipleAccountProofs", reqSlot != null ? [pubkeys, { slot: reqSlot }] : [pubkeys]);
+    const slot = Number.isSafeInteger(r?.slot) ? r.slot : null;
+    const rootHex = this.rootOverride ?? r?.root;
+
+    // 1. Multi-proof-i: përgjigja duhet të jetë për pikërisht këto pubkey, në këtë radhë.
+    let accounts = pubkeys.map(() => null);
+    let verdicts = pubkeys.map(() => "invalid");
+    try {
+      const list = r?.accounts;
+      if (!Array.isArray(list) || list.length !== pubkeys.length || list.some((a, i) => a?.pubkey !== pubkeys[i])) {
+        throw new Error("llogaritë në përgjigje s'janë ato të kërkuarat");
+      }
+      accounts = list.map((a) => (a.account != null ? normalizeAccount(a.account) : null));
+      verdicts = await verifyMultiProof(rootHex, pubkeys.map((pubkey, i) => ({ pubkey, account: accounts[i] })), r?.proof);
+    } catch (e) {
+      warnings.push(`${primary}: përgjigje e pavlefshme (${e.message})`);
+    }
+    if (verdicts.some((v) => v === "invalid")) warnings.push(`zilja ${primary} dha një multi-proof që nuk përputhet me root-in`);
+
+    const { otherAnswers, quorum, quorumEpochOk, quorumReport, finalizedSlot } = await this.rootTrust(slot, r?.root, reqSlot, warnings);
+
+    // 5. Të dhënat, me një thirrje për të gjitha llogaritë që ekzistojnë.
+    const datas = pubkeys.map(() => null);
+    const dataReports = pubkeys.map(() => null);
+    const want = pubkeys.map((_, i) => i).filter((i) => verdicts[i] === "exists");
+    if (this.solanaRpc && this.compareData && reqSlot == null && want.length) {
+      try {
+        const info = await this.rpc(this.solanaRpc, "getMultipleAccounts", [want.map((i) => pubkeys[i]), { encoding: "base64", commitment: "finalized" }]);
+        const rpcSlot = info?.context?.slot;
+        if (!Array.isArray(info?.value) || info.value.length !== want.length) throw new Error("getMultipleAccounts: përgjigje e pavlefshme");
+        for (const [j, i] of want.entries()) {
+          const v = info.value[j];
+          const account = accounts[i];
+          let same = false;
+          let bytes = null;
+          if (v) {
+            bytes = b64(v.data[0]);
+            same = (await dataMatches(account, bytes)) && exactU64(v.lamports) === account.lamports && v.owner === account.owner && v.executable === account.executable;
+          }
+          datas[i] = { status: same ? "match" : "mismatch" };
+          dataReports[i] = { checked: true, matches: same, rpcSlot, bytes: same ? bytes : null };
+        }
+      } catch (e) {
+        for (const i of want) {
+          datas[i] = { status: "unavailable" };
+          dataReports[i] = { checked: false, matches: false, rpcSlot: null, bytes: null };
+        }
+        warnings.push(`të dhënat s'u krahasuan: ${e.message}`);
+      }
+    }
+
+    const results = [];
+    let floor = null;
+    for (let i = 0; i < pubkeys.length; i++) {
+      const d = decide({
+        policy: { minTrust: this.minTrust, minAgree: this.minAgree, maxSlotLag: this.maxSlotLag, minSlot: this.minSlot },
+        request: { pubkey: pubkeys[i], slot: reqSlot },
+        endpoints: this.endpoints.length,
+        quorumEnabled: this.quorum,
+        anchor: this.anchor,
+        primary: r && typeof r === "object" ? { pubkey: pubkeys[i], slot: r.slot, root: rootHex, complete: r.complete === true, verdict: verdicts[i] } : null,
+        others: otherAnswers,
+        quorum,
+        quorumEpochOk,
+        finalizedSlot: Number.isSafeInteger(finalizedSlot) ? finalizedSlot : null,
+        highestSeen: this.highestSeen,
+        data: datas[i],
+      });
+      if (d.raiseFloor != null) floor = Math.max(floor ?? 0, d.raiseFloor);
+      const w = [...warnings, ...d.warnings];
+      if (datas[i]?.status === "mismatch") w.push(`RPC-ja jep të dhëna të tjera për ${pubkeys[i]}: ose llogaria ndryshoi pas slotit ${slot}, ose RPC-ja gënjen`);
+      results.push({
+        ok: d.ok,
+        verdict: d.verdict,
+        slot: r?.slot,
+        root: rootHex,
+        account: d.checks.proof === "valid" && verdicts[i] === "exists" ? accounts[i] : null,
+        trust: d.trust,
+        agreeing: d.agreeing,
+        endpoints: this.endpoints.length,
+        quorum: quorumReport,
+        data: dataReports[i],
+        checks: d.checks,
+        errors: d.errors,
+        warnings: w,
+      });
+    }
+    if (floor != null) this.highestSeen = Math.max(this.highestSeen ?? 0, floor);
+    return results;
   }
 }

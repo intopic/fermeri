@@ -326,6 +326,17 @@ print("   firma v2: genesis", g[:8]+"…, çelës i veçantë", r["signer"][:8]+
   echo "   ✅ autorizimi jashtë periudhës s'numërohet; rinovimi lexohet pa rinisje (v2)"
   echo "-- SDK me kuorum (minTrust=quorum):"
   node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --rpc "$RPC" --quorum --min-trust quorum
+  # R5-2: disa llogari me një multi-proof (fermeri, një që s'ekziston, sysvar-i Clock, fermeri sërish).
+  node --input-type=module -e '
+import { ZiljaClient } from "'"$ROOT"'/sdk/js/src/index.js";
+const [z, rpc, ...pks] = process.argv.slice(1);
+const rs = await new ZiljaClient({ endpoints: [z], solanaRpc: rpc, minTrust: "single" }).verifyAccounts(pks);
+const want = ["exists", "does_not_exist", "exists", "exists"];
+for (const [i, r] of rs.entries()) {
+  if (!r.ok || r.verdict !== want[i]) { console.error("GABIM: multi-proof", pks[i], r.verdict, r.errors); process.exit(1); }
+}
+console.log("   ✅ verifyAccounts (multi-proof):", rs.map((r) => r.verdict).join(", "), "@ slot", rs[0].slot);
+' "$ZILJA" "$RPC" "$FERMER" "$NOBODY" SysvarC1ock11111111111111111111111111111111 "$FERMER" || exit 1
   [ "$(metric attest_refused_total)" = "0" ] || { echo "GABIM: firma të refuzuara pas rinisjes (root tjetër për të njëjtin slot?)"; exit 1; }
   # R5-1: revokimi i firmosur nga identiteti: zilja e shërben menjëherë (pa rinisje), ndalon së
   # firmosuri me atë çelës, dhe kuorumi s'numërohet më, edhe brenda periudhës së autorizimit.
