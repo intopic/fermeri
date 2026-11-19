@@ -24,6 +24,7 @@
 //! Faqet me rrënjë mbi `cache_depth` mbahen gjithmonë në RAM (vetëm versioni i fundit).
 
 use super::*;
+use sha2::Digest;
 use std::collections::{BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -440,13 +441,18 @@ const MAX_RECORD: u64 = 64 << 20;
 const MIN_LOG_BUDGET: u64 = 256 << 20;
 const MAX_CKPT: u64 = 8 << 30;
 
+/// A05: shënuesi i ndërtimit nga snapshot-i. Shkruhet (me fsync) para hapit të parë shkatërrues të
+/// ndërtimit dhe fshihet vetëm pasi checkpoint-i i parë është në disk. Pa të, një dosje me faqe por
+/// pa checkpoint s'fshihet kurrë automatikisht.
+const BUILDING: &str = "BUILDING";
+
 /// Rezultati i leximit të një kornize në fillim të `buf`.
 #[derive(Debug, PartialEq, Eq)]
 enum Frame<'a> {
     /// Korniza e plotë dhe e saktë: trupi dhe gjatësia gjithsej.
     Ok(&'a [u8], usize),
-    /// Bisht i papërfunduar që shtrihet deri në fund të skedarit: kokë e prerë, trup i prerë, vetëm
-    /// zero, ose korniza e fundit me CRC të gabuar që mbaron saktë në fund të skedarit.
+    /// Bisht i papërfunduar që shtrihet deri në fund të skedarit: kokë e prerë, trup i prerë ose vetëm
+    /// zero. Një kornizë e plotë me CRC të gabuar s'është kurrë bisht (A04).
     Torn(&'static str),
     /// Dëmtim ose format i panjohur.
     Bad(String),
@@ -478,7 +484,9 @@ fn parse_frame<'a>(buf: &'a [u8], magic: &[u8; 4], max: u64) -> Frame<'a> {
     let crc = u32::from_le_bytes(buf[12..16].try_into().unwrap());
     let body = &buf[16..end];
     if crc32fast::hash(body) != crc {
-        return if end == buf.len() { Frame::Torn("CRC e gabuar në kornizën e fundit") } else { Frame::Bad("CRC e gabuar".into()) };
+        // A04: një kornizë e plotë (kokë + gjithë trupi) me CRC të gabuar mund të jetë dëmtim i një
+        // sloti tashmë të konfirmuar; pas faktit s'dallohet nga një shkrim i papërfunduar. Refuzohet.
+        return Frame::Bad(if end == buf.len() { "CRC e gabuar në kornizën e fundit (e plotë)".into() } else { "CRC e gabuar".into() });
     }
     Frame::Ok(body, end)
 }
@@ -807,6 +815,8 @@ pub struct PageTree {
     drained: Mutex<HashMap<u64, u64>>,
     seq: u64,
     stage_buf: HashMap<u16, Vec<u8>>,
+    /// A26: për çdo kovë të staging-ut, numri i rekordeve dhe SHA-256 i bajteve të shkruara.
+    stage_sums: HashMap<u16, (u64, sha2::Sha256)>,
     staged: u64,
     profile: bool,
     /// Matje: faqe të lexuara nga disku në slotin e fundit.
@@ -832,10 +842,16 @@ impl PageTree {
         std::fs::create_dir_all(&dir).map_err(io("krijimi i dosjes"))?;
         let lock = lock_exclusive(&dir.join("LOCK"))?;
         check_manifest(&dir, &o)?;
-        if let Ok(why) = std::fs::read_to_string(dir.join("INVALID")) {
-            // F-13: gjendja u shënua e pavlefshme në nisjen e kaluar: rindërtim i pastër.
-            log::warn!("zilja-pages: pema u shënua e pavlefshme ({why}); po rindërtohet nga e para");
-            wipe(&dir)?;
+        match std::fs::read(dir.join("INVALID")) {
+            Ok(why) => {
+                // F-13: gjendja u shënua e pavlefshme në nisjen e kaluar: rindërtim i pastër.
+                log::warn!("zilja-pages: pema u shënua e pavlefshme ({}); po rindërtohet nga e para", String::from_utf8_lossy(&why));
+                wipe(&dir)?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            // A06: shënuesi është vendimi i instancës së kaluar që pema s'përdoret. Kur s'dihet nëse
+            // ekziston (leje, I/O), pema s'hapet dhe asgjë s'ndryshohet.
+            Err(e) => return Err(corrupt(&dir, &format!("shënuesi INVALID s'lexohet ({e}): s'dihet nëse pema është e vlefshme"))),
         }
         let open = |name: &str| OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join(name));
         let data = open("pages.dat").map_err(io("hapja e faqeve"))?;
@@ -865,6 +881,7 @@ impl PageTree {
             drained: Mutex::new(HashMap::default()),
             seq: 0,
             stage_buf: HashMap::default(),
+            stage_sums: HashMap::default(),
             staged: 0,
             profile: std::env::var_os("ZILJA_PROFILE").is_some(),
             last_disk_reads: AtomicU64::new(0),
@@ -874,9 +891,21 @@ impl PageTree {
         };
         t.recover()?;
         match t.state.clone() {
-            // Pa checkpoint: asnjë snapshot s'u mbyll (p.sh. rrëzim gjatë ndërtimit). S'ka gjendje për
-            // të humbur: nis nga e para.
-            None => t.clear()?,
+            // Pa checkpoint: asnjë snapshot s'u mbyll. A05: kjo lejohet vetëm për një dosje bosh, ose
+            // kur shënuesi BUILDING tregon që një ndërtim nga snapshot-i u ndërpre. Faqe ose staging pa
+            // shënues = gjendje me prejardhje të paqartë (p.sh. checkpoint-i humbi): s'fshihet asgjë.
+            None => {
+                let building = t.dir.join(BUILDING).exists();
+                let pages = t.data.metadata().map_err(io("faqet"))?.len();
+                let staging = t.dir.join("staging").exists();
+                if !building && (pages > 0 || staging) {
+                    return Err(corrupt(
+                        &t.dir,
+                        &format!("mungon meta.ckpt, por ka {} (pa shënuesin {BUILDING} të ndërtimit të parë)", if pages > 0 { format!("{pages} B faqe") } else { "staging".into() }),
+                    ));
+                }
+                t.clear()?;
+            }
             Some(st) => {
                 // Thellësia e cache-së është e diskut, jo e opsioneve (si te `DiskTree`).
                 t.o.cache_depth = st.cache_depth;
@@ -1261,6 +1290,7 @@ impl PageTree {
         self.root_id = None;
         self.staged = 0;
         self.stage_buf.clear();
+        self.stage_sums.clear();
         self.records_since_ckpt = 0;
         self.rec_seq = 0;
         Ok(())
@@ -1379,6 +1409,27 @@ impl PageTree {
         Ok(id)
     }
 
+    /// A05: shënon që po ndërtohet nga snapshot-i (para çdo hapi shkatërrues).
+    fn mark_building(&mut self) -> Result<(), String> {
+        let p = self.dir.join(BUILDING);
+        if p.exists() {
+            return Ok(());
+        }
+        let mut f = File::create(&p).map_err(io("krijimi i BUILDING"))?;
+        f.write_all(b"ndertim nga snapshot-i ne vazhdim\n").map_err(io("shkrimi i BUILDING"))?;
+        if self.o.durable {
+            f.sync_all().map_err(io("fsync i BUILDING"))?;
+            sync_dir(&self.dir)?;
+        }
+        Ok(())
+    }
+
+    /// Vetëm për teste: shkruan në disk llogaritë e snapshot-it që janë ende në RAM.
+    #[doc(hidden)]
+    pub fn flush_staging_for_test(&mut self) -> Result<(), String> {
+        self.flush_staging()
+    }
+
     fn flush_staging(&mut self) -> Result<(), String> {
         let dir = self.dir.join("staging");
         std::fs::create_dir_all(&dir).map_err(io("dosja e staging-ut"))?;
@@ -1392,13 +1443,24 @@ impl PageTree {
     /// Ndërton një kovë (thellësia 8) nga skedari i saj: fiton sloti më i ri, pastaj i fundit (F-02).
     fn build_bucket(&self, b: u16, pk: &Mutex<Packer>) -> Result<(Option<Box<MNode>>, u64), String> {
         let path = self.dir.join("staging").join(format!("b{b:03x}"));
+        // A26: kova duhet të ketë saktësisht rekordet që u shkruan (numri dhe SHA-256), ndryshe pema
+        // do të ndërtohej (dhe firmosej si e plotë) nga një input tjetër.
+        let (want_n, want_sum) = match self.stage_sums.get(&b) {
+            Some((n, h)) => (*n, Some(h.clone().finalize())),
+            None => (0, None),
+        };
         let raw = match std::fs::read(&path) {
             Ok(r) => r,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((None, 0)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && want_n == 0 => return Ok((None, 0)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(format!("kova {b:03x} e staging-ut mungon (priteshin {want_n} rekorde)")),
             Err(e) => return Err(format!("leximi i staging-ut: {e}")),
         };
         if raw.len() % STAGE_REC != 0 {
             return Err("staging i dëmtuar".into());
+        }
+        let got_n = (raw.len() / STAGE_REC) as u64;
+        if got_n != want_n || want_sum.is_some_and(|w| sha2::Sha256::digest(&raw) != w) {
+            return Err(format!("kova {b:03x} e staging-ut nuk përputhet me atë që u shkrua ({got_n} rekorde, priteshin {want_n}, ose përmbajtje tjetër)"));
         }
         let mut recs: Vec<(Key, u64, u64, Option<AccountMeta>)> = raw
             .chunks_exact(STAGE_REC)
@@ -1582,7 +1644,7 @@ fn check_manifest(dir: &Path, o: &PageOptions) -> Result<(), String> {
 /// Fshin skedarët e pemës (jo `LOCK` dhe jo `MANIFEST`). Thirret vetëm nga mbajtësi i lock-ut.
 fn wipe(dir: &Path) -> Result<(), String> {
     // `INVALID` fshihet i fundit: nëse ndërpritet, nisja e ardhshme e provon sërish.
-    for name in ["pages.dat", "meta.log", "meta.ckpt", "meta.ckpt.tmp", "INVALID"] {
+    for name in ["pages.dat", "meta.log", "meta.ckpt", "meta.ckpt.tmp", BUILDING, "INVALID"] {
         remove_file(&dir.join(name))?;
     }
     remove_dir_all(&dir.join("staging"))?;
@@ -1644,12 +1706,16 @@ impl StateTree for PageTree {
     }
 
     fn stage_snapshot(&mut self, slot: u64, ups: Vec<Update>) -> Result<(), String> {
-        if self.staged == 0 && self.state.is_some() {
-            self.clear()?;
+        if self.staged == 0 {
+            self.mark_building()?;
+            if self.state.is_some() {
+                self.clear()?;
+            }
         }
         for (k, m) in ups {
             let b = (k[0] as u16) >> (8 - BUCKET_BITS);
             let buf = self.stage_buf.entry(b).or_default();
+            let at = buf.len();
             buf.extend_from_slice(&k);
             buf.extend_from_slice(&slot.to_le_bytes());
             buf.extend_from_slice(&self.seq.to_le_bytes());
@@ -1661,6 +1727,9 @@ impl StateTree for PageTree {
                     buf.extend_from_slice(&enc_meta(m));
                 }
             }
+            let sum = self.stage_sums.entry(b).or_insert_with(|| (0, sha2::Sha256::new()));
+            sum.0 += 1;
+            sum.1.update(&buf[at..]);
             self.staged += 1;
         }
         if self.stage_buf.values().map(Vec::len).sum::<usize>() > 64 << 20 {
@@ -1670,8 +1739,11 @@ impl StateTree for PageTree {
     }
 
     fn finish_snapshot(&mut self, slot: u64, complete: bool) -> Result<Hash, String> {
-        if self.staged == 0 && self.state.is_some() {
-            self.clear()?;
+        if self.staged == 0 {
+            self.mark_building()?;
+            if self.state.is_some() {
+                self.clear()?;
+            }
         }
         self.flush_staging()?;
         self.data.set_len(0).map_err(io("fshirja e faqeve"))?;
@@ -1718,6 +1790,12 @@ impl StateTree for PageTree {
         self.cache_since = slot;
         // Snapshot-i ruhet drejtpërdrejt si checkpoint (me fsync të faqeve para tij).
         self.checkpoint()?;
+        // A05: ndërtimi mbaroi; vetëm tani hiqet shënuesi.
+        self.stage_sums.clear();
+        remove_file(&self.dir.join(BUILDING))?;
+        if self.o.durable {
+            sync_dir(&self.dir)?;
+        }
         Ok(self.root())
     }
 

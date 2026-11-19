@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+sha2 = { workspace = true }
 zilja-verifier = { workspace = true }
 zilja-tree = { workspace = true }
 rayon = { workspace = true }
