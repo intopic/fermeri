@@ -3,7 +3,8 @@
 //! ```text
 //! zilja-snapshot-bench <snapshot-SLOT-HASH.tar.zst> <db_dir> \
 //!   --out results.csv --cache-depth 20 --slots 300 --updates 5000,15000,30000 --proofs 5000
-//!   [--limit N] [--ingest-only] [--sample 500000] [--seed 1]
+//!   [--limit N] [--ingest-only] [--sample 500000] [--seed 1] [--slot S]
+//! curl -sL <URL e snapshot-it> | zilja-snapshot-bench - <db_dir> --limit 3000000 …   # nga rrjeti, pa disk
 //! ```
 //!
 //! 1. Lexon snapshot-in në streaming (zstd + tar), pa e çkompresuar në disk: skedarët
@@ -128,11 +129,44 @@ pub fn ingest(
     limit: Option<u64>,
     progress: &dyn Fn(&IngestStats),
 ) -> Result<(IngestStats, Vec<Key>), String> {
-    let file = std::fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?;
-    let compressed_bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let dec = zstd::stream::read::Decoder::new(BufReader::with_capacity(8 << 20, file)).map_err(|e| format!("zstd: {e}"))?;
+    // `-` = stdin: arkivi mund të vijë direkt nga rrjeti (`curl … | zilja-snapshot-bench - …`), pa u
+    // ruajtur në disk (runner-ët e GitHub-it kanë 14 GB).
+    let input: Box<dyn Read> = if archive == Path::new("-") {
+        Box::new(std::io::stdin().lock())
+    } else {
+        Box::new(std::fs::File::open(archive).map_err(|e| format!("{}: {e}", archive.display()))?)
+    };
+    let counted = Counted { inner: input, n: 0 };
+    let mut dec = zstd::stream::read::Decoder::new(BufReader::with_capacity(8 << 20, counted)).map_err(|e| format!("zstd: {e}"))?;
+    let st = ingest_from(&mut dec, tree, sample_n, rng, limit, progress)?;
+    let compressed_bytes = dec.get_ref().get_ref().get_ref().n;
+    Ok((IngestStats { compressed_bytes, ..st.0 }, st.1))
+}
+
+/// Numëron bajtet e lexuara (madhësia e arkivit kur vjen nga stdin).
+struct Counted<R> {
+    inner: R,
+    n: u64,
+}
+
+impl<R: Read> Read for Counted<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let k = self.inner.read(buf)?;
+        self.n += k as u64;
+        Ok(k)
+    }
+}
+
+fn ingest_from<R: Read>(
+    dec: &mut R,
+    tree: &mut dyn StateTree,
+    sample_n: usize,
+    rng: &mut StdRng,
+    limit: Option<u64>,
+    progress: &dyn Fn(&IngestStats),
+) -> Result<(IngestStats, Vec<Key>), String> {
     let mut ar = tar::Archive::new(dec);
-    let mut st = IngestStats { compressed_bytes, ..Default::default() };
+    let mut st = IngestStats::default();
     let mut sample: Vec<Key> = Vec::with_capacity(sample_n);
     let mut seen_live = 0u64;
     let mut last_progress = Instant::now();
@@ -288,11 +322,13 @@ struct Args {
     limit: Option<u64>,
     ingest_only: bool,
     seed: u64,
+    /// Sloti i snapshot-it, kur s'del nga emri i skedarit (p.sh. stdin).
+    slot: Option<u64>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "përdorimi: zilja-snapshot-bench <snapshot.tar.zst> <db_dir> [--out results.csv] [--cache-depth 20] [--slots 300] [--updates 5000,15000,30000] [--proofs 5000] [--sample 500000] [--limit N] [--ingest-only] [--seed 1]";
+    let usage = "përdorimi: zilja-snapshot-bench <snapshot.tar.zst> <db_dir> [--out results.csv] [--cache-depth 20] [--slots 300] [--updates 5000,15000,30000] [--proofs 5000] [--sample 500000] [--limit N] [--ingest-only] [--seed 1] [--slot S]\n<snapshot.tar.zst> mund të jetë `-` (stdin): curl -sL URL | zilja-snapshot-bench - <db_dir> --limit 3000000 …";
     if a.len() < 2 {
         return Err(usage.into());
     }
@@ -308,6 +344,7 @@ fn parse_args() -> Result<Args, String> {
         limit: None,
         ingest_only: false,
         seed: 1,
+        slot: None,
     };
     let mut it = a[2..].iter();
     while let Some(k) = it.next() {
@@ -322,6 +359,7 @@ fn parse_args() -> Result<Args, String> {
             "--sample" => r.sample = num(v()?)? as usize,
             "--limit" => r.limit = Some(num(v()?)?),
             "--seed" => r.seed = num(v()?)?,
+            "--slot" => r.slot = Some(num(v()?)?),
             "--ingest-only" => r.ingest_only = true,
             _ => return Err(format!("argument i panjohur {k:?}\n{usage}")),
         }
@@ -360,7 +398,7 @@ fn run() -> Result<(), String> {
         eprintln!("  {} skedarë, {} rekorde, {:.1} GB të dhëna, RSS {:.0} MB", s.storages, s.records, s.data_bytes as f64 / 1e9, proc_status("VmRSS:"));
     })?;
     let stage_s = t_stage.elapsed().as_secs_f64();
-    let snap_slot = archive_slot(&a.archive).unwrap_or(ist.max_slot);
+    let snap_slot = a.slot.or_else(|| archive_slot(&a.archive)).unwrap_or(ist.max_slot);
     let hwm_stage = proc_status("VmHWM:");
 
     // 2. Ndërtimi i pemës.
