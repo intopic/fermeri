@@ -14,7 +14,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -26,7 +26,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -48,7 +49,8 @@
     "data": "unchecked"
    },
    "errors": [],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": 100
   }
  },
  {
@@ -66,7 +68,7 @@
    },
    "endpoints": 1,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -97,7 +99,8 @@
     "config_min_agree",
     "trust_below_min"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -115,7 +118,7 @@
    },
    "endpoints": 1,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -143,7 +146,8 @@
     "data": "unchecked"
    },
    "errors": [],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": 100
   }
  },
  {
@@ -161,7 +165,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -173,7 +177,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -197,7 +202,8 @@
    "errors": [
     "config_min_agree"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -215,7 +221,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -227,7 +233,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+     "root": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -252,7 +259,8 @@
     "root_conflict",
     "trust_below_min"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -270,7 +278,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -282,7 +290,8 @@
     {
      "ok": true,
      "slot": 99,
-     "root": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+     "root": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -306,7 +315,8 @@
    "errors": [
     "trust_below_min"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -324,7 +334,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Other111111111111111111111111111111111111111",
     "slot": 100,
@@ -336,7 +346,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -360,7 +371,8 @@
    "errors": [
     "wrong_account"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -378,7 +390,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -390,7 +402,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -414,7 +427,8 @@
    "errors": [
     "wrong_slot"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -432,7 +446,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -444,7 +458,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -466,7 +481,8 @@
     "data": "unchecked"
    },
    "errors": [],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -484,7 +500,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -496,7 +512,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -522,7 +539,8 @@
     "root_conflict",
     "trust_below_min"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -540,7 +558,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -552,7 +570,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -576,7 +595,8 @@
    "errors": [
     "proof_invalid"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -594,7 +614,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -606,7 +626,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -628,7 +649,8 @@
     "data": "unchecked"
    },
    "errors": [],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": 100
   }
  },
  {
@@ -646,7 +668,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -658,7 +680,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -682,7 +705,66 @@
    "errors": [
     "absence_incomplete"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
+  }
+ },
+ {
+  "name": "absence_agreeing_source_incomplete",
+  "input": {
+   "policy": {
+    "minTrust": "agreement",
+    "minAgree": 2,
+    "maxSlotLag": null,
+    "minSlot": null
+   },
+   "request": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": null
+   },
+   "endpoints": 2,
+   "quorumEnabled": false,
+   "anchor": null,
+   "primary": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": 100,
+    "root": "abababababababababababababababababababababababababababababababab",
+    "complete": true,
+    "verdict": "does_not_exist"
+   },
+   "others": [
+    {
+     "ok": true,
+     "slot": 100,
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": false
+    }
+   ],
+   "quorum": null,
+   "quorumEpochOk": null,
+   "finalizedSlot": null,
+   "highestSeen": null,
+   "data": null
+  },
+  "expect": {
+   "ok": false,
+   "verdict": "does_not_exist",
+   "trust": "single",
+   "agreeing": 1,
+   "checks": {
+    "proof": "valid",
+    "completeness": "complete",
+    "root": "single",
+    "freshness": "unchecked",
+    "data": "unchecked"
+   },
+   "errors": [
+    "trust_below_min"
+   ],
+   "warnings": [
+    "agreeing_incomplete"
+   ],
+   "raiseFloor": null
   }
  },
  {
@@ -700,7 +782,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -712,7 +794,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -736,7 +819,8 @@
    "errors": [
     "stale"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -754,7 +838,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -766,7 +850,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -788,7 +873,64 @@
     "data": "unchecked"
    },
    "errors": [],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": 100
+  }
+ },
+ {
+  "name": "ahead_of_reference",
+  "input": {
+   "policy": {
+    "minTrust": "agreement",
+    "minAgree": 2,
+    "maxSlotLag": 150,
+    "minSlot": null
+   },
+   "request": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": null
+   },
+   "endpoints": 2,
+   "quorumEnabled": false,
+   "anchor": null,
+   "primary": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": 100,
+    "root": "abababababababababababababababababababababababababababababababab",
+    "complete": true,
+    "verdict": "exists"
+   },
+   "others": [
+    {
+     "ok": true,
+     "slot": 100,
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
+    }
+   ],
+   "quorum": null,
+   "quorumEpochOk": null,
+   "finalizedSlot": 99,
+   "highestSeen": null,
+   "data": null
+  },
+  "expect": {
+   "ok": false,
+   "verdict": "exists",
+   "trust": "agreement",
+   "agreeing": 2,
+   "checks": {
+    "proof": "valid",
+    "completeness": "complete",
+    "root": "agreement",
+    "freshness": "ahead",
+    "data": "unchecked"
+   },
+   "errors": [
+    "ahead_of_reference"
+   ],
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -806,7 +948,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -818,7 +960,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -842,7 +985,8 @@
    "errors": [
     "freshness_unknown"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -860,7 +1004,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -872,7 +1016,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -896,7 +1041,8 @@
    "errors": [
     "below_min_slot"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -914,7 +1060,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -926,7 +1072,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -950,7 +1097,8 @@
    "errors": [
     "rollback"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -968,7 +1116,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -980,7 +1128,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -988,7 +1137,7 @@
    "finalizedSlot": null,
    "highestSeen": null,
    "data": {
-    "matches": false
+    "status": "mismatch"
    }
   },
   "expect": {
@@ -1006,7 +1155,8 @@
    "errors": [
     "data_mismatch"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -1024,7 +1174,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -1036,7 +1186,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -1044,7 +1195,7 @@
    "finalizedSlot": null,
    "highestSeen": null,
    "data": {
-    "matches": true
+    "status": "match"
    }
   },
   "expect": {
@@ -1060,7 +1211,66 @@
     "data": "match"
    },
    "errors": [],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": 100
+  }
+ },
+ {
+  "name": "data_unavailable",
+  "input": {
+   "policy": {
+    "minTrust": "agreement",
+    "minAgree": 2,
+    "maxSlotLag": null,
+    "minSlot": null
+   },
+   "request": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": null
+   },
+   "endpoints": 2,
+   "quorumEnabled": false,
+   "anchor": null,
+   "primary": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": 100,
+    "root": "abababababababababababababababababababababababababababababababab",
+    "complete": true,
+    "verdict": "exists"
+   },
+   "others": [
+    {
+     "ok": true,
+     "slot": 100,
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
+    }
+   ],
+   "quorum": null,
+   "quorumEpochOk": null,
+   "finalizedSlot": null,
+   "highestSeen": null,
+   "data": {
+    "status": "unavailable"
+   }
+  },
+  "expect": {
+   "ok": false,
+   "verdict": "exists",
+   "trust": "agreement",
+   "agreeing": 2,
+   "checks": {
+    "proof": "valid",
+    "completeness": "complete",
+    "root": "agreement",
+    "freshness": "unchecked",
+    "data": "unavailable"
+   },
+   "errors": [
+    "data_unavailable"
+   ],
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -1078,7 +1288,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": true,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -1090,7 +1300,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+     "root": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+     "complete": true
     }
    ],
    "quorum": [
@@ -1123,7 +1334,8 @@
    "errors": [],
    "warnings": [
     "conflict_outvoted_by_quorum"
-   ]
+   ],
+   "raiseFloor": 100
   }
  },
  {
@@ -1141,7 +1353,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": true,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -1153,7 +1365,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": [
@@ -1183,7 +1396,8 @@
     "quorum_other_root",
     "trust_below_min"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -1201,7 +1415,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": true,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -1213,7 +1427,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": [
@@ -1247,7 +1462,8 @@
     "quorum_split",
     "trust_below_min"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
@@ -1265,7 +1481,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": true,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -1277,7 +1493,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": [
@@ -1308,7 +1525,8 @@
    ],
    "warnings": [
     "quorum_epoch_unsupported"
-   ]
+   ],
+   "raiseFloor": null
   }
  },
  {
@@ -1326,7 +1544,7 @@
    },
    "endpoints": 2,
    "quorumEnabled": false,
-   "rootOverride": false,
+   "anchor": null,
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -1338,7 +1556,8 @@
     {
      "ok": true,
      "slot": 100,
-     "root": "abababababababababababababababababababababababababababababababab"
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
     }
    ],
    "quorum": null,
@@ -1363,11 +1582,12 @@
     "config_quorum",
     "trust_below_min"
    ],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": null
   }
  },
  {
-  "name": "user_root",
+  "name": "anchor_hash_only_inclusion",
   "input": {
    "policy": {
     "minTrust": "agreement",
@@ -1381,7 +1601,10 @@
    },
    "endpoints": 1,
    "quorumEnabled": false,
-   "rootOverride": true,
+   "anchor": {
+    "slot": null,
+    "complete": null
+   },
    "primary": {
     "pubkey": "Acc1111111111111111111111111111111111111111",
     "slot": 100,
@@ -1403,13 +1626,270 @@
    "agreeing": 1,
    "checks": {
     "proof": "valid",
+    "completeness": "partial",
+    "root": "user",
+    "freshness": "unverifiable",
+    "data": "unchecked"
+   },
+   "errors": [],
+   "warnings": [],
+   "raiseFloor": null
+  }
+ },
+ {
+  "name": "anchor_hash_only_freshness_required",
+  "input": {
+   "policy": {
+    "minTrust": "agreement",
+    "minAgree": 2,
+    "maxSlotLag": 150,
+    "minSlot": null
+   },
+   "request": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": null
+   },
+   "endpoints": 1,
+   "quorumEnabled": false,
+   "anchor": {
+    "slot": null,
+    "complete": null
+   },
+   "primary": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": 100,
+    "root": "abababababababababababababababababababababababababababababababab",
+    "complete": true,
+    "verdict": "exists"
+   },
+   "others": [],
+   "quorum": null,
+   "quorumEpochOk": null,
+   "finalizedSlot": 120,
+   "highestSeen": null,
+   "data": null
+  },
+  "expect": {
+   "ok": false,
+   "verdict": "exists",
+   "trust": "user",
+   "agreeing": 1,
+   "checks": {
+    "proof": "valid",
+    "completeness": "partial",
+    "root": "user",
+    "freshness": "unverifiable",
+    "data": "unchecked"
+   },
+   "errors": [
+    "freshness_unverifiable"
+   ],
+   "warnings": [],
+   "raiseFloor": null
+  }
+ },
+ {
+  "name": "anchor_hash_only_absence",
+  "input": {
+   "policy": {
+    "minTrust": "agreement",
+    "minAgree": 2,
+    "maxSlotLag": null,
+    "minSlot": null
+   },
+   "request": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": null
+   },
+   "endpoints": 1,
+   "quorumEnabled": false,
+   "anchor": {
+    "slot": null,
+    "complete": null
+   },
+   "primary": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": 100,
+    "root": "abababababababababababababababababababababababababababababababab",
+    "complete": true,
+    "verdict": "does_not_exist"
+   },
+   "others": [],
+   "quorum": null,
+   "quorumEpochOk": null,
+   "finalizedSlot": null,
+   "highestSeen": null,
+   "data": null
+  },
+  "expect": {
+   "ok": false,
+   "verdict": "does_not_exist",
+   "trust": "user",
+   "agreeing": 1,
+   "checks": {
+    "proof": "valid",
+    "completeness": "partial",
+    "root": "user",
+    "freshness": "unverifiable",
+    "data": "unchecked"
+   },
+   "errors": [
+    "absence_incomplete"
+   ],
+   "warnings": [],
+   "raiseFloor": null
+  }
+ },
+ {
+  "name": "anchor_slot_complete_absence",
+  "input": {
+   "policy": {
+    "minTrust": "agreement",
+    "minAgree": 2,
+    "maxSlotLag": null,
+    "minSlot": null
+   },
+   "request": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": null
+   },
+   "endpoints": 1,
+   "quorumEnabled": false,
+   "anchor": {
+    "slot": 100,
+    "complete": true
+   },
+   "primary": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": 100,
+    "root": "abababababababababababababababababababababababababababababababab",
+    "complete": false,
+    "verdict": "does_not_exist"
+   },
+   "others": [],
+   "quorum": null,
+   "quorumEpochOk": null,
+   "finalizedSlot": null,
+   "highestSeen": null,
+   "data": null
+  },
+  "expect": {
+   "ok": true,
+   "verdict": "does_not_exist",
+   "trust": "user",
+   "agreeing": 1,
+   "checks": {
+    "proof": "valid",
     "completeness": "complete",
     "root": "user",
     "freshness": "unchecked",
     "data": "unchecked"
    },
    "errors": [],
-   "warnings": []
+   "warnings": [],
+   "raiseFloor": 100
+  }
+ },
+ {
+  "name": "anchor_slot_mismatch",
+  "input": {
+   "policy": {
+    "minTrust": "agreement",
+    "minAgree": 2,
+    "maxSlotLag": null,
+    "minSlot": null
+   },
+   "request": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": null
+   },
+   "endpoints": 1,
+   "quorumEnabled": false,
+   "anchor": {
+    "slot": 99,
+    "complete": true
+   },
+   "primary": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": 100,
+    "root": "abababababababababababababababababababababababababababababababab",
+    "complete": true,
+    "verdict": "exists"
+   },
+   "others": [],
+   "quorum": null,
+   "quorumEpochOk": null,
+   "finalizedSlot": null,
+   "highestSeen": null,
+   "data": null
+  },
+  "expect": {
+   "ok": false,
+   "verdict": "invalid",
+   "trust": "user",
+   "agreeing": 1,
+   "checks": {
+    "proof": "valid",
+    "completeness": "complete",
+    "root": "user",
+    "freshness": "unchecked",
+    "data": "unchecked"
+   },
+   "errors": [
+    "anchor_slot_mismatch"
+   ],
+   "warnings": [],
+   "raiseFloor": null
+  }
+ },
+ {
+  "name": "anchor_slot_fresh",
+  "input": {
+   "policy": {
+    "minTrust": "agreement",
+    "minAgree": 2,
+    "maxSlotLag": 150,
+    "minSlot": null
+   },
+   "request": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": null
+   },
+   "endpoints": 1,
+   "quorumEnabled": false,
+   "anchor": {
+    "slot": 100,
+    "complete": null
+   },
+   "primary": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": 100,
+    "root": "abababababababababababababababababababababababababababababababab",
+    "complete": true,
+    "verdict": "exists"
+   },
+   "others": [],
+   "quorum": null,
+   "quorumEpochOk": null,
+   "finalizedSlot": 120,
+   "highestSeen": null,
+   "data": null
+  },
+  "expect": {
+   "ok": true,
+   "verdict": "exists",
+   "trust": "user",
+   "agreeing": 1,
+   "checks": {
+    "proof": "valid",
+    "completeness": "partial",
+    "root": "user",
+    "freshness": "fresh",
+    "data": "unchecked"
+   },
+   "errors": [],
+   "warnings": [],
+   "raiseFloor": 100
   }
  }
 ]

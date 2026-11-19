@@ -141,3 +141,20 @@ fn quorum_tool_rejects_malformed_root_without_panicking() {
     let code = o.status.code().unwrap_or(-1);
     assert!(code == 1 || code == 2, "zilja-quorum ra (kodi {code}): {}", String::from_utf8_lossy(&o.stderr));
 }
+
+#[test]
+fn requested_data_check_that_did_not_run_fails() {
+    // A13: RPC-ja Solana jep slotin, por s'i përgjigjet getAccountInfo: kontrolli i kërkuar s'u krye.
+    let sol = serve(HashMap::from([("getSlot", json!(100))]));
+    assert_eq!(check(&[&zile(true, true, PK), &pk(), &sol, "--min-trust", "single"]), 1, "krahasimi që s'u krye doli si sukses");
+}
+
+#[test]
+fn slot_ahead_of_finalized_reference_is_not_fresh() {
+    // A12: zilja në slotin 100, RPC-ja e finalizuar në 99. Të dhënat përputhen (abc, 5000 lamports).
+    let info = json!({"context": {"slot": 99}, "value": {"lamports": 5000, "owner": bs58::encode([1u8; 32]).into_string(), "executable": false, "data": ["YWJj", "base64"]}});
+    let ok_sol = serve(HashMap::from([("getSlot", json!(100)), ("getAccountInfo", info.clone())]));
+    assert_eq!(check(&[&zile(true, true, PK), &pk(), &ok_sol, "--min-trust", "single"]), 0, "rasti i rregullt duhet të kalojë");
+    let sol = serve(HashMap::from([("getSlot", json!(99)), ("getAccountInfo", info)]));
+    assert_eq!(check(&[&zile(true, true, PK), &pk(), &sol, "--min-trust", "single"]), 1, "slot mbi referencën u shpall i freskët");
+}

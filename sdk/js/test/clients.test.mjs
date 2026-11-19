@@ -104,7 +104,7 @@ const att = (x, slot, root) => ({ slot, root, validator: x.b58, signer: null, au
     [c]: { proof: proofAt(100), root: A, attest: att(vals[2], 100, A) },
   };
   const f = mock({ ziles, sol: { getVoteAccounts: voteAccounts, getSlot: 100, getEpochInfo: { absoluteSlot: 100, slotIndex: 100, slotsInEpoch: 432000, epoch: 0 } } });
-  const r = await new ZiljaClient({ endpoints: [a, b, c], solanaRpc: "http://sol", quorum: true, minTrust: "quorum", genesisHash: GEN, fetch: f }).verifyAccount(inc.pubkey);
+  const r = await new ZiljaClient({ endpoints: [a, b, c], solanaRpc: "http://sol", quorum: true, minTrust: "quorum", genesisHash: GEN, compareData: false, fetch: f }).verifyAccount(inc.pubkey);
   expect("1 zile në konflikt, kuorum 2/3 për root-in → ok, trust quorum", r.ok === true && r.trust === "quorum", JSON.stringify({ ok: r.ok, trust: r.trust, verdict: r.verdict, errors: r.errors }));
 }
 
@@ -148,8 +148,29 @@ async function web(opts, ziles) {
   expect("web s'paraqet dëftesë të vlefshme si gjendje aktuale të konsensusit", !w.steps.some((x) => x.ok === true && /NUK ekziston/.test(x.text)));
 }
 
+// A12, A13, A14 përmes klientit (jo vetëm politikës).
+{
+  const z = uniq();
+  const mk = (o, sol = {}, c = inc, complete = true) => new ZiljaClient({ endpoints: [z], minTrust: "single", fetch: mock({ ziles: { [z]: { proof: proofAt(100, c, complete) } }, sol }), ...o });
+  // A12: zilja në slotin 100, RPC-ja e finalizuar në 99 → "ahead", jo "fresh", dhe kufiri s'rritet.
+  const c12 = mk({ solanaRpc: "http://sol", compareData: false }, { getSlot: 99 });
+  const r12 = await c12.verifyAccount(inc.pubkey);
+  expect("A12: slot mbi referencën → ahead, jo ok", !r12.ok && r12.checks.freshness === "ahead" && r12.errors.includes("ahead_of_reference") && c12.highestSeen === null, JSON.stringify(r12.checks));
+  // A13: getAccountInfo s'përgjigjet → data "unavailable", jo ok.
+  const r13 = await mk({ solanaRpc: "http://sol", maxSlotLag: null }, {}).verifyAccount(inc.pubkey);
+  expect("A13: krahasim i kërkuar që s'u krye → jo ok", !r13.ok && r13.checks.data === "unavailable" && r13.errors.includes("data_unavailable"), JSON.stringify(r13.errors));
+  // A14: referencë vetëm-hash + mungesë → s'pranohet edhe kur serveri thotë complete.
+  const r14 = await mk({ root: exc.root }, {}, exc).verifyAccount(exc.pubkey);
+  expect("A14: root vetëm-hash s'provon mungesë", !r14.ok && r14.errors.includes("absence_incomplete") && r14.checks.freshness === "unverifiable", JSON.stringify(r14.errors));
+  const r14b = await mk({ root: { root: exc.root, slot: 100, complete: true } }, {}, exc, false).verifyAccount(exc.pubkey);
+  expect("A14: referencë me slot + complete → mungesa pranohet", r14b.ok && r14b.verdict === "does_not_exist", JSON.stringify(r14b.errors));
+  const r14c = await mk({ root: { root: exc.root, slot: 101, complete: true } }, {}, exc).verifyAccount(exc.pubkey);
+  expect("A14: slot tjetër nga referenca → invalid", !r14c.ok && r14c.errors.includes("anchor_slot_mismatch"), JSON.stringify(r14c.errors));
+}
+
 if (fail) {
   console.error(`${fail} teste dështuan`);
   process.exit(1);
 }
 console.log("✅ klientët: të gjitha kalojnë");
+

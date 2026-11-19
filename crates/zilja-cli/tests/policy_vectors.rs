@@ -2,7 +2,7 @@
 //! të përbashkët. Kur ndryshon njëra, ky test (ose `sdk/js/test/policy.test.mjs`) bie.
 
 use serde_json::Value;
-use zilja_cli::policy::{decide, Input, Other, Policy, Primary, QuorumGroup};
+use zilja_cli::policy::{decide, Anchor, DataStatus, Input, Other, Policy, Primary, QuorumGroup};
 
 fn u(v: &Value) -> Option<u64> {
     v.as_u64()
@@ -26,7 +26,7 @@ fn input(i: &Value) -> Input {
         request_slot: u(&i["request"]["slot"]),
         endpoints: i["endpoints"].as_u64().unwrap() as usize,
         quorum_enabled: i["quorumEnabled"].as_bool().unwrap(),
-        root_override: i["rootOverride"].as_bool().unwrap(),
+        anchor: i["anchor"].is_object().then(|| Anchor { slot: u(&i["anchor"]["slot"]), complete: i["anchor"]["complete"].as_bool() }),
         primary: r.is_object().then(|| Primary {
             pubkey: s(&r["pubkey"]),
             slot: u(&r["slot"]),
@@ -38,7 +38,12 @@ fn input(i: &Value) -> Input {
             .as_array()
             .unwrap()
             .iter()
-            .map(|o| Other { ok: o["ok"].as_bool() == Some(true), slot: u(&o["slot"]), root: o["root"].as_str().map(str::to_string) })
+            .map(|o| Other {
+                ok: o["ok"].as_bool() == Some(true),
+                slot: u(&o["slot"]),
+                root: o["root"].as_str().map(str::to_string),
+                complete: o["complete"].as_bool() == Some(true),
+            })
             .collect(),
         quorum: i["quorum"]
             .as_array()
@@ -46,7 +51,12 @@ fn input(i: &Value) -> Input {
         quorum_epoch_ok: i["quorumEpochOk"].as_bool(),
         finalized_slot: u(&i["finalizedSlot"]),
         highest_seen: u(&i["highestSeen"]),
-        data: i["data"]["matches"].as_bool(),
+        data: match i["data"]["status"].as_str() {
+            None => None,
+            Some("match") => Some(DataStatus::Match),
+            Some("mismatch") => Some(DataStatus::Mismatch),
+            Some(_) => Some(DataStatus::Unavailable),
+        },
     }
 }
 
@@ -74,7 +84,8 @@ fn rust_policy_matches_shared_vectors() {
             && d.checks.freshness == s(&c["freshness"])
             && d.checks.data == s(&c["data"])
             && d.errors.iter().map(|x| x.to_string()).collect::<Vec<_>>() == strs(&e["errors"])
-            && d.warnings.iter().map(|x| x.to_string()).collect::<Vec<_>>() == strs(&e["warnings"]);
+            && d.warnings.iter().map(|x| x.to_string()).collect::<Vec<_>>() == strs(&e["warnings"])
+            && d.raise_floor == e["raiseFloor"].as_u64();
         if !same {
             bad.push(format!("{}: pritej {e}, u mor {d:?}", v["name"]));
         }

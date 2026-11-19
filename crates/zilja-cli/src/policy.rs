@@ -47,6 +47,23 @@ pub struct Other {
     pub ok: bool,
     pub slot: Option<u64>,
     pub root: Option<String>,
+    /// A14: burimi pohon pemë të plotë (`getZiljaRoot.complete`).
+    pub complete: bool,
+}
+
+/// A14: referenca e përdoruesit. `slot` / `complete` = `None` kur referenca është vetëm hash.
+#[derive(Clone, Debug)]
+pub struct Anchor {
+    pub slot: Option<u64>,
+    pub complete: Option<bool>,
+}
+
+/// A13: rezultati i kontrollit të kërkuar të të dhënave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataStatus {
+    Match,
+    Mismatch,
+    Unavailable,
 }
 
 #[derive(Clone, Debug)]
@@ -62,7 +79,7 @@ pub struct Input {
     pub request_slot: Option<u64>,
     pub endpoints: usize,
     pub quorum_enabled: bool,
-    pub root_override: bool,
+    pub anchor: Option<Anchor>,
     pub primary: Option<Primary>,
     pub others: Vec<Other>,
     /// `None` = kuorumi s'u kontrollua.
@@ -70,8 +87,8 @@ pub struct Input {
     pub quorum_epoch_ok: Option<bool>,
     pub finalized_slot: Option<u64>,
     pub highest_seen: Option<u64>,
-    /// `Some(matches)` kur u krahasuan të dhënat.
-    pub data: Option<bool>,
+    /// `None` = kontrolli s'u kërkua.
+    pub data: Option<DataStatus>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,6 +109,8 @@ pub struct Decision {
     pub checks: Checks,
     pub errors: Vec<&'static str>,
     pub warnings: Vec<&'static str>,
+    /// Sloti me të cilin lejohet të rritet kufiri i rollback-ut (vetëm kur ok, i vërtetuar, aktual).
+    pub raise_floor: Option<u64>,
 }
 
 /// Gabimet e konfigurimit; bosh = në rregull. `min_agree` s'ulet kurrë vetë sipas numrit të zileve.
@@ -116,12 +135,17 @@ fn is_root_hex(s: &str) -> bool {
 
 pub fn decide(i: &Input) -> Decision {
     let p = &i.policy;
-    let mut errors = config_errors(p, i.endpoints, i.quorum_enabled, i.root_override);
-    let mut warnings = Vec::new();
+    let a = i.anchor.as_ref();
+    let mut errors = config_errors(p, i.endpoints, i.quorum_enabled, a.is_some());
+    let mut warnings: Vec<&'static str> = Vec::new();
     let r = i.primary.as_ref();
+    let complete = match a {
+        Some(a) => a.complete == Some(true),
+        None => r.is_some_and(|r| r.complete),
+    };
     let mut checks = Checks {
         proof: "invalid",
-        completeness: if r.is_some_and(|r| r.complete) { "complete" } else { "partial" },
+        completeness: if complete { "complete" } else { "partial" },
         root: "single",
         freshness: "unchecked",
         data: "unchecked",
@@ -132,10 +156,10 @@ pub fn decide(i: &Input) -> Decision {
         Some(r) if is_root_hex(&r.root) && r.slot.is_some() => {
             if r.pubkey != i.request_pubkey {
                 errors.push("wrong_account");
-            } else if let (Some(req), Some(got)) = (i.request_slot, r.slot) {
-                if got > req {
-                    errors.push("wrong_slot");
-                }
+            } else if i.request_slot.is_some_and(|req| r.slot.unwrap() > req) {
+                errors.push("wrong_slot");
+            } else if a.and_then(|a| a.slot).is_some_and(|s| r.slot != Some(s)) {
+                errors.push("anchor_slot_mismatch");
             }
         }
         _ => errors.push("bad_response"),
@@ -148,14 +172,14 @@ pub fn decide(i: &Input) -> Decision {
     } else {
         errors.push("proof_invalid");
     }
-    if rv == "does_not_exist" && !r.is_some_and(|r| r.complete) {
+    if rv == "does_not_exist" && !complete {
         errors.push("absence_incomplete");
     }
 
     // 2. Besimi te root-i.
     let mut trust = "single";
     let mut agreeing = 1u64;
-    if i.root_override {
+    if a.is_some() {
         trust = "user";
     } else if let Some(r) = r {
         let mut conflicts = 0;
@@ -164,7 +188,11 @@ pub fn decide(i: &Input) -> Decision {
                 continue;
             }
             if o.root.as_deref() == Some(r.root.as_str()) {
-                agreeing += 1;
+                if rv == "does_not_exist" && !o.complete {
+                    warnings.push("agreeing_incomplete");
+                } else {
+                    agreeing += 1;
+                }
             } else {
                 conflicts += 1;
             }
@@ -193,7 +221,6 @@ pub fn decide(i: &Input) -> Decision {
         match quorum_root {
             Some(q) if q == r.root => {
                 trust = "quorum";
-                // Kuorumi vendos: një zile në konflikt s'e bllokon, por shënohet.
                 if conflicts > 0 {
                     warnings.push("conflict_outvoted_by_quorum");
                 }
@@ -208,9 +235,15 @@ pub fn decide(i: &Input) -> Decision {
         errors.push("trust_below_min");
     }
 
-    // 3. Freskia (vetëm për gjendjen "aktuale"; një slot i kërkuar është historik).
+    // 3. Freskia. A14: me referencë vetëm-hash, sloti i serverit s'është i vërtetuar.
+    let slot_trusted = !a.is_some_and(|a| a.slot.is_none());
     if i.request_slot.is_some() {
         checks.freshness = "historical";
+    } else if !slot_trusted {
+        checks.freshness = "unverifiable";
+        if p.max_slot_lag.is_some() || p.min_slot.is_some() {
+            errors.push("freshness_unverifiable");
+        }
     } else if let Some(slot) = r.and_then(|r| r.slot) {
         if i.highest_seen.is_some_and(|h| slot < h) {
             checks.freshness = "rollback";
@@ -224,7 +257,12 @@ pub fn decide(i: &Input) -> Decision {
                     checks.freshness = "unknown";
                     errors.push("freshness_unknown");
                 }
-                Some(f) if f.saturating_sub(slot) > lag => {
+                // A12: përpara referencës: finaliteti s'konfirmohet.
+                Some(f) if slot > f => {
+                    checks.freshness = "ahead";
+                    errors.push("ahead_of_reference");
+                }
+                Some(f) if f - slot > lag => {
                     checks.freshness = "stale";
                     errors.push("stale");
                 }
@@ -233,23 +271,37 @@ pub fn decide(i: &Input) -> Decision {
         }
     }
 
-    // 4. Të dhënat nga RPC-ja (kur u kërkuan).
-    if let Some(m) = i.data {
-        checks.data = if m { "match" } else { "mismatch" };
-        if !m {
+    // 4. Të dhënat (A13: kur u kërkuan, vetëm përputhja jep sukses).
+    match i.data {
+        None => {}
+        Some(DataStatus::Match) => checks.data = "match",
+        Some(DataStatus::Mismatch) => {
+            checks.data = "mismatch";
             errors.push("data_mismatch");
+        }
+        Some(DataStatus::Unavailable) => {
+            checks.data = "unavailable";
+            errors.push("data_unavailable");
         }
     }
 
     let has = |set: &[&str]| set.iter().any(|e| errors.contains(e));
-    let verdict = if has(&["bad_response", "wrong_account", "wrong_slot", "proof_invalid"]) {
+    let verdict = if has(&["bad_response", "wrong_account", "wrong_slot", "anchor_slot_mismatch", "proof_invalid"]) {
         "invalid".to_string()
     } else if has(&["root_conflict", "quorum_other_root", "quorum_split"]) {
         "conflict".to_string()
     } else {
         rv.to_string()
     };
-    Decision { ok: errors.is_empty(), verdict, trust, agreeing, checks, errors, warnings }
+    let ok = errors.is_empty();
+    let raise_floor = if ok && slot_trusted && matches!(checks.freshness, "fresh" | "unchecked") { r.and_then(|r| r.slot) } else { None };
+    let mut w: Vec<&'static str> = Vec::new();
+    for x in warnings {
+        if !w.contains(&x) {
+            w.push(x);
+        }
+    }
+    Decision { ok, verdict, trust, agreeing, checks, errors, warnings: w, raise_floor }
 }
 
 /// Shpjegimi i shkurtër i çdo kodi, për daljen e veglave.
@@ -272,6 +324,11 @@ pub fn explain(code: &str) -> &'static str {
         "freshness_unknown" => "freskia s'u kontrollua (sloti i finalizuar s'u mor)",
         "stale" => "gjendje e vjetër: shumë slote pas të finalizuarit",
         "data_mismatch" => "të dhënat e RPC-së NUK përputhen me vulën",
+        "data_unavailable" => "krahasimi i kërkuar i të dhënave s'u krye (RPC-ja s'u përgjigj)",
+        "ahead_of_reference" => "sloti është përpara slotit të finalizuar të RPC-së: finaliteti s'konfirmohet",
+        "anchor_slot_mismatch" => "dëftesa s'është për slotin e referencës",
+        "freshness_unverifiable" => "me root vetëm-hash, sloti s'vërtetohet: freskia s'mund të provohet (jep --root-slot)",
+        "agreeing_incomplete" => "një zile pajtohet për root-in, por s'pohon pemë të plotë (s'numërohet për mungesë)",
         "quorum_epoch_unsupported" => "sloti në epokë të kaluar: tabela e stake-ut s'vlen për të",
         "conflict_outvoted_by_quorum" => "një zile jep root tjetër, por kuorumi vendosi",
         _ => "",
