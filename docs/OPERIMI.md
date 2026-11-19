@@ -220,9 +220,23 @@ detyrueshëm. Në hapje:
 Asnjë skedar s'ndryshohet në këto raste.
 
 **Log-u i firmave** (`attest_state`) e nis me rreshtin
-`# zilja-attest-log v1 genesis=… identity=… signer=…`. Hapja me genesis, identitet ose çelës
-tjetër refuzohet, dhe mesazhi emërton fushat që ndryshojnë. Kështu root-et e vjetra
-s'rifirmosen kurrë në një kontekst tjetër.
+`# zilja-attest-log v2 genesis=… identity=… signer=… floor=<slot>`. Hapja me genesis, identitet
+ose çelës tjetër refuzohet, dhe mesazhi emërton fushat që ndryshojnë.
+
+**Formati v2 (A03).** Çdo rresht është `<slot> <root hex> <firma hex>`, me firmën origjinale. Në
+hapje çdo rresht kontrollohet: format kanonik (hex i vogël), slote në rritje strikte, asnjë slot
+nën `floor`, dhe firma vërtetohet me çelësin e firmosjes. Çdo rresht i ndryshuar, i paplotë ose
+pa firmë refuzon hapjen, pa ndryshuar skedarin. Zilja s'rifirmos kurrë historinë: pas rinisjes
+shërben firmat origjinale. I vetmi rast i toleruar është rreshti i fundit pa `\n` (shkrim i
+ndërprerë, firma s'u kthye kurrë): ruhet në `<log>.tail-<offset>` dhe hiqet.
+
+`floor` është kufiri i historisë së kompaktuar: asnjë slot nën të s'firmoset. Edhe një slot
+para firmës së fundit refuzohet, sepse s'firmoset jashtë radhe.
+
+**Migrimi nga v1** bëhet vetë në hapjen e parë. Rreshtat v1 s'kanë firma, ndaj s'vërtetohen: s'shërbehen
+dhe s'rifirmosen. Origjinali ruhet te `<log>.v1-migrated`, dhe `floor` vendoset te sloti më i madh i
+v1 + 1. Pra pas migrimit asnjë slot i asaj historie s'firmoset më. Një log v1 me rresht të dëmtuar
+refuzohet.
 
 **Genesis-i real i validatorit:** përdor `genesis_path` = `<ledger>/genesis.bin`, sepse ky
 skedar i përket vetë rrjetit ku punon validatori. Kur jepen edhe `genesis_hash` edhe
