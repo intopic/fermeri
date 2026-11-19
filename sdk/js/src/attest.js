@@ -9,6 +9,7 @@ import { b58decode, hexToBytes, toU64 } from "./verifier.js";
 const enc = new TextEncoder();
 const ATTEST_DOMAIN = enc.encode("zilja/attest/v2");
 const AUTHORIZE_DOMAIN = enc.encode("zilja/authorize/v2");
+const REVOKE_DOMAIN = enc.encode("zilja/revoke/v1");
 /** Gjatësia maksimale e një autorizimi, në epoka (15 ≈ 30 ditë në mainnet). */
 export const MAX_AUTH_EPOCHS = 15n;
 
@@ -43,6 +44,34 @@ export function authorizeMessage(genesisHex, signerB58, fromEpoch, untilEpoch) {
   v.setBigUint64(d + 64, toU64(fromEpoch), true);
   v.setBigUint64(d + 72, toU64(untilEpoch), true);
   return m;
+}
+
+/** R5-1: mesazhi me të cilin identiteti revokon përgjithmonë çelësin `signer`. */
+export function revokeMessage(genesisHex, signerB58) {
+  const d = REVOKE_DOMAIN.length;
+  const m = new Uint8Array(d + 64);
+  m.set(REVOKE_DOMAIN, 0);
+  m.set(hex32(genesisHex), d);
+  const s = b58decode(signerB58);
+  if (s.length !== 32) throw new Error("signer duhet 32 bajt");
+  m.set(s, d + 32);
+  return m;
+}
+
+/**
+ * R5-1: revokim i vlefshëm? Firma e identitetit `validator` mbi revokeMessage(genesis, signer).
+ * Identiteti s'mund të revokojë veten.
+ */
+export async function verifyRevocation(genesisHex, r) {
+  try {
+    if (r == null || r.signer === r.validator) return false;
+    const id = b58decode(r.validator);
+    const sig = hexToBytes(r.signature);
+    if (id.length !== 32 || sig.length !== 64) return false;
+    return await ed25519Verify(id, sig, revokeMessage(genesisHex, r.signer));
+  } catch {
+    return false;
+  }
 }
 
 /** Periudha 1..=15 epoka dhe e mbulon `epoch`? (Hedh gabim për numra jo-u64.) */
@@ -120,8 +149,14 @@ export async function verifyAttestation(genesisHex, epoch, slot, rootHex, a) {
  * @param {string} rootHex
  * @param {{validator: string, signer?: string|null, authorization?: {fromEpoch: number|bigint, untilEpoch: number|bigint, signature: string}|null, signature: string}[]} atts
  * @param {Map<string, bigint>} table
+ * @param {{validator: string, signer: string, signature: string}[]} [revocations] R5-1: nga cilido
+ *   burim; secila verifikohet, të falsifikuarat injorohen.
  */
-export async function verifyQuorum(genesisHex, epoch, slot, rootHex, atts, table) {
+export async function verifyQuorum(genesisHex, epoch, slot, rootHex, atts, table, revocations = []) {
+  const revoked = new Set();
+  for (const r of revocations ?? []) {
+    if (await verifyRevocation(genesisHex, r)) revoked.add(`${r.validator}:${r.signer}`);
+  }
   const seen = new Set();
   let attested = 0n;
   let valid = 0;
@@ -134,6 +169,10 @@ export async function verifyQuorum(genesisHex, epoch, slot, rootHex, atts, table
     }
     const stake = table.get(a.validator);
     if (!stake) {
+      rejected++;
+      continue;
+    }
+    if (a.signer != null && a.signer !== a.validator && revoked.has(`${a.validator}:${a.signer}`)) {
       rejected++;
       continue;
     }

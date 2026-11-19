@@ -5,7 +5,7 @@
 
 import { readFileSync } from "node:fs";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { ZiljaClient, attestMessage, bytesToHex } from "../src/index.js";
+import { ZiljaClient, attestMessage, authorizeMessage, revokeMessage, bytesToHex } from "../src/index.js";
 import { checkAccount } from "../../../web/check-core.js";
 
 const v = JSON.parse(readFileSync(new URL("./vectors.json", import.meta.url), "utf8"));
@@ -46,6 +46,7 @@ function mock({ ziles, sol = {} }) {
       if (method === "getAccountProof") result = z.proof;
       else if (method === "getZiljaRoot") result = { slot: params[0] ?? z.proof.slot, root: z.root ?? z.proof.root };
       else if (method === "getZiljaAttestation") result = z.attest ?? null;
+      else if (method === "getZiljaRevocations") result = z.revocations;
     } else result = typeof sol[method] === "function" ? sol[method](params) : sol[method];
     if (result === undefined) return { json: async () => ({ error: { message: `s'ka ${method}` } }) };
     return { json: async () => ({ result }) };
@@ -94,6 +95,33 @@ const vals = [0, 1, 2].map(() => {
 // Stake 2 + 2 + 1: dy firmat e para = 80% (> 2/3).
 const voteAccounts = { current: vals.map((x, i) => ({ nodePubkey: x.b58, votePubkey: x.b58, epochVoteAccount: true, activatedStake: i < 2 ? 2_000_000_000 : 1_000_000_000 })), delinquent: [] };
 const att = (x, slot, root) => ({ slot, root, validator: x.b58, signer: null, authorization: null, genesis: null, signature: bytesToHex(sign(null, attestMessage(GEN, slot, root), x.privateKey)) });
+
+// R5-1: një revokim i shërbyer nga cilado zile (edhe një që s'ka asnjë firmë) e heq çelësin e
+// veçantë; një revokim i falsifikuar s'ka efekt.
+{
+  const keyOf = () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    return { b58: b58(new Uint8Array(publicKey.export({ format: "der", type: "spki" }).subarray(-32))), privateKey };
+  };
+  const s0 = keyOf();
+  const ded = { slot: 100, root: inc.root, validator: vals[0].b58, signer: s0.b58, genesis: null,
+    authorization: { fromEpoch: 0, untilEpoch: 15, signature: bytesToHex(sign(null, authorizeMessage(GEN, s0.b58, 0, 15), vals[0].privateKey)) },
+    signature: bytesToHex(sign(null, attestMessage(GEN, 100, inc.root), s0.privateKey)) };
+  const real = { validator: vals[0].b58, signer: s0.b58, signature: bytesToHex(sign(null, revokeMessage(GEN, s0.b58), vals[0].privateKey)) };
+  const fake = { ...real, signature: bytesToHex(sign(null, revokeMessage(GEN, s0.b58), vals[2].privateKey)) };
+  const run = async (revocations) => {
+    const [a, b, c] = [uniq(), uniq(), uniq()];
+    const ziles = { [a]: { proof: proofAt(100), attest: ded }, [b]: { proof: proofAt(100), attest: att(vals[1], 100, inc.root) }, [c]: { proof: proofAt(100), revocations } };
+    const f = mock({ ziles, sol: { getVoteAccounts: voteAccounts, getSlot: 100, getEpochInfo: { absoluteSlot: 100, slotIndex: 100, slotsInEpoch: 432000, epoch: 0 } } });
+    return new ZiljaClient({ endpoints: [a, b, c], solanaRpc: "http://sol", quorum: true, minTrust: "quorum", genesisHash: GEN, compareData: false, fetch: f }).verifyAccount(inc.pubkey);
+  };
+  const ok = await run([]);
+  const revoked = await run([real]);
+  const forged = await run([fake]);
+  expect("R5-1: pa revokim → kuorum", ok.ok === true && ok.trust === "quorum", JSON.stringify({ ok: ok.ok, trust: ok.trust, errors: ok.errors }));
+  expect("R5-1: revokim nga një zile tjetër → s'ka kuorum", revoked.trust !== "quorum", JSON.stringify({ ok: revoked.ok, trust: revoked.trust }));
+  expect("R5-1: revokim i falsifikuar → kuorum", forged.ok === true && forged.trust === "quorum", JSON.stringify({ ok: forged.ok, trust: forged.trust }));
+}
 
 // 4. Një zile në konflikt s'e bllokon një kuorum të vlefshëm (> 2/3) për root-in e dëftesës.
 {

@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use zilja_verifier::attest::{attest_message, Authorization, MAX_AUTH_EPOCHS};
+use zilja_verifier::attest::{attest_message, Authorization, Revocation, MAX_AUTH_EPOCHS};
 use zilja_verifier::Hash;
 
 /// Sa (slot, root) të fundit mbahen në skedar.
@@ -46,6 +46,9 @@ pub struct AttestOptions {
     pub authorization: Option<Authorization>,
     /// Skedari nga i cili erdhi autorizimi (`zilja-authorize`); rilexohet kur ndryshon.
     pub authorization_file: Option<PathBuf>,
+    /// R5-1: skedari i revokimeve (`zilja-authorize --revoke`), i çdo validatori; rilexohet kur
+    /// ndryshon dhe shërbehet te `getZiljaRevocations`.
+    pub revocations_file: Option<PathBuf>,
     pub genesis: Hash,
     /// Skedari i firmave (kundër firmosjes së dyfishtë). `None` vetëm në teste.
     pub log: Option<PathBuf>,
@@ -61,6 +64,36 @@ pub struct AttesterInfo {
     pub signer: [u8; 32],
     pub authorization: Option<Authorization>,
     pub genesis: Hash,
+    /// R5-1: revokimet e verifikuara për këtë genesis (të çdo validatori).
+    pub revocations: Vec<Revocation>,
+}
+
+/// R5-1: lexon skedarin e revokimeve: një objekt `{validator, signer, signature}` ose një listë
+/// e tyre. Kthen vetëm ato të vlefshme për `genesis` dhe numrin e të hedhurave.
+pub fn read_revocations_file(path: &Path, genesis: &Hash) -> Result<(Vec<Revocation>, usize), String> {
+    let at = |e: String| format!("{}: {e}", path.display());
+    let text = std::fs::read_to_string(path).map_err(|e| at(e.to_string()))?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| at(e.to_string()))?;
+    let list = match v {
+        serde_json::Value::Array(a) => a,
+        o @ serde_json::Value::Object(_) => vec![o],
+        _ => return Err(at("pritej një objekt ose listë revokimesh".into())),
+    };
+    let b58 = |x: &serde_json::Value| -> Option<[u8; 32]> { bs58::decode(x.as_str()?).into_vec().ok()?.try_into().ok() };
+    let mut out = Vec::new();
+    let mut bad = 0;
+    for r in &list {
+        let parsed = (|| Some(Revocation { validator: b58(&r["validator"])?, signer: b58(&r["signer"])?, signature: lower_hex(r["signature"].as_str()?)? }))();
+        match parsed {
+            Some(rv) if rv.valid(genesis) => {
+                if !out.contains(&rv) {
+                    out.push(rv);
+                }
+            }
+            _ => bad += 1,
+        }
+    }
+    Ok((out, bad))
 }
 
 /// Lexon skedarin që nxjerr `zilja-authorize` (v2):
@@ -102,6 +135,16 @@ pub struct Attester {
     /// Përmbajtja e skedarit të autorizimit kur u lexua së fundi.
     auth_seen: Option<Vec<u8>>,
     auth_checked: Option<std::time::Instant>,
+    /// R5-1: revokimet e verifikuara dhe gjendja e rilexuar e skedarit të tyre.
+    revocations: Vec<Revocation>,
+    rev_seen: Option<Vec<u8>>,
+    rev_checked: Option<std::time::Instant>,
+    /// Ky çelës u revokua gjatë punës: s'firmos më asgjë.
+    self_revoked: bool,
+}
+
+fn rev_bytes(o: &AttestOptions) -> Option<Vec<u8>> {
+    o.revocations_file.as_ref().and_then(|p| std::fs::read(p).ok())
 }
 
 fn auth_bytes(o: &AttestOptions) -> Option<Vec<u8>> {
@@ -144,6 +187,21 @@ impl Attester {
         } else if opts.identity.is_some_and(|id| id != signer) {
             return Err("një çelës i veçantë firmosjeje kërkon autorizim nga identiteti".into());
         }
+        // R5-1: revokimet; një çelës i revokuar nga identiteti i vet s'ngarkohet.
+        let revocations = match &opts.revocations_file {
+            None => Vec::new(),
+            Some(p) => {
+                let (r, bad) = read_revocations_file(p, &opts.genesis)?;
+                if bad > 0 {
+                    log::warn!("zilja: {}: {bad} revokime të pavlefshme u injoruan", p.display());
+                }
+                r
+            }
+        };
+        let identity = opts.identity.unwrap_or(signer);
+        if revocations.iter().any(|r| r.validator == identity && r.signer == signer) {
+            return Err("ky çelës firmosjeje është revokuar nga identiteti (attest_revocations): përdor një çelës të ri".into());
+        }
         // P-04: lock-u para leximit ose shkrimit të log-ut.
         let lock = match &opts.log {
             Some(p) => Some(lock_exclusive(&lock_path(p))?),
@@ -151,7 +209,8 @@ impl Attester {
         };
         let Some(p) = opts.log.clone() else {
             let auth_seen = auth_bytes(&opts);
-            return Ok(Attester { opts, _lock: lock, signed: BTreeMap::new(), floor: 0, file: None, lines: 0, refused: 0, auth_seen, auth_checked: None });
+            let rev_seen = rev_bytes(&opts);
+            return Ok(Attester { opts, _lock: lock, signed: BTreeMap::new(), floor: 0, file: None, lines: 0, refused: 0, auth_seen, auth_checked: None, revocations, rev_seen, rev_checked: None, self_revoked: false });
         };
         let ctx = context_line(&opts);
         let text = match std::fs::read(&p) {
@@ -248,12 +307,55 @@ impl Attester {
         };
         let file = Some(OpenOptions::new().append(true).open(&p).map_err(|e| e.to_string())?);
         let auth_seen = auth_bytes(&opts);
-        Ok(Attester { opts, _lock: lock, signed, floor, file, lines, refused: 0, auth_seen, auth_checked: None })
+        let rev_seen = rev_bytes(&opts);
+        Ok(Attester { opts, _lock: lock, signed, floor, file, lines, refused: 0, auth_seen, auth_checked: None, revocations, rev_seen, rev_checked: None, self_revoked: false })
     }
 
     /// Rinovimi pa rinisje: kur përmbajtja e skedarit të autorizimit ndryshon (kontrollohet më së
     /// shumti një herë në sekondë), lexohet dhe verifikohet; vetëm një autorizim i vlefshëm për të njëjtin identitet,
     /// çelës dhe genesis e zëvendëson të vjetrin. Kthen `true` kur autorizimi ndryshoi.
+    /// R5-1: rilexon revokimet kur skedari ndryshon (më së shumti një herë në sekondë). Nëse ky
+    /// çelës revokohet, ndalon firmosjen menjëherë. Kthen `true` kur lista ndryshoi.
+    pub fn refresh_revocations(&mut self) -> bool {
+        let Some(path) = self.opts.revocations_file.clone() else { return false };
+        let now = std::time::Instant::now();
+        if self.rev_checked.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(1)) {
+            return false;
+        }
+        self.rev_checked = Some(now);
+        let m = rev_bytes(&self.opts);
+        if m == self.rev_seen {
+            return false;
+        }
+        self.rev_seen = m;
+        match read_revocations_file(&path, &self.opts.genesis) {
+            Ok((r, bad)) => {
+                if bad > 0 {
+                    log::warn!("zilja: {}: {bad} revokime të pavlefshme u injoruan", path.display());
+                }
+                // Revokimet s'hiqen kurrë gjatë punës: një skedar më i shkurtër s'e "çrevokon" një çelës.
+                let mut changed = false;
+                for x in r {
+                    if !self.revocations.contains(&x) {
+                        self.revocations.push(x);
+                        changed = true;
+                    }
+                }
+                let signer = self.opts.key.verifying_key().to_bytes();
+                let identity = self.opts.identity.unwrap_or(signer);
+                if !self.self_revoked && self.revocations.iter().any(|r| r.validator == identity && r.signer == signer) {
+                    self.self_revoked = true;
+                    log::error!("zilja: ky çelës firmosjeje u revokua nga identiteti: firmosja ndaloi (vendos një çelës të ri)");
+                }
+                changed
+            }
+            Err(e) => {
+                log::error!("zilja: revokimet s'u lexuan ({e}); mbeten të mëparshmet");
+                false
+            }
+        }
+    }
+
     pub fn refresh_authorization(&mut self) -> bool {
         let Some(path) = self.opts.authorization_file.clone() else { return false };
         let now = std::time::Instant::now();
@@ -296,6 +398,7 @@ impl Attester {
             signer,
             authorization: self.opts.authorization,
             genesis: self.opts.genesis,
+            revocations: self.revocations.clone(),
         }
     }
 
@@ -308,6 +411,10 @@ impl Attester {
     /// Firmos (slot, root), ose refuzon kur kjo do të ishte firmosje e dyfishtë ose kur sloti s'mund
     /// të dihet që s'është firmosur (nën kufirin, ose para firmës së fundit).
     pub fn sign(&mut self, slot: u64, root: &Hash) -> Result<[u8; 64], String> {
+        if self.self_revoked {
+            self.refused += 1;
+            return Err("çelësi i firmosjes është revokuar: s'firmos".into());
+        }
         if let Some((prev, sig)) = self.signed.get(&slot) {
             if prev != root {
                 self.refused += 1;
@@ -420,7 +527,7 @@ mod tests {
     use super::*;
 
     fn opts(log: Option<PathBuf>) -> AttestOptions {
-        AttestOptions { key: SigningKey::from_bytes(&[3; 32]), identity: None, authorization: None, authorization_file: None, genesis: [1; 32], log, adopt_legacy: false }
+        AttestOptions { key: SigningKey::from_bytes(&[3; 32]), identity: None, authorization: None, authorization_file: None, revocations_file: None, genesis: [1; 32], log, adopt_legacy: false }
     }
 
     #[test]
@@ -445,7 +552,7 @@ mod tests {
     }
 
     fn dedicated(id: &SigningKey, key: &SigningKey, g: Hash, a: Option<Authorization>) -> AttestOptions {
-        AttestOptions { key: key.clone(), identity: Some(id.verifying_key().to_bytes()), authorization: a, authorization_file: None, genesis: g, log: None, adopt_legacy: false }
+        AttestOptions { key: key.clone(), identity: Some(id.verifying_key().to_bytes()), authorization: a, authorization_file: None, revocations_file: None, genesis: g, log: None, adopt_legacy: false }
     }
 
     #[test]
@@ -562,6 +669,57 @@ mod tests {
         at.auth_checked = None;
         assert!(at.refresh_authorization(), "mtime i njëjtë, përmbajtje tjetër");
         assert_eq!(at.info().authorization.unwrap().from_epoch, 20);
+    }
+
+    /// R5-1: një çelës i revokuar s'ngarkohet; një revokim që vjen gjatë punës e ndalon firmosjen
+    /// menjëherë; një revokim i falsifikuar injorohet; një skedar më i shkurtër s'e "çrevokon".
+    #[test]
+    fn revocation_stops_signing_and_cannot_be_forged_or_undone() {
+        use zilja_verifier::attest::revoke_message;
+        let dir = tempfile::tempdir().unwrap();
+        let rf = dir.path().join("revocations.json");
+        let id = SigningKey::from_bytes(&[9; 32]);
+        let key = SigningKey::from_bytes(&[3; 32]);
+        let g = [1u8; 32];
+        let rev = |by: &SigningKey, signer: &SigningKey| {
+            serde_json::json!({
+                "validator": bs58::encode(by.verifying_key().to_bytes()).into_string(),
+                "signer": bs58::encode(signer.verifying_key().to_bytes()).into_string(),
+                "signature": hex::encode(by.sign(&revoke_message(&g, &signer.verifying_key().to_bytes())).to_bytes()),
+            })
+        };
+        let other_id = SigningKey::from_bytes(&[7; 32]);
+        let other_key = SigningKey::from_bytes(&[6; 32]);
+        let thief = SigningKey::from_bytes(&[5; 32]);
+        // Fillimisht: revokim i një validatori tjetër (shërbehet) + një i falsifikuar për ne (injorohet).
+        let mut forged = rev(&thief, &key);
+        forged["validator"] = serde_json::json!(bs58::encode(id.verifying_key().to_bytes()).into_string());
+        std::fs::write(&rf, serde_json::json!([rev(&other_id, &other_key), forged]).to_string()).unwrap();
+        let mk = || {
+            let mut o = dedicated(&id, &key, g, Some(auth(&id, &g, &key, 800, 815)));
+            o.revocations_file = Some(rf.clone());
+            o
+        };
+        let mut at = Attester::open(mk()).unwrap();
+        assert_eq!(at.info().revocations.len(), 1, "vetëm revokimi i vlefshëm shërbehet");
+        assert!(at.sign(10, &[1; 32]).is_ok());
+        // Gjatë punës identiteti ynë revokon çelësin: firmosja ndalon menjëherë.
+        std::fs::write(&rf, serde_json::json!([rev(&other_id, &other_key), rev(&id, &key)]).to_string()).unwrap();
+        at.rev_checked = None;
+        assert!(at.refresh_revocations());
+        assert!(at.sign(11, &[1; 32]).is_err());
+        assert_eq!(at.info().revocations.len(), 2);
+        // Një skedar pa revokimin s'e rikthen çelësin.
+        std::fs::write(&rf, "[]").unwrap();
+        at.rev_checked = None;
+        at.refresh_revocations();
+        assert!(at.sign(12, &[1; 32]).is_err());
+        assert_eq!(at.info().revocations.len(), 2);
+        drop(at);
+        // Pas rinisjes me revokimin në skedar: s'ngarkohet.
+        std::fs::write(&rf, serde_json::json!(rev(&id, &key)).to_string()).unwrap();
+        let e = Attester::open(mk()).err().unwrap();
+        assert!(e.contains("revokuar"), "{e}");
     }
 
     #[test]

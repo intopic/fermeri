@@ -204,12 +204,14 @@ print(s)' "$LEDGER/genesis.bin")
 solana-keygen new --force --no-bip39-passphrase -s -o "$WORK/attest-signer.json" >/dev/null
 # v2: autorizimi vlen për 15 epoka nga epoka aktuale (marrë para ndalimit).
 "$ROOT/target/release/zilja-authorize" "$LEDGER/validator-keypair.json" "$WORK/attest-signer.json" "$GENESIS" "$EPOCH" > "$WORK/zilja-authorization.json"
+echo "[]" > "$WORK/revocations.json"
 python3 - "$WORK/zilja.json" "$WORK" <<'PY'
 import json, sys
 p, w = sys.argv[1], sys.argv[2]
 c = json.load(open(p))
 c["attest_keypair"] = f"{w}/attest-signer.json"
 c["attest_authorization"] = f"{w}/zilja-authorization.json"
+c["attest_revocations"] = f"{w}/revocations.json"
 # P-05: çelës tjetër → log tjetër firmash (log-u i vjetër është i lidhur me çelësin e vjetër).
 c["attest_state"] = f"{w}/attest-dedicated.log"
 json.dump(c, open(p, "w"), indent=1)
@@ -325,6 +327,31 @@ print("   firma v2: genesis", g[:8]+"…, çelës i veçantë", r["signer"][:8]+
   echo "-- SDK me kuorum (minTrust=quorum):"
   node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --rpc "$RPC" --quorum --min-trust quorum
   [ "$(metric attest_refused_total)" = "0" ] || { echo "GABIM: firma të refuzuara pas rinisjes (root tjetër për të njëjtin slot?)"; exit 1; }
+  # R5-1: revokimi i firmosur nga identiteti: zilja e shërben menjëherë (pa rinisje), ndalon së
+  # firmosuri me atë çelës, dhe kuorumi s'numërohet më, edhe brenda periudhës së autorizimit.
+  SIGNER=$(solana-keygen pubkey "$WORK/attest-signer.json")
+  "$ROOT/target/release/zilja-authorize" --revoke "$LEDGER/validator-keypair.json" "$SIGNER" "$GENESIS" 2>/dev/null > "$WORK/rev.tmp"
+  python3 -c 'import json,sys; json.dump([json.load(open(sys.argv[1]))], open(sys.argv[2],"w"))' "$WORK/rev.tmp" "$WORK/revocations.json"
+  nrev() { curl -s --noproxy '*' -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getZiljaRevocations"}' "$ZILJA" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["result"]))'; }
+  for _ in $(seq 1 30); do [ "$(nrev)" = "1" ] && break; sleep 1; done
+  [ "$(nrev)" = "1" ] || { echo "GABIM: revokimi s'u shërbye pa rinisje"; exit 1; }
+  if "$ROOT/target/release/zilja-quorum" "$RPC" "$ZILJA" --genesis "$GENESIS" > "$WORK/quorum-revoked.txt"; then
+    cat "$WORK/quorum-revoked.txt"; echo "GABIM: kuorumi u pranua me çelës të revokuar"; exit 1
+  fi
+  for _ in $(seq 1 30); do [ "$(metric attest_refused_total)" != "0" ] && break; sleep 1; done
+  [ "$(metric attest_refused_total)" != "0" ] || { echo "GABIM: zilja vazhdoi të firmosë me çelës të revokuar"; exit 1; }
+  echo "   ✅ revokimi: shërbehet pa rinisje, kuorumi s'numërohet, zilja ndalon së firmosuri (R5-1)"
+  # Procedura (OPERIMI.md): çelës i ri + autorizim i ri + log i ri. Me çelësin e revokuar plugin-i
+  # s'ngarkohet më (hapat e mëtejshëm e ringarkojnë).
+  solana-keygen new --force --no-bip39-passphrase -s -o "$WORK/attest-signer2.json" >/dev/null
+  "$ROOT/target/release/zilja-authorize" "$LEDGER/validator-keypair.json" "$WORK/attest-signer2.json" "$GENESIS" "$EPOCH" 2>/dev/null > "$WORK/zilja-authorization2.json"
+  python3 - "$WORK/zilja.json" "$WORK" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1])); w = sys.argv[2]
+c["attest_keypair"] = f"{w}/attest-signer2.json"; c["attest_authorization"] = f"{w}/zilja-authorization2.json"
+c["attest_state"] = f"{w}/attest-dedicated2.log"
+json.dump(c, open(sys.argv[1], "w"), indent=1)
+PY
 else
   echo "$ATT" | grep -q "s'firmos" || { echo "GABIM: pema jo e plotë s'duhet të firmosë: $ATT"; exit 1; }
   echo "   ✅ pema jo e plotë (nisur nga genesis) nuk firmos (F-10)"

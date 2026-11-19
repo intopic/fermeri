@@ -62,6 +62,9 @@ fn run() -> Result<bool, String> {
         return Ok(false);
     }
     let q = quorum_by_root(ziljas, view.epoch, slot, &g, table);
+    if q.revoked > 0 {
+        println!("revokime të vlefshme nga zilet: {} (firmat e atyre çelësave s'numërohen)", q.revoked);
+    }
     for (z, e) in &q.skipped {
         println!("  {z}: s'numërohet ({e})");
     }

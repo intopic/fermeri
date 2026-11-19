@@ -51,6 +51,10 @@ pub struct Config {
     /// Rilexohet kur ndryshon: rinovimi s'kërkon rinisje të validatorit.
     #[serde(default)]
     pub attest_authorization: Option<PathBuf>,
+    /// R5-1: revokimet e çelësave të firmosjes (`zilja-authorize --revoke`), një objekt ose listë, i
+    /// çdo validatori. Shërbehen te `getZiljaRevocations`; rilexohen kur skedari ndryshon.
+    #[serde(default)]
+    pub attest_revocations: Option<PathBuf>,
     /// Hash-i i genesis-it (base58) që hyn në çdo firmë. Ose `genesis_path`.
     #[serde(default)]
     pub genesis_hash: Option<String>,
@@ -142,6 +146,7 @@ fn attest_options(cfg: &Config, keypair: &std::path::Path) -> Result<zilja_node:
         identity,
         authorization,
         authorization_file: cfg.attest_authorization.clone(),
+        revocations_file: cfg.attest_revocations.clone(),
         genesis,
         log: Some(log),
         adopt_legacy: cfg.attest_adopt_legacy,

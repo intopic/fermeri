@@ -146,3 +146,12 @@ Auditimi u bë mbi `46b7a60` kundër `anza-xyz/agave@a203300` (`v4.3.2`). Çdo g
 **Ndryshim që thyen përputhshmërinë:** `authorization` në `getZiljaAttestation` është objekt
 `{fromEpoch, untilEpoch, signature}`; skedari i `zilja-authorize` ka `version: 2`; `zilja-authorize`
 kërkon `from_epoch`. JS: `verifyAttestation` / `verifyQuorum` marrin `epoch` si argument të dytë.
+
+### R5-1: revokimi i firmosur i çelësit
+
+Pas R4-2 një çelës i vjedhur vlente deri në fund të periudhës (≤ 15 epoka). Tani identiteti mund ta
+revokojë menjëherë me `"zilja/revoke/v1" ‖ genesis ‖ signer`. Revokimi e vërteton veten, shërbehet
+nga cilado zile (`getZiljaRevocations`), dhe klientët (Rust, JS, `zilja-quorum`) s'e numërojnë më
+atë çelës. Prova: `revocation_removes_signer_immediately_and_cannot_be_forged`,
+`revocation_stops_signing_and_cannot_be_forged_or_undone`, vektorët `dedicated_signers_revoked`,
+`*_forged_revocation`, `*_revocation_other_chain`, `clients.test.mjs` R5-1, e2e hapi 6.

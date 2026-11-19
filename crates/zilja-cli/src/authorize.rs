@@ -11,12 +11,22 @@
 //! një skedar të përkohshëm dhe zhvendose (`mv`) mbi të vjetrin, që plugin-i të mos lexojë gjysmë
 //! skedari (edhe atëherë, një skedar i pavlefshëm injorohet dhe mbetet autorizimi i mëparshëm).
 //!
+//! Revokimi (R5-1), kur çelësi i firmosjes vidhet ose del nga përdorimi:
+//!
+//! ```text
+//! zilja-authorize --revoke <identity-keypair.json> <signer_pubkey base58> <genesis_hash> > revocation.json
+//! ```
+//!
+//! Revokimi e vërteton veten (firmë e identitetit) dhe është i përhershëm. Vendose te
+//! `attest_revocations` (një objekt ose listë) në çdo zile që mund ta shërbejë; klientët e marrin
+//! nga cilado zile dhe s'e numërojnë më atë çelës, edhe brenda periudhës së autorizimit.
+//!
 //! Çelësi i identitetit përdoret vetëm këtu; zilja firmos pastaj vetëm me çelësin e veçantë. Një
 //! çelës i vjedhur vlen kështu vetëm deri në fund të periudhës.
 
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
-use zilja_verifier::attest::{authorize_message, MAX_AUTH_EPOCHS};
+use zilja_verifier::attest::{authorize_message, revoke_message, MAX_AUTH_EPOCHS};
 
 fn keypair(path: &str) -> Result<SigningKey, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
@@ -32,6 +42,30 @@ fn keypair(path: &str) -> Result<SigningKey, String> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let run = || -> Result<(), String> {
+        if args.first().map(String::as_str) == Some("--revoke") {
+            let [_, id, signer, genesis] = args.as_slice() else {
+                return Err("përdorimi: zilja-authorize --revoke <identity-keypair.json> <signer_pubkey> <genesis_hash>".into());
+            };
+            let id = keypair(id)?;
+            let signer: [u8; 32] = bs58::decode(signer).into_vec().map_err(|e| e.to_string())?.try_into().map_err(|_| "signer duhet 32 bajt")?;
+            if signer == id.verifying_key().to_bytes() {
+                return Err("identiteti s'mund të revokojë veten; revokohet vetëm një çelës i veçantë".into());
+            }
+            let g: [u8; 32] = bs58::decode(genesis).into_vec().map_err(|e| e.to_string())?.try_into().map_err(|_| "genesis duhet 32 bajt")?;
+            let sig = id.sign(&revoke_message(&g, &signer)).to_bytes();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "validator": bs58::encode(id.verifying_key().to_bytes()).into_string(),
+                    "signer": bs58::encode(signer).into_string(),
+                    "genesis": genesis,
+                    "signature": hex::encode(sig),
+                }))
+                .unwrap()
+            );
+            eprintln!("revokimi është i përhershëm: shtoje te `attest_revocations` në zilet tuaja");
+            return Ok(());
+        }
         let usage = || format!("përdorimi: zilja-authorize <identity-keypair.json> <signing-keypair.json> <genesis_hash> <from_epoch> [epoka 1..={MAX_AUTH_EPOCHS}, parazgjedhje {MAX_AUTH_EPOCHS}]");
         let (id, signer, genesis, from, n) = match args.as_slice() {
             [a, b, c, d] => (a, b, c, d, None),
