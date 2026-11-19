@@ -8,19 +8,13 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde_json::{json, Value};
 use zilja_node::rpc::handle_jsonrpc;
 use zilja_node::{Event, Service};
-use zilja_verifier::wire::{parse_u64_dec, MAX_SAFE_JSON_INT};
+use zilja_verifier::wire::{decode_hex_lower, hex_lower, parse_u64_dec, MAX_SAFE_JSON_INT};
 use zilja_verifier::{verify_account, AccountMeta, Key, Proof, Verdict};
 
 /// Rregulli kanonik: lexon `account` sipas `zilja_verifier::wire`; çdo shkelje = "invalid".
 fn expect(resp: &Value) -> &'static str {
     let run = || -> Option<Verdict> {
-        let h32 = |v: &Value| -> Option<[u8; 32]> {
-            let s = v.as_str()?;
-            if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return None;
-            }
-            hex::decode(s).ok()?.try_into().ok()
-        };
+        let h32 = |v: &Value| -> Option<[u8; 32]> { hex_lower::<32>(v.as_str()?) };
         let u = |v: &Value| match v {
             Value::String(s) => parse_u64_dec(s),
             Value::Number(n) => n.as_u64().filter(|n| *n <= MAX_SAFE_JSON_INT),
@@ -28,11 +22,7 @@ fn expect(resp: &Value) -> &'static str {
         };
         let root = h32(&resp["root"])?;
         let pk: Key = bs58::decode(resp["pubkey"].as_str()?).into_vec().ok()?.try_into().ok()?;
-        let proof_hex = resp["proof"].as_str()?;
-        if proof_hex.len() % 2 != 0 || !proof_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
-        }
-        let proof = Proof::from_bytes(&hex::decode(proof_hex).ok()?).ok()?;
+        let proof = Proof::from_bytes(&decode_hex_lower(resp["proof"].as_str()?)?).ok()?;
         let a = &resp["account"];
         let meta = if a.is_null() {
             None
@@ -127,6 +117,20 @@ fn main() {
             _ => ("lamports_off_by_one", with("lamports", json!((lam ^ 1).to_string()))),
         };
         push(name, resp);
+    }
+    // A20: hex me shkronja të mëdha (të njëjtat bajte) s'është kanonik: refuzohet kudo.
+    for k in keys.iter().take(3) {
+        let r = get(k);
+        let up = |f: &str| {
+            let mut r2 = r.clone();
+            r2[f] = json!(r[f].as_str().unwrap().to_uppercase());
+            r2
+        };
+        push("root_uppercase", up("root"));
+        push("proof_uppercase", up("proof"));
+        let mut r2 = r.clone();
+        r2["account"]["dataHash"] = json!(r["account"]["dataHash"].as_str().unwrap().to_uppercase());
+        push("dataHash_uppercase", r2);
     }
     let n = cases.len();
     println!(
