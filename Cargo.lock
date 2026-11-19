@@ -4804,6 +4804,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zilja-aggregator"
+version = "0.2.0"
+dependencies = [
+ "bs58",
+ "ed25519-dalek",
+ "hex",
+ "log",
+ "serde_json",
+ "zilja-cli",
+ "zilja-node",
+ "zilja-tree",
+ "zilja-verifier",
+]
+
+[[package]]
 name = "zilja-bench"
 version = "0.2.0"
 dependencies = [
