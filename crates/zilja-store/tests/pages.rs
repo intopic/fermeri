@@ -597,6 +597,7 @@ fn clustered_body() {
 /// 12 farë të ndryshme: PageTree, DiskTree dhe pema në RAM japin të njëjtat root-e, dëftesa
 /// (edhe historike) dhe numra, me snapshot-e të rinj në mes dhe fshirje të gjithçkaje.
 #[test]
+#[cfg(feature = "rocksdb")]
 fn three_way_differential_many_seeds() {
     for seed in 0..12u64 {
         let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
@@ -757,4 +758,57 @@ fn unsynced_loss_of_last_records_within_slack() {
             t.verify_integrity().unwrap();
         }
     }
+}
+
+/// Hapi 8: faqet e një thellësie ndërtohen paralelisht, por vendosja mbetet sekuenciale. Nga e
+/// njëjta gjendje në disk, i njëjti varg slotesh duhet të japë skedarë bajt për bajt të njëjtë me 1
+/// ose me shumë fije, dhe root-e të njëjta me pemën në RAM. (Paketimi i ndërtimit nga snapshot-i
+/// varet nga radha e fijeve dhe s'është pjesë e këtij testi; root-i i tij është gjithsesi i njëjtë.)
+#[test]
+fn parallel_page_build_is_byte_identical() {
+    fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            if e.file_type().unwrap().is_file() && e.file_name() != "LOCK" {
+                std::fs::copy(e.path(), to.join(e.file_name())).unwrap();
+            }
+        }
+    }
+    let base = tempfile::tempdir().unwrap();
+    let mut rng = StdRng::seed_from_u64(808);
+    let mut keys = Vec::new();
+    let snap: Vec<Update> = random_batch(&mut rng, &mut keys, 30_000).into_iter().filter(|(_, m)| m.is_some()).collect();
+    {
+        let mut t = PageTree::open(base.path(), opts(4, 12)).unwrap();
+        t.stage_snapshot(1, snap.clone()).unwrap();
+        t.finish_snapshot(1, true).unwrap();
+    }
+    let batches: Vec<Vec<Update>> = (0..12).map(|_| random_batch(&mut rng, &mut keys, 3000)).collect();
+    let run = |threads: usize| -> (Vec<u8>, Vec<u8>) {
+        let dir = tempfile::tempdir().unwrap();
+        copy_dir(base.path(), dir.path());
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+        pool.install(|| {
+            let mut t = PageTree::open(dir.path(), opts(4, 12)).unwrap();
+            let mut mem = Tree::from_accounts(snap.clone());
+            assert_eq!(t.root(), mem.root());
+            for (i, batch) in batches.iter().enumerate() {
+                let slot = 2 + i as u64;
+                t.apply_slot(slot, batch.clone(), None).unwrap();
+                mem.apply_batch(batch.clone());
+                assert_eq!(t.root(), mem.root(), "{threads} fije, sloti {slot}");
+            }
+            t.verify_integrity().unwrap();
+            for k in keys.iter().step_by(53) {
+                check_proof(&t, &mem, k, None);
+            }
+        });
+        let pages = std::fs::read(dir.path().join("pages.dat")).unwrap();
+        let log = std::fs::read(dir.path().join("meta.log")).unwrap();
+        (pages, log)
+    };
+    let one = run(1);
+    let many = run(4);
+    assert!(one.0 == many.0, "pages.dat ndryshon sipas numrit të fijeve");
+    assert!(one.1 == many.1, "meta.log ndryshon sipas numrit të fijeve");
 }

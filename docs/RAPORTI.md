@@ -203,6 +203,34 @@ validatorin. Hollësitë janë te [`AUDIT-FIXES.md`](AUDIT-FIXES.md). Numrat që
 | Disk, 2M llogari, 3000 ndryshime/slot (2 vCPU) | 91.8 ms p50 | 93.8 ms p50 (zhurmë); dëftesat s'presin më zbatimin |
 | Fuzz (dëftesa, disk, RPC, JS = Rust) | — | 1 orë pa gjetje, pas 4 rregullimeve të kodimit kanonik |
 
+## Hapi 8: optimizimi i faqeve (pa ndryshim formati) ✅
+
+5M llogari, 300 slote × 5 000 ndryshime, `pages`, fsync çdo slot, 2 vCPU / 7 GB. Tre matje të
+alternuara për secilin, mediana:
+
+| Matja | Para (`aad8253`) | Pas |
+|---|---|---|
+| Zbatimi p50 | 275 ms | 275 ms (261–277, brenda zhurmës) |
+| Zbatimi p99 | 410 ms | **360 ms** (−12%) |
+| Ndryshime/s | 18.0k | 18.4k |
+| Shkrimi në disk për slot | 16.9 MB | 16.9 MB (i njëjtë: formati s'ndryshoi) |
+| RSS | 318 MB | 315 MB |
+| Disku për llogari | 567 B | 567 B |
+
+Fazat brenda shkrimit (120 slote, mediana në ms): faqet 56 → 45, përgatitja e hartës 18 → 14,
+pas shkrimit 7.3 → 0.4; pwrite (9) dhe fsync (32) mbeten njësoj.
+
+Çfarë ndryshoi: (1) faqet e një thellësie ndërtohen dhe kodohen paralelisht, kurse vendosja në
+blloqe mbetet sekuenciale (skedarët dalin bajt për bajt të njëjtë me 1 ose 4 fije); (2) faqet e
+fiksuara ripërdorin `Arc`-un, pa kopje të dytë, dhe krijohen në fillin që bën commit (ndryshe RSS
+rritej ~50 MB nga arenat e malloc-ut); (3) nyjet e faqeve të fiksuara të besuara s'rihash-ohen;
+faqet nga disku kontrollohen si më parë.
+
+Çfarë s'ndryshoi dhe pse: në slotet e vona kostoja kryesore është leximi i faqeve që s'janë në
+RAM (~15k lexime/slot), zhvendosja e faqeve për ripërdorimin e hapësirës (~2k faqe/slot) dhe
+fsync-u, që varet nga bajtet e shkruara. Këto kërkojnë disk NVMe, më shumë bërthama, ose ndryshim
+politike/formati, jo optimizim kodi.
+
 ## Çfarë mbetet (kërkon një server të vërtetë)
 
 1. **Node mainnet ose testnet me Ziles për 72 orë:** CPU shtesë, numri real i ndryshimeve për slot, koha e nisjes nga snapshot-i i plotë.

@@ -775,6 +775,8 @@ struct PagePrepared {
     t_pre: std::time::Duration,
     t_tree: std::time::Duration,
     t_write: std::time::Duration,
+    /// Brenda shkrimit: ndërtimi + kodimi i faqeve, `pwrite`, fsync (vetëm për `ZILJA_PROFILE`).
+    t_split: [std::time::Duration; 5],
     pages: usize,
     moved: usize,
 }
@@ -784,6 +786,9 @@ type DirtyPage = (NPath, Vec<(usize, Option<Node>)>);
 
 /// Faqja e versionit të fundit në një rrugë: `None` = s'ka faqe aty.
 type WorkPage = Option<(PageId, Arc<FPage>)>;
+/// Faqja e ndërtuar në `prepare_slot`: numri i vjetër (për t'u liruar) dhe faqja e re me bajtet e
+/// koduara (`None` = faqja u zbraz).
+type BuiltPage = (Option<PageId>, Option<(FPage, Vec<u8>)>);
 
 pub struct PageTree {
     dir: PathBuf,
@@ -1708,10 +1713,19 @@ impl Source for PageTree {
         }
         let root = page_root_of(p);
         let (_, idx) = page_pos(p, root.depth);
-        let node = self.page_at_path(&root)?.and_then(|(_, pg)| pg.nodes.slots[idx].clone());
+        // Hapi 8: faqet e fiksuara (të krijuara nga ky proces ose të verifikuara me `check_page`
+        // gjatë ngarkimit) janë të besuara, ndaj nyjet e tyre s'rihash-ohen. Faqet e lexuara nga
+        // disku kontrollohen nyje për nyje si më parë (F-04).
+        let (node, trusted) = match self.page_at_path(&root)? {
+            None => (None, false),
+            Some((id, pg)) => {
+                let trusted = self.pinned.get(&id).is_some_and(|q| Arc::ptr_eq(q, &pg));
+                (pg.nodes.slots[idx].clone(), trusted)
+            }
+        };
         match node {
             None => Err(format!("nyja në thellësinë {} mungon ose s'lexohet nga disku", p.depth)),
-            Some(n) if n.to_ref() != rf => Err(format!("nyja në thellësinë {} nuk përputhet me hash-in e prindit", p.depth)),
+            Some(n) if (!trusted || cfg!(debug_assertions)) && n.to_ref() != rf => Err(format!("nyja në thellësinë {} nuk përputhet me hash-in e prindit", p.depth)),
             Some(n) => Ok(Some((0, n))),
         }
     }
@@ -1887,52 +1901,92 @@ impl StateTree for PageTree {
             order.sort_unstable_by(|a, b| b.0.depth.cmp(&a.0.depth).then(a.0.bits.cmp(&b.0.bits)));
             let pos: HashMap<PKey, usize> = order.iter().enumerate().map(|(i, (p, _))| (p.enc(), i)).collect();
 
-            let mut news: Vec<Option<FPage>> = Vec::with_capacity(order.len());
+            let mut news: Vec<Option<Arc<FPage>>> = Vec::with_capacity(order.len());
             let mut ids: Vec<Option<PageId>> = Vec::with_capacity(order.len());
             let mut freed: Vec<PageId> = Vec::new();
             let mut pk = Packer::new(&self.alloc.lock().unwrap());
+            let mut t_split = [std::time::Duration::ZERO; 5];
+            t_split[3] = t0.elapsed() - t_tree;
             let r = (|| -> Result<(), String> {
-                for (root, changes) in &order {
-                    let old = self.page_at_path(root)?;
-                    let mut pg = old.as_ref().map_or_else(|| FPage::new(*root), |(_, p)| (**p).clone());
-                    for (idx, n) in changes {
-                        pg.nodes.slots[*idx] = n.clone();
-                    }
-                    // Në thellësinë 256 (gjethe në fund të çelësit) s'ka më fëmijë.
-                    for j in (0..KIDS).filter(|_| root.depth + PAGE_H <= 256) {
-                        if let Some(&ci) = pos.get(&kid_path(root, j).enc()) {
-                            // Fëmija u përpunua më parë (thellësia zbret).
-                            pg.kids[j] = ids[ci];
+                use rayon::prelude::*;
+                let tb = std::time::Instant::now();
+                // Hapi 8: faqet e një thellësie janë të pavarura nga njëra-tjetra (fëmijët e tyre janë
+                // më thellë dhe kanë marrë numrat), ndaj ndërtohen dhe kodohen paralelisht. Vendosja
+                // në blloqe mbetet sekuenciale dhe në të njëjtën radhë, që rezultati të jetë
+                // përcaktues dhe bajt për bajt i njëjtë me më parë.
+                let mut i = 0;
+                while i < order.len() {
+                    let depth = order[i].0.depth;
+                    let j = i + order[i..].iter().take_while(|(p, _)| p.depth == depth).count();
+                    let ids_ro = &ids;
+                    let pos_ro = &pos;
+                    let build = |(root, changes): &DirtyPage| -> Result<BuiltPage, String> {
+                        let old = self.page_at_path(root)?;
+                        let mut pg = old.as_ref().map_or_else(|| FPage::new(*root), |(_, p)| (**p).clone());
+                        for (idx, n) in changes {
+                            pg.nodes.slots[*idx] = n.clone();
                         }
-                    }
-                    if let Some((id, _)) = &old {
-                        freed.push(*id);
-                    }
-                    if pg.nodes.is_empty() {
-                        if pg.kids.iter().any(Option::is_some) {
-                            return Err("faqe bosh me faqe fëmijë".into());
+                        // Në thellësinë 256 (gjethe në fund të çelësit) s'ka më fëmijë.
+                        for j in (0..KIDS).filter(|_| root.depth + PAGE_H <= 256) {
+                            if let Some(&ci) = pos_ro.get(&kid_path(root, j).enc()) {
+                                // Fëmija u përpunua më parë (thellësia zbret).
+                                pg.kids[j] = ids_ro[ci];
+                            }
                         }
-                        news.push(None);
-                        ids.push(None);
-                    } else {
+                        let old_id = old.map(|(id, _)| id);
+                        if pg.nodes.is_empty() {
+                            if pg.kids.iter().any(Option::is_some) {
+                                return Err("faqe bosh me faqe fëmijë".into());
+                            }
+                            return Ok((old_id, None));
+                        }
                         pg.check_kids().map_err(|e| format!("sloti {slot}: {e}"))?;
-                        ids.push(Some(pk.place(&self.alloc, &pg.enc())));
-                        news.push(Some(pg));
+                        let bytes = pg.enc();
+                        Ok((old_id, Some((pg, bytes))))
+                    };
+                    let built: Vec<_> = if j - i >= 64 {
+                        order[i..j].par_iter().map(build).collect::<Result<_, _>>()?
+                    } else {
+                        order[i..j].iter().map(build).collect::<Result<_, _>>()?
+                    };
+                    for (old_id, pg) in built {
+                        freed.extend(old_id);
+                        match pg {
+                            None => {
+                                news.push(None);
+                                ids.push(None);
+                            }
+                            Some((pg, bytes)) => {
+                                ids.push(Some(pk.place(&self.alloc, &bytes)));
+                                // `FPage` s'ka alokime të brendshme përveç gjetheve, ndaj `Arc`-u
+                                // krijohet këtu, në fillin që bën commit: faqet jetëgjata të
+                                // fiksuara s'shpërndahen nëpër arenat e malloc-ut të fijeve rayon
+                                // (pa këtë RSS rritej ~50 MB nga fragmentimi).
+                                news.push(Some(Arc::new(pg)));
+                            }
+                        }
                     }
+                    i = j;
                 }
                 // `sync_every = 1`: faqet në disk para rekordit, këtu, jashtë kyçit të shkrimit. Kështu
                 // `commit_slot` bën vetëm fsync-un e vogël të log-ut, dhe një ikje rryme humb maksimumi
                 // slotin që po shkruhej.
+                t_split[0] = tb.elapsed();
+                let tw = std::time::Instant::now();
                 self.write_blocks(&pk.blocks)?;
+                t_split[1] = tw.elapsed();
+                let ts = std::time::Instant::now();
                 if self.o.durable && self.o.sync_every == 1 && !pk.blocks.is_empty() {
                     self.sync_data()?;
                 }
+                t_split[2] = ts.elapsed();
                 Ok(())
             })();
             if let Err(e) = r {
                 self.alloc.lock().unwrap().untake(&pk.taken, pk.next0);
                 return Err(e);
             }
+            let ta = std::time::Instant::now();
             let blocks = pk.live_list(&mut self.alloc.lock().unwrap());
             let pages = ids.iter().flatten().count().max(1);
             self.last_blocks.store((blocks.len() * pages.saturating_sub(moved) / pages) as u64, Ordering::Relaxed);
@@ -1942,7 +1996,7 @@ impl StateTree for PageTree {
                 .iter()
                 .zip(news.iter().zip(&ids))
                 .filter(|((p, _), _)| p.depth < cd)
-                .filter_map(|(_, (pg, id))| Some(((*id)?, Arc::new(pg.clone()?))))
+                .filter_map(|(_, (pg, id))| Some(((*id)?, pg.clone()?)))
                 .collect();
             let st = State {
                 version: slot,
@@ -1953,6 +2007,7 @@ impl StateTree for PageTree {
                 cache_depth: self.o.cache_depth,
                 fingerprint,
             };
+            t_split[4] = ta.elapsed();
             Ok(PagePrepared {
                 slot,
                 rec: LogRec { history: self.o.history, slack: self.o.reuse_slack, seq: self.rec_seq + 1, st, root_id, blocks, freed },
@@ -1960,6 +2015,7 @@ impl StateTree for PageTree {
                 t_pre,
                 t_tree,
                 t_write: t0.elapsed(),
+                t_split,
                 pages: ids.iter().flatten().count(),
                 moved,
             })
@@ -2005,10 +2061,15 @@ impl StateTree for PageTree {
         if self.profile {
             let s = self.page_stats();
             eprintln!(
-                "slot {slot}: leximi {:?}, pema {:?}, shkrimi {:?}, log {:?} | {} faqe ({} të zhvendosura), {} blloqe, {} lexime | skedari {} blloqe, {:.0}% plot",
+                "slot {slot}: leximi {:?}, pema {:?}, shkrimi {:?} (ndotura {:?}, faqet {:?}, pwrite {:?}, fsync {:?}, pas {:?}), log {:?} | {} faqe ({} të zhvendosura), {} blloqe, {} lexime | skedari {} blloqe, {:.0}% plot",
                 p.t_pre,
                 p.t_tree - p.t_pre,
                 p.t_write - p.t_tree,
+                p.t_split[3],
+                p.t_split[0],
+                p.t_split[1],
+                p.t_split[2],
+                p.t_split[4],
                 t0.elapsed(),
                 p.pages,
                 p.moved,
