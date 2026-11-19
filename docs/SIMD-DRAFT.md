@@ -75,6 +75,38 @@ signatures. A feature gate activates it.
 `getAccountProof(pubkey) → {slot, root, account, proof}` and
 `getZiljaRoot() → {slot, root}`, as in `SPEC.md`.
 
+### Hash function: SHA-256 versus BLAKE3
+
+The tree hashes small, fixed-size inputs: a leaf is `0x00 ‖ 32 ‖ 32` (65 bytes) and an internal
+node is `0x01 ‖ 32 ‖ 32` (65 bytes). The choice is a trade-off between the verifier side and the
+validator side:
+
+| | SHA-256 | BLAKE3 |
+|---|---|---|
+| Browser (WebCrypto) | native, no code to ship | needs a JS/WASM implementation |
+| EVM bridges | precompile `0x02` (60 + 12 gas per word) | no precompile; pure Solidity is very expensive |
+| Solana programs | `sol_sha256` syscall | `sol_blake3` syscall |
+| Hardware | SHA-NI on current x86 (Intel Ice Lake+, AMD Zen) and ARMv8 SHA2 | SIMD (AVX2/AVX-512/NEON); no dedicated instructions |
+| Validator, one node at a time (measured below) | 131 ns / 65 B, 109 ns / 64 B | 148 ns / 65 B, 95 ns / 64 B |
+| Validator, many nodes in parallel | multi-buffer SHA is possible but less common | `hash_many` hashes 8–16 inputs per instruction stream with AVX2/AVX-512 |
+
+Measured on an Intel Xeon @ 2.1 GHz with SHA-NI and AVX-512 (`sha2` with `asm`, `blake3` 1.x,
+one thread, 4M hashes). For inputs this small, BLAKE3 has no tree parallelism to exploit; the
+often-quoted "several times faster" applies to large inputs or to batch APIs, not to hashing one
+65-byte node with SHA-NI available. Two consequences:
+
+- With the current 65-byte encoding both need two compression calls. Moving domain separation
+  out of the input (BLAKE3 flags/keyed mode, or SHA-256 with a different IV per node type) makes
+  every node a single 64-byte block: ~13% faster for BLAKE3 in our measurement, ~17% for SHA-256.
+- The real validator-side win for BLAKE3 would come from batching the nodes of one tree level
+  through `hash_many`. That is not measured here and should be, on Agave and Firedancer hardware,
+  before choosing.
+
+Phase A uses SHA-256 because the verifier must run in browsers, phones and EVM bridges without
+shipping a hash implementation, and because on SHA-NI hardware the validator cost is similar. The
+proof format carries a version byte, so Phase B can change the hash with a new version if the
+batched measurement favours BLAKE3.
+
 ## Alternatives Considered
 
 - **Lattice hash only**: cheap to update, but no per-account proofs.
@@ -103,5 +135,6 @@ an implementation in every validator client (Agave, Firedancer).
 
 1. The per-slot write volume on mainnet, and the CPU it costs a full validator.
 2. Whether to commit every slot or every N slots, to cut cost.
-3. The hash function: SHA-256 (hardware support everywhere) versus Blake3.
+3. The hash function: SHA-256 versus BLAKE3 (see "Hash function" above): needs a batched
+   (`hash_many`) measurement on validator hardware before Phase B.
 4. The disk-backed tree design, and the startup time from a full snapshot.
