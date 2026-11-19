@@ -115,8 +115,18 @@ impl StakeTable {
     pub fn total(&self) -> u128 {
         self.entries.iter().map(|(_, s)| *s as u128).sum()
     }
-    fn stake_of(&self, v: &[u8; 32]) -> Option<u64> {
-        self.entries.iter().find(|(k, _)| k == v).map(|(_, s)| *s)
+    /// R4-5: hyrjet e dyfishta të një identiteti mblidhen, njësoj si te `total()`; ndryshe një
+    /// validator i ndarë në dy hyrje numërohej vetëm me të parën, ndërsa totali i përfshinte të dyja.
+    fn stake_of(&self, v: &[u8; 32]) -> Option<u128> {
+        let mut found = false;
+        let mut sum: u128 = 0;
+        for (k, s) in &self.entries {
+            if k == v {
+                found = true;
+                sum += *s as u128;
+            }
+        }
+        found.then_some(sum)
     }
 }
 
@@ -151,7 +161,7 @@ pub fn verify_quorum(genesis: &Hash, epoch: u64, slot: u64, root: &Hash, atts: &
         if a.verify(genesis, epoch, slot, root) {
             seen.insert(a.validator);
             valid += 1;
-            attested += stake as u128;
+            attested += stake;
         } else {
             rejected += 1;
         }
@@ -284,6 +294,19 @@ mod tests {
             let a = Attestation { validator: id_pk, signer: Some(s_pk), authorization: Some(Authorization { from_epoch: from, until_epoch: until, signature: sig_v1 }), signature: sig };
             assert!(!a.verify(&G, E, 7, &root));
         }
+    }
+
+    /// R4-5: një identitet me dy hyrje në tabelë numërohet me shumën e tyre, njësoj si në total.
+    #[test]
+    fn duplicate_table_entries_are_summed_consistently() {
+        let (keys, _) = setup(2);
+        let (a, b) = (keys[0].verifying_key().to_bytes(), keys[1].verifying_key().to_bytes());
+        // A: 50 + 50 = 100, B: 40. A vetëm = 100/140 = 71% > 2/3.
+        let table = StakeTable { entries: vec![(a, 50), (b, 40), (a, 50)] };
+        let root = [3u8; 32];
+        let r = verify_quorum(&G, E, 9, &root, &[sign(&keys[0], 9, &root)], &table);
+        assert_eq!((r.attested_stake, r.total_stake), (100, 140));
+        assert!(r.reached);
     }
 
     /// A15: një firmë e pavlefshme e një identiteti, para një të vlefshme të të njëjtit identitet, s'e

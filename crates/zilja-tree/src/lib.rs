@@ -398,12 +398,12 @@ impl StateTree for MemTree {
         Ok(self.tree.apply_batch(ups))
     }
     fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, ProveError> {
-        let slot = self.slot.unwrap_or(0);
-        if let Some(a) = at {
-            if a != slot {
-                return Err(ProveError::OutOfHistory(format!("pema në RAM ka vetëm slotin e fundit ({slot})")));
-            }
-        }
+        // R4-5: si motorët në disk: pa slot të zbatuar, pema s'është gati (jo "sloti 0").
+        check_provable(self.provable_range(), at).map_err(|e| match e {
+            ProveError::OutOfHistory(_) => ProveError::OutOfHistory(format!("pema në RAM ka vetëm slotin e fundit ({:?})", self.slot)),
+            e => e,
+        })?;
+        let slot = self.slot.expect("check_provable kërkon një slot");
         let (p, m) = self.tree.prove(key);
         Ok((slot, self.tree.root(), p, m.cloned()))
     }
@@ -436,6 +436,19 @@ pub fn reference_root(accounts: &[(Key, AccountMeta)]) -> Hash {
 mod tests {
     use super::*;
     use rand::{rngs::StdRng, Rng, SeedableRng};
+
+    /// R4-5: `MemTree` pa asnjë slot jep `NotReady` (si motorët në disk), jo një dëftesë për "slotin 0".
+    #[test]
+    fn mem_tree_without_slot_is_not_ready() {
+        let t = MemTree::new();
+        assert!(matches!(t.prove_at(&[1; 32], None), Err(ProveError::NotReady(_))));
+        assert!(matches!(t.prove_at(&[1; 32], Some(0)), Err(ProveError::NotReady(_))));
+        let mut t = MemTree::new();
+        t.apply_slot(5, vec![([1; 32], Some(AccountMeta::default()))], None).unwrap();
+        assert_eq!(t.prove_at(&[1; 32], None).unwrap().0, 5);
+        assert_eq!(t.prove_at(&[1; 32], Some(5)).unwrap().0, 5);
+        assert!(matches!(t.prove_at(&[1; 32], Some(4)), Err(ProveError::OutOfHistory(_))));
+    }
     use std::collections::BTreeMap;
     use zilja_verifier::{verify_tree_key, Verdict};
 
