@@ -116,6 +116,10 @@ SLOT=$(solana -u "$RPC" slot --commitment finalized)
 echo "   transferimi u finalizua në slotin ~$SLOT; pres që Zilja ta rrënjosë"
 wait_rooted_past "$SLOT"
 
+# A01: Agave duhet ta ketë krijuar njoftuesin e entry-ve (pa të UpdateParent s'vjen kurrë).
+ENTRIES=$(metric entries_seen_total); BATCHES=$(metric batches_total)
+echo "   A01: entry të marra: ${ENTRIES:-0} në ${BATCHES:-0} slote të rrënjosur (UpdateParent: $(metric update_parent_seen_total))"
+[ "${ENTRIES:-0}" -gt 0 ] || { echo "GABIM: Agave s'po dërgon njoftime entry: UpdateParent do të humbiste (A01)"; exit 1; }
 echo "== Hapi 3: banori verifikon"
 "$CHECK" "$ZILJA" "$FERMER" "$RPC" --min-trust single
 "$CHECK" "$ZILJA" "$PAYER" "$RPC" --min-trust single
@@ -198,6 +202,8 @@ PY
 sleep 2
 start
 if [ "${ZILJA_DB:-0}" != "0" ]; then
+  # P-08: pas hapjes nga disku zilja s'shërben derisa zinxhiri ta konfirmojë (faza recovered → serving).
+  for _ in $(seq 1 120); do [ "$(metric phase)" = "2" ] && break; sleep 1; done
   AFTER=$(zroot)
   echo "   para ndalimit: $BEFORE"
   echo "   pas rinisjes:  $AFTER"

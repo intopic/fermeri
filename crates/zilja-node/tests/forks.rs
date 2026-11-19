@@ -165,3 +165,47 @@ fn genesis_boot_applies_early_banks() {
     let out = t.handle(rooted(1, 0, 1));
     assert_eq!(lamports(&out), Some(vec![(2, 7)]), "{out:?}");
 }
+
+/// A01: UpdateParent vjen nga thread-i i njoftuesit të entry-ve, pa radhë ndaj statuseve. `BankCleared`
+/// mund të arrijë para zëvendësueses, pas saj, ose pasi fëmija i zëvendësueses u rrënjos: vendimi duhet
+/// të jetë i njëjtë, dhe ndryshimet e bankës së pastruar s'aplikohen kurrë.
+#[test]
+fn update_parent_is_order_independent() {
+    let anc = |top: u64| (47..=top).rev().map(|s| (s, h(s, 0))).collect::<Vec<_>>();
+    for when in 0..4 {
+        let mut t = from_snapshot(47);
+        t.handle(sh(48, 5, anc(47)));
+        t.handle(created(48, 47, 5));
+        t.handle(acc(48, 5, 3, 48));
+        t.handle(sh(49, 6, anc(48)));
+        t.handle(created(49, 48, 6));
+        // A: 50 mbi 49, pastrohet nga UpdateParent; B: zëvendësuesja mbi 48.
+        t.handle(sh(50, 10, anc(49)));
+        t.handle(created(50, 49, 10));
+        t.handle(acc(50, 10, 2, 666));
+        let cleared = Event::BankCleared { slot: 50, bank_id: 10 };
+        if when == 0 {
+            t.handle(cleared.clone());
+        }
+        t.handle(sh(50, 11, anc(48)));
+        t.handle(created(50, 48, 11));
+        t.handle(acc(50, 11, 2, 200));
+        if when == 1 {
+            t.handle(cleared.clone());
+        }
+        let mut x = vec![(50, h(50, 7))];
+        x.extend(anc(48));
+        t.handle(sh(51, 12, x));
+        t.handle(created(51, 50, 12));
+        t.handle(acc(51, 12, 5, 51));
+        if when == 2 {
+            t.handle(cleared.clone());
+        }
+        let out = t.handle(rooted(51, 50, 12));
+        if when == 3 {
+            assert!(t.handle(cleared.clone()).is_empty());
+        }
+        assert!(!broken(&out), "radha {when}: {out:?}");
+        assert_eq!(lamports(&out), Some(vec![(2, 200), (3, 48), (5, 51)]), "radha {when}");
+    }
+}
