@@ -25,7 +25,7 @@ pub fn rpc(url: &str, method: &str, params: Value) -> Result<Value, String> {
 }
 
 pub fn h32(s: &str) -> Result<[u8; 32], String> {
-    hex::decode(s).map_err(|e| e.to_string())?.try_into().map_err(|_| "duhen 32 bajt".into())
+    zilja_verifier::wire::hex_lower::<32>(s).ok_or_else(|| "duhen 32 bajt hex i vogël (A20)".into())
 }
 
 pub fn b58_32(s: &str) -> Result<[u8; 32], String> {
@@ -106,7 +106,7 @@ pub fn genesis(sol: &str, arg: Option<&str>) -> Result<[u8; 32], String> {
         None => rpc(sol, "getGenesisHash", json!([]))?.as_str().ok_or("getGenesisHash")?.to_string(),
     };
     if g.len() == 64 && g.bytes().all(|b| b.is_ascii_hexdigit()) {
-        h32(&g.to_ascii_lowercase())
+        h32(&g)
     } else {
         b58_32(&g)
     }
@@ -122,16 +122,13 @@ pub fn parse_attestation(a: &Value, slot: u64) -> Result<(String, Attestation), 
         return Err(format!("root i pavlefshëm: {root:?}"));
     }
     let validator = b58_32(a["validator"].as_str().ok_or("mungon validator")?)?;
-    let signature: [u8; 64] = hex::decode(a["signature"].as_str().ok_or("mungon signature")?)
-        .map_err(|e| e.to_string())?
-        .try_into()
-        .map_err(|_| "firma duhet 64 bajt")?;
+    let signature: [u8; 64] = zilja_verifier::wire::hex_lower(a["signature"].as_str().ok_or("mungon signature")?).ok_or("firma duhet 64 bajt hex i vogël")?;
     let signer = match a["signer"].as_str() {
         Some(s) => Some(b58_32(s)?),
         None => None,
     };
     let authorization = match a["authorization"].as_str() {
-        Some(h) => Some(hex::decode(h).map_err(|e| e.to_string())?.try_into().map_err(|_| "autorizimi duhet 64 bajt")?),
+        Some(h) => Some(zilja_verifier::wire::hex_lower(h).ok_or("autorizimi duhet 64 bajt hex i vogël")?),
         None => None,
     };
     Ok((root.to_string(), Attestation { validator, signer, authorization, signature }))

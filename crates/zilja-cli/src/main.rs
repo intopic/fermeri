@@ -129,7 +129,7 @@ fn account_meta(a: &Value) -> Result<AccountMeta, String> {
 fn check_proof(r: &Value, root_hex: &str, pubkey: &[u8; 32]) -> (&'static str, Option<AccountMeta>, String) {
     let res = (|| -> Result<(Verdict, Option<AccountMeta>), String> {
         let root = h32(root_hex)?;
-        let proof = Proof::from_bytes(&hex::decode(r["proof"].as_str().ok_or("mungon proof")?).map_err(|e| e.to_string())?)
+        let proof = Proof::from_bytes(&zilja_verifier::wire::decode_hex_lower(r["proof"].as_str().ok_or("mungon proof")?).ok_or("proof: hex i pavlefshëm (vetëm [0-9a-f])")?)
             .map_err(|e| e.to_string())?;
         let meta = if r["account"].is_null() { None } else { Some(account_meta(&r["account"])?) };
         Ok((verify_account(&root, pubkey, meta.as_ref(), &proof), meta))

@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 use zilja_verifier::{verify_account, AccountMeta, Proof, Verdict};
 
 fn h32(s: &str) -> Result<[u8; 32], String> {
-    hex::decode(s).map_err(|e| e.to_string())?.try_into().map_err(|_| "duhen 32 bajt".to_string())
+    zilja_verifier::wire::hex_lower::<32>(s).ok_or_else(|| "duhen 32 bajt hex i vogël (A20)".to_string())
 }
 
 fn b58_32(s: &str) -> Result<[u8; 32], String> {
@@ -46,7 +46,7 @@ pub fn verify_str(
     let run = || -> Result<Verdict, String> {
         let root = h32(root_hex)?;
         let pubkey = b58_32(pubkey_b58)?;
-        let proof = Proof::from_bytes(&hex::decode(proof_hex).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let proof = Proof::from_bytes(&zilja_verifier::wire::decode_hex_lower(proof_hex).ok_or("dëftesa: hex i pavlefshëm (vetëm [0-9a-f], A20)")?).map_err(|e| e.to_string())?;
         let meta = if owner_b58.is_empty() {
             None
         } else {

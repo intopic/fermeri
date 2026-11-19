@@ -67,6 +67,16 @@ leaf_flag u8        = 0 (rruga përfundon në empty) | 1 (përfundon në një gj
 
 Bajtet e tepërta në fund e bëjnë dëftesën të pavlefshme.
 
+**Kodimi kanonik (A20), i detyrueshëm për prodhuesin dhe për çdo verifikues:**
+- **Bitët mbushës** të bajtit të fundit të `bitmap` (kur `depth % 8 ≠ 0`, bitët pas `depth`)
+  duhet të jenë 0. Një bit mbushës 1 → e pavlefshme.
+- **Vëlla bosh i koduar eksplicitisht** ndalohet: një vëlla `empty` kodohet vetëm me bit 0 në
+  `bitmap`. Bit 1 me 32 bajte zero → e pavlefshme.
+- `leaf_flag` është vetëm 0 ose 1; `version` vetëm 2; `depth` ≤ 256.
+
+Kështu e njëjta dëftesë ka një kodim të vetëm bajt për bajt. Verifikuesit Rust, WASM dhe JS i
+refuzojnë të gjitha këto raste.
+
 ## 5. Verifikimi
 
 ```
@@ -124,7 +134,7 @@ kthehet gabim `-32602`.
 Rregullat e formatit (F-03, F-08):
 - `lamports` dhe `dataLen` janë **tekst dhjetor** në [0, 2^64), pa shenjë dhe pa zero në fillim. Një verifikues mund të pranojë edhe një numër JSON, por vetëm ≤ 2^53 − 1.
 - `executable` është boolean JSON i vërtetë.
-- Hex-i është vetëm `[0-9a-f]`, me gjatësi çift.
+- Hex-i është vetëm `[0-9a-f]`, me gjatësi çift (A20). Prodhuesi s'nxjerr kurrë shkronja të mëdha, dhe **çdo verifikues duhet t'i refuzojë** (root, dëftesë, `dataHash`, firma, autorizim), edhe pse dekodohen në të njëjtat bajte. Rastet `*_uppercase` te `wire-vectors.json` e kontrollojnë.
 
 Kur llogaria nuk ekziston, `account` është `null` dhe `proof` provon mospërfshirjen. Kur
 pema s'është e plotë, kthehet gabim `-32006`.

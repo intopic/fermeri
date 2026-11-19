@@ -14,7 +14,8 @@ export const PROOF_VERSION = 2;
 const EMPTY = new Uint8Array(32);
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
-const HEX = /^(?:[0-9a-fA-F]{2})*$/;
+// A20: hex kanonik: vetëm shkronja të vogla (SPEC); shkronjat e mëdha refuzohen kudo.
+const HEX = /^(?:[0-9a-f]{2})*$/;
 const U64_MAX = (1n << 64n) - 1n;
 
 /** Hex i rreptë (L-03): vetëm shifra hex, gjatësi çift. */
