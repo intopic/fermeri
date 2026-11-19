@@ -96,7 +96,6 @@ pub struct Metrics {
     pub provable_from_slot: AtomicU64,
     pub resume_verified: AtomicU64,
     pub ambiguous_banks: AtomicU64,
-    pub partial_banks_skipped: AtomicU64,
     /// Firmat e refuzuara (do të ishin firmosje e dyfishtë).
     pub attest_refused: AtomicU64,
     /// 1 kur pema është gati dhe zilja nuk ka ndaluar (lexohet nga /health pa kyçur gjendjen).
@@ -187,7 +186,6 @@ impl Metrics {
             g("resumed", "1 kur zilja vazhdoi nga pema në disk pa snapshot", &self.resumed),
             g("broken", "1 kur zilja ndaloi (boshllëk ose zinxhir tjetër)", &self.broken),
             g("provable_from_slot", "Sloti më i vjetër për të cilin jepen dëftesa", &self.provable_from_slot),
-            g("partial_banks_skipped", "Banka të krijuara para ngarkimit të plugin-it (pa SlotHashes) që s'u aplikuan (nisje pa bazë)", &self.partial_banks_skipped),
             g("ambiguous_banks", "Herët kur një slot kishte disa banka të gjalla që SlotHashes s'i dallonte (ndalim, P-07)", &self.ambiguous_banks),
             g("resume_verified", "1 kur pas rinisjes u konfirmua që jemi në të njëjtin zinxhir (SlotHashes)", &self.resume_verified),
             g("phase", "Faza: 0 starting, 1 recovered (nga disku, e paverifikuar), 2 serving, 3 halted", &self.phase),
@@ -631,7 +629,6 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
             }
         }
         m.ambiguous_banks.store(tracker.stats.ambiguous_banks, Ordering::Relaxed);
-        m.partial_banks_skipped.store(tracker.stats.partial_banks_skipped, Ordering::Relaxed);
     }
 }
 
