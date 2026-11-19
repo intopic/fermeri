@@ -83,3 +83,52 @@ ku secila u bashkua te `main` vetëm me CI jeshile, përfshirë testin e plotë 
 - **`on_unload` në ndalim normal (SIGTERM):** nuk thirret. Gjendja në disk është e sigurt ndaj ndalimit pa paralajmërim.
 - **End-of-startup në nisje nga genesis:** nuk vjen; tracker-i e trajton.
 - **Statuse për slotet e ripërsëritura:** asnjë (73 banka në matje), vetëm shkrime llogarish dhe SlotHashes.
+
+## Auditimi i dytë: gjetjet A01–A26 (19 nëntor 2026)
+
+Auditimi u bë mbi `46b7a60` kundër `anza-xyz/agave@a203300` (`v4.3.2`). Çdo gjetje ka PR-në e vet:
+- testi i PR-së dështon mbi kodin e mëparshëm dhe kalon me rregullimin;
+- bashkimi te `main` u bë vetëm me CI jeshile, përfshi e2e mbi Agave 4.3.2 (RAM, RocksDB i vjetër, pages).
+
+| ID | Rëndësia | Rregullimi | PR | Prova kryesore |
+|---|---|---|---|---|
+| A01 | E lartë | `entry_notifications_enabled = true`: UpdateParent arrin te tracker-i | #9 | porta e Agave e kopjuar; e2e: ~98 entry/slot nga Agave real |
+| A02 | E lartë | ringarkimi / `loadPlugin` në mes të punës s'aplikon banka; genesis vetëm deri te sloti 0 | #16 | `reload_never_applies_banks`, `admin_load_mid_run_is_not_a_genesis_boot`; e2e RAM |
+| A03 | E lartë | ditari i firmave v2: firma origjinale, vërtetim strikt, `floor`, migrim pa besim | #14 | `tampered_or_incomplete_records_are_refused`, `v1_log_migrates_without_trusting_history` |
+| A04 | E lartë | kornizë e plotë me CRC të gabuar = dëmtim | #10 | `complete_last_frame_with_bad_crc_is_refused` |
+| A05 | E lartë | pa checkpoint: fshirje vetëm me `BUILDING` ose dosje bosh | #10 | `missing_checkpoint_with_existing_pages_is_refused` |
+| A06 | E lartë | `INVALID` i palexueshëm refuzon hapjen | #10 | `unreadable_invalid_marker_is_refused` |
+| A07 | E lartë | ndalimi i serializuar me commit/firmë | #11 | `stop_from_rpc_freezes_queued_work` (80/80) |
+| A08 | E lartë | pool Rayon i instancës, `join` në unload | #12, #18 | `unload_leaves_no_threads_behind`; e2e: `zilja-rayon` 2/2 |
+| A09 | E lartë | `scripts/release.sh`: dy ndërtime identike, `MANIFEST.json` me `rustc -vV` | #25 | CI "Release"; hash-e identike |
+| A10 | E lartë | kuorumi: pamje koherente e epokës, të dy kufijtë, etiketë "pamje e RPC-së" | #17 | `quorum_counts_only_inside_the_stake_tables_epoch` |
+| A11 | E lartë | numra të saktë: JSON pa humbje në JS, u64 strikt, mbledhje e kontrolluar | #17 | `attest.test.mjs` A11, `quorum_rejects_inexact_stake_numbers` |
+| A12 | E lartë | slot mbi referencën → `ahead`, jo `fresh` | #20 | vektorët + `slot_ahead_of_finalized_reference_is_not_fresh` |
+| A13 | E lartë | krahasimi i kërkuar që s'u krye → `data_unavailable` | #20 | `requested_data_check_that_did_not_run_fails` |
+| A14 | E lartë | referencë `{root, slot, complete}`; agreement kërkon plotësi për mungesë | #20 | vektorët `anchor_*`, `absence_agreeing_source_incomplete` |
+| A15 | Mesatare | identiteti numërohet pas firmës së vlefshme | #17 | `invalid_signature_does_not_shadow_valid_one` (Rust, JS) |
+| A16 | Mesatare | `attestMessage` me `toU64` | #17 | `attest.test.mjs` A16 |
+| A17 | Mesatare | afat monoton për kërkesë; kufi madhësie në SDK | #23 | `slow_drip_client_is_cut_at_the_request_deadline` |
+| A18 | Mesatare | buxhet për bankat/ndryshimet në pritje | #21 | `pending_state_has_a_memory_budget`; 212 B, 218 ns për ndryshim |
+| A19 | Mesatare | `-32008` mbi majë; `accounts` vetëm për slotin aktual; numri i parametrave | #26 | `history_contract_matches_the_spec` |
+| A20 | E ulët | hex vetëm me shkronja të vogla kudo; rregullat e bitmap-it në SPEC | #19 | `wire-vectors.json` `*_uppercase` |
+| A21 | E lartë (lëshimi) | release vetëm `pages`, pa RocksDB/libclang; konfigurimet e vjetra refuzohen | #22 | CI "Release"; `cargo tree` 0 rreshta; e2e hapi 0 |
+| A22 | Mesatare | bench dhe skripti fshijnë vetëm atë që krijuan | #25 | `disk_bench_never_deletes_what_it_did_not_create` |
+| A23 | E ulët | LICENSE në repo, npm dhe release | #25 | `npm pack`, `release.sh` |
+| A24 | E lartë | gjurmë vetëm me një bankë në slot; lidhja vetëm me slot refuzohet | #21 | `duplicate_banks_at_rooted_slot_are_not_certified` |
+| A25 | Informuese | madhësitë e SDK-së të matura dhe të emërtuara | #25 | `MANIFEST.json` `sdk_js` |
+| A26 | E lartë | kovat e staging-ut me numër + SHA-256 | #10 | `staging_buckets_are_checked_end_to_end` |
+
+**Ndryshimet që thyejnë përputhshmërinë:**
+- `reloadPlugin` dhe `loadPlugin` në mes të punës ndalojnë zilen (A02);
+- release-i kërkon `tree_engine: "pages"` (A21);
+- ditari i firmave v2 migron vetë dhe s'shërben historinë v1 (A03);
+- `-32008` dhe `getZiljaRoot` historik pa `accounts` (A19);
+- hex vetëm me shkronja të vogla (A20);
+- klienti: `root` mund të jetë objekt, statuset e reja `ahead` / `unverifiable` / `unavailable`, `ok = false` kur kontrolli i kërkuar s'kryhet (A12–A14).
+
+**Kufizimet që mbeten (s'zgjidhen dot vetëm nga ky repo):**
+- **Pesha e kuorumit** është pamja e RPC-së, jo tabela e konsensusit e epokës (A10). Light client-i për `epoch_stakes` është punë e ardhshme.
+- **Lidhja `BankId → bank_hash`** s'jepet nga Agave, ndaj një bllok i dyfishtë i rrënjosur ndalon zilen (A24).
+- **Shkrimet e dykuptimta të diskut** refuzohen. S'ka rikuperim automatik pa një kufi të pavarur commit-i (A04).
+- **Prova përfundimtare** mbetet (kushti 4 i auditimit): validator i izoluar me build-in e shpërndarjes, ndërprerje reale (ENOSPC/EIO, ikje rryme, ext4/XFS), kuorum me shumë validatorë mbi kufij epokash dhe ngarkesë p99.
