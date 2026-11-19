@@ -203,3 +203,75 @@ fn stale_root_makes_health_fail() {
     assert!(wait(|| health(srv.addr()) == 200));
     srv.stop();
 }
+
+/// Pemë në RAM që ndalet te `prepare_slot` i slotit `at` derisa testi ta lëshojë.
+struct Gated(MemTree, u64, std::sync::Mutex<std::sync::mpsc::Receiver<()>>, Arc<std::sync::atomic::AtomicBool>);
+impl StateTree for Gated {
+    fn root(&self) -> Hash {
+        self.0.root()
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn stage_snapshot(&mut self, s: u64, u: Vec<Update>) -> Result<(), String> {
+        self.0.stage_snapshot(s, u)
+    }
+    fn finish_snapshot(&mut self, s: u64, c: bool) -> Result<Hash, String> {
+        self.0.finish_snapshot(s, c)
+    }
+    fn apply_slot(&mut self, s: u64, u: Vec<Update>, f: Option<zilja_tree::Fingerprint>) -> Result<Hash, String> {
+        self.0.apply_slot(s, u, f)
+    }
+    fn prepare_slot(&self, s: u64, ups: Vec<Update>, f: Option<zilja_tree::Fingerprint>) -> Result<zilja_tree::Prepared, String> {
+        if s == self.1 {
+            self.3.store(true, Ordering::SeqCst);
+            let _ = self.2.lock().unwrap().recv();
+        }
+        Ok(Box::new((ups, f)))
+    }
+    fn prove_at(&self, k: &Key, at: Option<u64>) -> Result<ProofAt, zilja_tree::ProveError> {
+        self.0.prove_at(k, at)
+    }
+    fn provable_range(&self) -> Option<(u64, u64)> {
+        self.0.provable_range()
+    }
+}
+
+/// A07: ndalimi nga RPC-ja (një thread tjetër) ndalon edhe punën e pranuar në radhë. Pasi
+/// `stop_serving` kthehet, sloti, root-et, firmat dhe faza s'ndryshojnë më.
+#[test]
+fn stop_from_rpc_freezes_queued_work() {
+    let (go, gate) = std::sync::mpsc::channel();
+    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let tree = Gated(MemTree::new(), 3, std::sync::Mutex::new(gate), entered.clone());
+    let svc = Service::start_opts(Options { tree: Some(Box::new(tree)), ..Default::default() }).unwrap();
+    for s in 1..=2 {
+        slot(&svc, s, 1, s);
+    }
+    assert!(wait(|| svc.shared.state.read().unwrap().slot == 2));
+    // Sloti 3 ndalet te përgatitja; 4..=6 presin në radhë (të pranuara para ndalimit).
+    for s in 3..=6 {
+        slot(&svc, s, 1, s);
+    }
+    assert!(wait(|| entered.load(Ordering::SeqCst)));
+    let sh = svc.shared.clone();
+    let stopper = std::thread::spawn(move || zilja_node::service::stop_serving(&sh, "test: gabim ruajtjeje nga RPC".into()));
+    // `stop_serving` pret kyçin; punëtori mban kyçin e leximit gjatë përgatitjes. E lëshojmë.
+    std::thread::sleep(Duration::from_millis(50));
+    go.send(()).unwrap();
+    stopper.join().unwrap();
+    let frozen = {
+        let st = svc.shared.state.read().unwrap();
+        (st.slot, st.roots.keys().copied().collect::<Vec<_>>())
+    };
+    // Punëtori mbaron radhën.
+    let total = 2 * 5 + 4 * 5;
+    assert!(wait(|| svc.shared.metrics.events_received.load(Ordering::Relaxed) >= total as u64 && svc.shared.metrics.queue_len.load(Ordering::Relaxed) == 0));
+    std::thread::sleep(Duration::from_millis(100));
+    let st = svc.shared.state.read().unwrap();
+    assert_eq!((st.slot, st.roots.keys().copied().collect::<Vec<_>>()), frozen, "punë e pranuar u bë commit pas ndalimit");
+    // (Një commit para se `stop_serving` të kthehet është i ligjshëm: punëtori mund ta fitojë kyçin.)
+    assert!(frozen.0 < 6, "e gjithë radha u bë commit: ndalimi s'ndali asgjë");
+    assert_eq!(svc.shared.metrics.phase.load(Ordering::Relaxed), zilja_node::service::PHASE_HALTED, "faza u rishkrua pas ndalimit");
+    assert_eq!(svc.shared.metrics.ready.load(Ordering::Relaxed), 0, "gatishmëria u rishkrua pas ndalimit");
+}
