@@ -91,7 +91,8 @@ Pra, pas një ndalimi mjafton **një rinisje** e validatorit.
 | `-32004` | kjo zile s'firmos |
 | `-32005` | s'ka root/firmë për këtë slot |
 | `-32006` | pema s'mbulon çdo llogari: s'jep dëftesa mospërfshirjeje |
-| `-32007` | sloti është jashtë historisë së pemës |
+| `-32007` | sloti është jashtë historisë së pemës (nën kujtesë) |
+| `-32008` | sloti s'është rrënjosur ende (mbi slotin e fundit; A19) |
 | `-32010` | gabim i ruajtjes: zilja ndalon |
 
 ### Snapshot i shkarkuar (dy rinisje)
