@@ -44,9 +44,10 @@ function mock({ ziles, sol = {} }) {
     if (url in ziles) {
       const z = ziles[url];
       if (method === "getAccountProof") result = z.proof;
-      else if (method === "getZiljaRoot") result = { slot: params[0] ?? z.proof.slot, root: z.root ?? z.proof.root };
+      else if (method === "getZiljaRoot") result = { slot: params[0] ?? z.proof.slot, root: z.root ?? z.proof.root, complete: z.complete };
       else if (method === "getZiljaAttestation") result = z.attest ?? null;
       else if (method === "getZiljaRevocations") result = z.revocations;
+      else if (method === "getMultipleAccountProofs") result = z.multi;
     } else result = typeof sol[method] === "function" ? sol[method](params) : sol[method];
     if (result === undefined) return { json: async () => ({ error: { message: `s'ka ${method}` } }) };
     return { json: async () => ({ result }) };
@@ -84,6 +85,33 @@ const uniq = () => `http://z${Math.random().toString(36).slice(2)}`;
   ziles[b].proof = proofAt(90);
   const r2 = await c.verifyAccount(inc.pubkey);
   expect("kthim pas në slotin 90 pas 100 → jo ok", r1.ok === true && r2.ok === false && r2.checks?.freshness === "rollback", JSON.stringify([r1.ok, r2.ok, r2.checks]));
+}
+
+// R5-2: verifyAccounts: një multi-proof dhe një kontroll i root-it për të gjitha llogaritë.
+{
+  const mc = v.multi.cases.find((x) => x.name === "valid_12");
+  const pubkeys = mc.claims.map((c) => c.pubkey);
+  const multi = (proof = mc.proof, order = pubkeys) => ({
+    slot: 100, root: mc.root, complete: true, proof,
+    accounts: order.map((pk) => ({ pubkey: pk, account: mc.claims.find((c) => c.pubkey === pk).account })),
+  });
+  const run = async (primaryMulti) => {
+    const [a, b] = [uniq(), uniq()];
+    const ziles = { [a]: { multi: primaryMulti, root: mc.root, proof: { slot: 100, root: mc.root } }, [b]: { root: mc.root, complete: true, proof: { slot: 100, root: mc.root } } };
+    return new ZiljaClient({ endpoints: [a, b], fetch: mock({ ziles }) }).verifyAccounts(pubkeys);
+  };
+  const good = await run(multi());
+  const want = mc.expect;
+  expect("R5-2: verifyAccounts → çdo llogari ok me agreement, verdikti si Rust-i",
+    good.length === pubkeys.length && good.every((r, i) => r.ok === true && r.trust === "agreement" && r.verdict === want[i]),
+    JSON.stringify(good.map((r) => [r.ok, r.trust, r.verdict])));
+  const bad = await run(multi(v.multi.cases.find((x) => x.name === "attack_tampered_sibling_12").proof));
+  expect("R5-2: multi-proof i ndryshuar → asnjë ok", bad.every((r) => r.ok === false && r.verdict === "invalid"), JSON.stringify(bad.map((r) => r.verdict)));
+  const swapped = await run(multi(mc.proof, [...pubkeys].reverse()));
+  expect("R5-2: llogari në radhë tjetër nga kërkesa → asnjë ok", swapped.every((r) => r.ok === false), JSON.stringify(swapped.map((r) => r.ok)));
+  let threw = false;
+  try { await new ZiljaClient({ endpoints: [uniq()], minTrust: "single", fetch: mock({ ziles: {} }) }).verifyAccounts([]); } catch { threw = true; }
+  expect("R5-2: 0 pubkey → gabim", threw);
 }
 
 // Kuorumi: 3 validatorë; 2 prej tyre firmosin root-in e zilës së parë.

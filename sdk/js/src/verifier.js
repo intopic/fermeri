@@ -216,3 +216,127 @@ export async function verifyAccount(rootHex, pubkeyB58, account, proofHex) {
 export async function dataMatches(account, dataBytes) {
   return toU64(account.dataLen) === BigInt(dataBytes.length) && eq(await sha256(dataBytes), hex32(account.dataHash));
 }
+
+// ---------------------------------------------------------------- R5-2: multi-proof
+
+export const MULTI_VERSION = 0x11;
+export const MAX_MULTI_KEYS = 256;
+
+const cmpKey = (a, b) => {
+  for (let i = 0; i < 32; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return 0;
+};
+
+/** Lexon multi-proof-in (SPEC.md §4b); hedh gabim për çdo kodim jo kanonik. */
+export function parseMultiProof(bytes) {
+  let p = 0;
+  const take = (n) => {
+    if (p + n > bytes.length) throw new Error("multi-proof i cunguar");
+    const s = bytes.subarray(p, p + n);
+    p += n;
+    return s;
+  };
+  if (take(1)[0] !== MULTI_VERSION) throw new Error("version i panjohur i multi-proof-it");
+  const c = take(2);
+  const count = c[0] | (c[1] << 8);
+  if (count === 0 || count > MAX_MULTI_KEYS) throw new Error("numër i pavlefshëm çelësash");
+  const terminals = [];
+  for (let i = 0; i < count; i++) {
+    const d = take(2);
+    const depth = d[0] | (d[1] << 8);
+    if (depth > 256) throw new Error("shumë e thellë");
+    const flag = take(1)[0];
+    let leaf = null;
+    if (flag === 1) leaf = { key: take(32), valueHash: take(32) };
+    else if (flag !== 0) throw new Error("flamur i pavlefshëm gjetheje");
+    terminals.push({ depth, leaf });
+  }
+  const n = take(4);
+  const nsib = (n[0] | (n[1] << 8) | (n[2] << 16)) + n[3] * 2 ** 24;
+  if (nsib > count * 256) throw new Error("shumë vëllezër");
+  const bitmap = take(Math.ceil(nsib / 8));
+  if (nsib % 8 && bitmap[nsib >> 3] & (0xff >> nsib % 8)) throw new Error("bitmap jo kanonik");
+  const siblings = [];
+  for (let i = 0; i < nsib; i++) {
+    if ((bitmap[i >> 3] >> (7 - (i & 7))) & 1) {
+      const h = take(32);
+      if (eq(h, EMPTY)) throw new Error("vëlla bosh i shënuar si jo-bosh");
+      siblings.push(h);
+    } else siblings.push(EMPTY);
+  }
+  if (p !== bytes.length) throw new Error("bajte të tepërta");
+  return { terminals, siblings };
+}
+
+const sameTerminal = (a, b) =>
+  a.depth === b.depth && (a.leaf === null ? b.leaf === null : b.leaf !== null && eq(a.leaf.key, b.leaf.key) && eq(a.leaf.valueHash, b.leaf.valueHash));
+
+/** Root-i i multi-proof-it për çelësat `keys` (rritës, pa dyfishe), ose null. Si Rust-i. */
+async function computeMultiRoot(keys, mp) {
+  if (keys.length === 0 || keys.length !== mp.terminals.length) return null;
+  for (let i = 1; i < keys.length; i++) if (cmpKey(keys[i - 1], keys[i]) >= 0) return null;
+  let next = 0;
+  const T = mp.terminals;
+  const rec = async (lo, hi, i) => {
+    let ends = false;
+    for (let j = lo; j < hi; j++) if (T[j].depth === i) ends = true;
+    if (ends) {
+      for (let j = lo; j < hi; j++) if (!sameTerminal(T[j], T[lo])) return null;
+      const leaf = T[lo].leaf;
+      if (!leaf) return { h: EMPTY, k: "empty" };
+      for (let j = lo; j < hi; j++) if (commonPrefixLen(leaf.key, keys[j]) < i) return null;
+      return { h: await sha256(concat(Uint8Array.of(0), leaf.key, leaf.valueHash)), k: "leaf" };
+    }
+    if (i >= 256) return null;
+    for (let j = lo; j < hi; j++) if (T[j].depth < i) return null;
+    let mid = lo;
+    while (mid < hi && bit(keys[mid], i) === 0) mid++;
+    const side = async (a, b) => {
+      if (a < b) return rec(a, b, i + 1);
+      if (next >= mp.siblings.length) return null;
+      const s = mp.siblings[next++];
+      return { h: s, k: eq(s, EMPTY) ? "empty" : "other" };
+    };
+    const l = await side(lo, mid);
+    if (!l) return null;
+    const r = await side(mid, hi);
+    if (!r) return null;
+    const bad = (x, y) => x.k === "empty" && (y.k === "empty" || y.k === "leaf");
+    if (bad(l, r) || bad(r, l)) return null;
+    return { h: await sha256(concat(Uint8Array.of(1), l.h, r.h)), k: "other" };
+  };
+  const out = await rec(0, keys.length, 0);
+  return out && next === mp.siblings.length ? out.h : null;
+}
+
+/**
+ * R5-2: verifikon shumë llogari me një multi-proof. `claims` = [{pubkey, account|null}] në çdo
+ * radhë (pubkey mund të përsëritet). Kthen një verdikt për secilin; kur dëftesa s'vlen për root-in,
+ * të gjithë dalin "invalid".
+ * @returns {Promise<("exists"|"does_not_exist"|"invalid")[]>}
+ */
+export async function verifyMultiProof(rootHex, claims, proofHex) {
+  const invalid = () => claims.map(() => "invalid");
+  try {
+    const root = hex32(rootHex);
+    const mp = parseMultiProof(hexToBytes(proofHex));
+    const tks = await Promise.all(claims.map((c) => treeKey(c.pubkey)));
+    const keys = [...tks].sort(cmpKey).filter((k, i, a) => i === 0 || cmpKey(a[i - 1], k) !== 0);
+    const got = await computeMultiRoot(keys, mp);
+    if (!got || !eq(got, root)) return invalid();
+    const out = [];
+    for (let i = 0; i < claims.length; i++) {
+      const idx = keys.findIndex((k) => cmpKey(k, tks[i]) === 0);
+      const leaf = mp.terminals[idx].leaf;
+      const acc = claims[i].account;
+      if (acc) {
+        out.push(leaf && eq(leaf.key, tks[i]) && eq(leaf.valueHash, await valueHash(acc)) ? "exists" : "invalid");
+      } else {
+        out.push(!leaf || !eq(leaf.key, tks[i]) ? "does_not_exist" : "invalid");
+      }
+    }
+    return out;
+  } catch {
+    return invalid();
+  }
+}
