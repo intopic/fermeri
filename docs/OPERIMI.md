@@ -443,3 +443,22 @@ pa të, zilja s'e di më çfarë ka firmosur.
 - **Formatet** e shkruara në manifest: `zilja-pages` v1, dëftesa v2, ditari i firmave v2.
 - **SDK (A25):** madhësia jepet për artefaktin e emërtuar (tarball npm, bundle i minifikuar me
   esbuild, i gjithi dhe vetëm `verifyAccount`), me komandën dhe commit-in.
+
+
+## Aggregator-i i firmave (R5-3)
+
+Kur ka shumë zile, një kuletë s'mund t'i pyesë të gjitha. `zilja-aggregator` i pyet ai dhe u jep
+klientëve të gjitha firmat për një slot me një thirrje (`getZiljaQuorumBundle`):
+
+```bash
+zilja-aggregator --bind 0.0.0.0:7800 --metrics-bind 127.0.0.1:7801 --ziljas-file zilet.txt
+```
+
+- **I pabesuar:** klienti (`aggregators: [...]` në SDK) verifikon çdo firmë dhe revokim vetë. Një
+  aggregator keqdashës mund vetëm të fshehë firma, jo të krijojë kuorum. Përdor disa aggregator-ë
+  dhe zilet e tua si rezervë.
+- **Kostoja:** çdo slot i ri = një pyetje te çdo zile (32 njëkohësisht, afat 3 s). Pranohen vetëm
+  slote afër majës (−4096 / +4) dhe ≤ 4 slote të reja në sekondë; të tjerat merren nga kujtesa
+  (512 slote). Zilet që s'u përgjigjën pyeten sërish pas 2 s.
+- Serveri HTTP është i njëjti si i zilës (afat 5 s, 2 lidhje për IP, trup ≤ 64 KB), me CORS të
+  ndezur. `/metrics` (`zilja_aggregator_*`) në portin privat.

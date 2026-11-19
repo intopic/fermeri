@@ -338,6 +338,24 @@ for (const [i, r] of rs.entries()) {
 }
 console.log("   ✅ verifyAccounts (multi-proof):", rs.map((r) => r.verdict).join(", "), "@ slot", rs[0].slot);
 ' "$ZILJA" "$RPC" "$FERMER" "$NOBODY" SysvarC1ock11111111111111111111111111111111 "$FERMER" || exit 1
+  # R5-3: aggregator-i i pabesuar: firmat me një thirrje; SDK-ja i verifikon vetë.
+  if [ -x "$ROOT/target/release/zilja-aggregator" ]; then
+    AGG="http://127.0.0.1:17800"
+    "$ROOT/target/release/zilja-aggregator" --bind 127.0.0.1:17800 --zilja "$ZILJA" > "$WORK/aggregator.log" 2>&1 &
+    AGG_PID=$!
+    for _ in $(seq 1 30); do curl -s --noproxy '*' "$AGG/health" | grep -q ok && break; sleep 0.5; done
+    node --input-type=module -e '
+import { ZiljaClient } from "'"$ROOT"'/sdk/js/src/index.js";
+const [z, ag, rpc, g, pk] = process.argv.slice(1);
+const slot = (await (await fetch(z, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getZiljaRoot" }) })).json()).result.slot;
+const b = (await (await fetch(ag, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getZiljaQuorumBundle", params: [slot] }) })).json()).result;
+if (!b || b.answered !== 1 || b.attestations.length !== 1) { console.error("GABIM: bundle", JSON.stringify(b)); process.exit(1); }
+const r = await new ZiljaClient({ endpoints: [z], aggregators: [ag], solanaRpc: rpc, quorum: true, minTrust: "quorum", genesisHash: g }).verifyAccount(pk);
+if (!r.ok || r.trust !== "quorum") { console.error("GABIM: kuorum me aggregator", r.trust, r.errors); process.exit(1); }
+console.log("   ✅ aggregator: bundle me", b.attestations.length, "firmë @ slot", slot, "→ kuorum i verifikuar nga SDK-ja (R5-3)");
+' "$ZILJA" "$AGG" "$RPC" "$GENESIS" "$FERMER" || { kill $AGG_PID; exit 1; }
+    kill $AGG_PID
+  fi
   [ "$(metric attest_refused_total)" = "0" ] || { echo "GABIM: firma të refuzuara pas rinisjes (root tjetër për të njëjtin slot?)"; exit 1; }
   # R5-1: revokimi i firmosur nga identiteti: zilja e shërben menjëherë (pa rinisje), ndalon së
   # firmosuri me atë çelës, dhe kuorumi s'numërohet më, edhe brenda periudhës së autorizimit.

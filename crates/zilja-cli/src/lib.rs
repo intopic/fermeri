@@ -9,13 +9,22 @@ use zilja_verifier::attest::{verify_quorum_with, Attestation, QuorumReport, Revo
 
 /// JSON-RPC me kohë maksimale dhe kufi për madhësinë e përgjigjes (L-09).
 pub fn rpc(url: &str, method: &str, params: Value) -> Result<Value, String> {
+    rpc_limited(url, method, params, std::time::Duration::from_secs(30), 64 << 20)
+}
+
+/// Si `rpc`, me afat të shkurtër dhe kufi 1 MB (aggregator-i: shumë zile, asnjë s'e mban).
+pub fn rpc_timeout(url: &str, method: &str, params: Value, timeout: std::time::Duration) -> Result<Value, String> {
+    rpc_limited(url, method, params, timeout, 1 << 20)
+}
+
+fn rpc_limited(url: &str, method: &str, params: Value, timeout: std::time::Duration, max: u64) -> Result<Value, String> {
     let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
-    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build();
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
     let r = agent.post(url).send_json(body).map_err(|e| format!("{url} {method}: {e}"))?;
     let mut text = String::new();
-    std::io::Read::read_to_string(&mut std::io::Read::take(r.into_reader(), 64 << 20), &mut text).map_err(|e| e.to_string())?;
-    if text.len() >= 64 << 20 {
-        return Err("përgjigje shumë e madhe (> 64 MB)".into());
+    std::io::Read::read_to_string(&mut std::io::Read::take(r.into_reader(), max), &mut text).map_err(|e| e.to_string())?;
+    if text.len() as u64 >= max {
+        return Err(format!("përgjigje shumë e madhe (≥ {max} B)"));
     }
     let resp: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     if let Some(e) = resp.get("error") {

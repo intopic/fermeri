@@ -85,7 +85,7 @@ jobs:
       - name: build plugin + cli
         run: |
           if [ "${{ matrix.db }}" = "1" ]; then F="--features zilja-plugin/legacy-rocksdb"; fi
-          cargo build --release -p zilja-plugin -p zilja-cli $F
+          cargo build --release -p zilja-plugin -p zilja-cli -p zilja-aggregator $F
       - name: shkarko Agave
         run: |
           curl -sSL -o agave.tar.bz2 "https://github.com/anza-xyz/agave/releases/download/${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"

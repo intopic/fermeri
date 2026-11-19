@@ -9,6 +9,7 @@ members = [
     "crates/zilja-wasm",
     "crates/zilja-bench",
     "crates/zilja-cli",
+    "crates/zilja-aggregator",
 ]
 
 [workspace.package]
@@ -32,6 +33,7 @@ zilja-verifier = { path = "crates/zilja-verifier" }
 zilja-tree = { path = "crates/zilja-tree" }
 zilja-node = { path = "crates/zilja-node" }
 zilja-store = { path = "crates/zilja-store" }
+zilja-cli = { path = "crates/zilja-cli" }
 
 [profile.release]
 lto = "thin"

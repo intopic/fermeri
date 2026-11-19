@@ -107,6 +107,8 @@ export interface ZiljaClientOptions {
   genesisHash?: string;
   /** R5-1: revokime shtesë; bashkohen me ato që jep `getZiljaRevocations` i çdo zileje. */
   revocations?: Revocation[];
+  /** R5-3: aggregator-ë të pabesuar (`getZiljaQuorumBundle`): firmat e shumë zileve me një thirrje; çdo firmë verifikohet. */
+  aggregators?: string[];
   /** Nën këtë nivel besimi, `ok` del `false`. Parazgjedhja: "agreement". */
   minTrust?: Trust;
   /** Sa slote pas slotit të finalizuar të `solanaRpc` pranohen. Parazgjedhja: 150 kur ka `solanaRpc`; `null` = pa kontroll. */

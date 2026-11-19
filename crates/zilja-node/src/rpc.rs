@@ -459,7 +459,36 @@ pub fn serve_routes(bind: &str, shared: Shared, routes: Routes) -> std::io::Resu
 }
 
 /// Si `serve_routes`, me kufijtë e dhënë (testet).
+/// R5-3: çfarë i shërben serveri HTTP. Zilja e zbaton me `Shared`; aggregator-i me gjendjen e vet.
+/// Serveri (afatet, kufijtë e trupit dhe të lidhjeve për IP) është i njëjti.
+pub trait HttpHandler: Send + Sync + 'static {
+    fn jsonrpc(&self, body: &str) -> Value;
+    /// `/health`.
+    fn health(&self) -> (u16, &'static str);
+    /// `/metrics` (Prometheus).
+    fn metrics(&self) -> String {
+        String::new()
+    }
+}
+
+impl HttpHandler for Shared {
+    fn jsonrpc(&self, body: &str) -> Value {
+        handle_jsonrpc(self, body)
+    }
+    fn health(&self) -> (u16, &'static str) {
+        health(self)
+    }
+    fn metrics(&self) -> String {
+        self.metrics.prometheus()
+    }
+}
+
 pub fn serve_routes_with(bind: &str, shared: Shared, routes: Routes, limits: HttpLimits) -> std::io::Result<HttpServer> {
+    serve_handler(bind, Arc::new(shared), routes, limits)
+}
+
+/// Serveri HTTP me një `HttpHandler` çfarëdo.
+pub fn serve_handler<H: HttpHandler>(bind: &str, shared: Arc<H>, routes: Routes, limits: HttpLimits) -> std::io::Result<HttpServer> {
     let listener = TcpListener::bind(bind)?;
     let addr = listener.local_addr()?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -480,7 +509,7 @@ pub fn serve_routes_with(bind: &str, shared: Shared, routes: Routes, limits: Htt
                     let _ = write_resp(&mut stream, 503, "text/plain", b"timeout", false);
                     continue;
                 }
-                let _ = handle_conn(stream, &sh, routes, until);
+                let _ = handle_conn(stream, &*sh, routes, until);
             }
         })?);
     }
@@ -571,7 +600,7 @@ fn budget(s: &TcpStream, until: Instant) -> std::io::Result<()> {
     s.set_write_timeout(t)
 }
 
-fn handle_conn(mut s: TcpStream, shared: &Shared, routes: Routes, until: Instant) -> std::io::Result<()> {
+fn handle_conn<H: HttpHandler + ?Sized>(mut s: TcpStream, shared: &H, routes: Routes, until: Instant) -> std::io::Result<()> {
     // Kokat: lexo deri te rreshti bosh, jo më shumë se MAX_HEADERS.
     let mut buf = Vec::with_capacity(1024);
     let mut chunk = [0u8; 4096];
@@ -611,11 +640,11 @@ fn handle_conn(mut s: TcpStream, shared: &Shared, routes: Routes, until: Instant
     match (method, path) {
         ("OPTIONS", _) if cors => write_resp(&mut s, 204, "text/plain", b"", cors),
         ("GET", "/health") => {
-            let (code, body) = health(shared);
+            let (code, body) = shared.health();
             write_resp(&mut s, code, "text/plain", body.as_bytes(), cors)
         }
         ("GET", "/metrics") if routes.metrics => {
-            write_resp(&mut s, 200, "text/plain; version=0.0.4", shared.metrics.prometheus().as_bytes(), cors)
+            write_resp(&mut s, 200, "text/plain; version=0.0.4", shared.metrics().as_bytes(), cors)
         }
         ("POST", _) if routes.jsonrpc => {
             let Some(n) = len else {
@@ -634,7 +663,7 @@ fn handle_conn(mut s: TcpStream, shared: &Shared, routes: Routes, until: Instant
                 }
                 body.extend_from_slice(&chunk[..k.min(n - body.len())]);
             }
-            let v = handle_jsonrpc(shared, &String::from_utf8_lossy(&body));
+            let v = shared.jsonrpc(&String::from_utf8_lossy(&body));
             budget(&s, until)?;
             write_resp(&mut s, 200, "application/json", v.to_string().as_bytes(), cors)
         }

@@ -87,6 +87,8 @@ export class ZiljaClient {
     this.genesisHash = o.genesisHash;
     /** R5-1: revokime shtesë (p.sh. të publikuara nga validatori); bashkohen me ato të zileve. */
     this.revocations = o.revocations ?? [];
+    /** R5-3: aggregator-ë të pabesuar për firmat (`getZiljaQuorumBundle`), për kuorumin. */
+    this.aggregators = o.aggregators ?? [];
     this.minTrust = o.minTrust ?? DEFAULTS.minTrust;
     this.maxSlotLag = o.maxSlotLag !== undefined ? o.maxSlotLag : this.solanaRpc ? DEFAULTS.maxSlotLagWithRpc : null;
     this.minSlot = o.minSlot ?? null;
@@ -176,8 +178,24 @@ export class ZiljaClient {
         }
         const genesisHex = /^[0-9a-fA-F]{64}$/.test(g) ? g.toLowerCase() : bytesToHex(b58decode(g));
         const got = await Promise.allSettled(this.endpoints.map((ep) => this.rpc(ep, "getZiljaAttestation", [slot])));
+        // R5-3: aggregator-ët (të pabesuar) japin firmat e shumë zileve me një thirrje; çdo firmë
+        // verifikohet njësoj si ato që vijnë direkt nga zilet.
+        const bundles = await Promise.allSettled(this.aggregators.map((ag) => this.rpc(ag, "getZiljaQuorumBundle", [slot])));
+        const bundleRevs = [];
+        for (const [i, b] of bundles.entries()) {
+          if (b.status === "rejected") {
+            warnings.push(`aggregator-i ${this.aggregators[i]}: ${b.reason?.message ?? b.reason}`);
+            continue;
+          }
+          if (b.value?.slot !== slot || !Array.isArray(b.value?.attestations)) {
+            warnings.push(`aggregator-i ${this.aggregators[i]}: përgjigje e pavlefshme`);
+            continue;
+          }
+          for (const x of b.value.attestations) got.push({ status: "fulfilled", value: x });
+          if (Array.isArray(b.value.revocations)) bundleRevs.push(...b.value.revocations.filter((r) => r && typeof r === "object"));
+        }
         // R5-1: revokimet nga cilado zile (secila verifikohet te verifyQuorum) + ato të dhëna nga thirrësi.
-        const revs = [...(this.revocations ?? [])];
+        const revs = [...(this.revocations ?? []), ...bundleRevs];
         for (const x of await Promise.allSettled(this.endpoints.map((ep) => this.rpc(ep, "getZiljaRevocations", [])))) {
           if (x.status === "fulfilled" && Array.isArray(x.value)) revs.push(...x.value.filter((r) => r && typeof r === "object"));
         }
