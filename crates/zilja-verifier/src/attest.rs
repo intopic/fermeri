@@ -12,6 +12,11 @@
 //! thjesht s'e rinovon. Autorizimi v1 (pa afat) s'pranohet më. Kur `signer == validator`, s'ka
 //! nevojë për autorizim (identiteti firmos vetë).
 //!
+//! Revokimi (R5-1): identiteti firmos `"zilja/revoke/v1" ‖ genesis_hash ‖ signer`. Mesazhi e
+//! vërteton veten: mjafton që klienti ta marrë nga një burim i vetëm (cilado zile, aggregator ose
+//! konfigurim), dhe çdo firmë e atij `signer`-i për atë identitet s'numërohet më, edhe brenda
+//! periudhës së autorizimit. Revokimi është i përhershëm për çiftin (identitet, signer).
+//!
 //! Light client-i pranon root-in vetëm nëse validatorët që e firmosën kanë **më shumë se 2/3**
 //! e stake-ut total. Bashkimi i firmave (BLS ose një set firmash në një objekt) është planifikuar
 //! për versionin e protokollit (SIMD); logjika e kuorumit mbetet e njëjtë.
@@ -22,6 +27,7 @@ use std::collections::HashSet;
 
 pub const ATTEST_DOMAIN: &[u8] = b"zilja/attest/v2";
 pub const AUTHORIZE_DOMAIN: &[u8] = b"zilja/authorize/v2";
+pub const REVOKE_DOMAIN: &[u8] = b"zilja/revoke/v1";
 /// Gjatësia maksimale e një autorizimi, në epoka (15 ≈ 30 ditë në mainnet).
 pub const MAX_AUTH_EPOCHS: u64 = 15;
 
@@ -44,6 +50,62 @@ pub fn authorize_message(genesis: &Hash, signer: &[u8; 32], from_epoch: u64, unt
     m.extend_from_slice(&from_epoch.to_le_bytes());
     m.extend_from_slice(&until_epoch.to_le_bytes());
     m
+}
+
+/// Mesazhi me të cilin identiteti revokon përgjithmonë çelësin `signer`.
+pub fn revoke_message(genesis: &Hash, signer: &[u8; 32]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(REVOKE_DOMAIN.len() + 64);
+    m.extend_from_slice(REVOKE_DOMAIN);
+    m.extend_from_slice(genesis);
+    m.extend_from_slice(signer);
+    m
+}
+
+/// Revokimi i një çelësi firmosjeje nga identiteti.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Revocation {
+    pub validator: [u8; 32],
+    pub signer: [u8; 32],
+    /// Firma e identitetit mbi `revoke_message(genesis, signer)`.
+    pub signature: [u8; 64],
+}
+
+impl Revocation {
+    /// E firmosur nga vetë identiteti, për këtë genesis? Identiteti s'mund të revokojë veten.
+    pub fn valid(&self, genesis: &Hash) -> bool {
+        self.signer != self.validator && ed_ok(&self.validator, &revoke_message(genesis, &self.signer), &self.signature)
+    }
+}
+
+/// Bashkësia e revokimeve të verifikuara për një genesis. Revokimet e pavlefshme hidhen (të
+/// numëruara te `ignored`): një burim keqdashës s'mund të revokojë çelësin e dikujt tjetër.
+#[derive(Clone, Debug, Default)]
+pub struct Revoked {
+    set: HashSet<([u8; 32], [u8; 32])>,
+    pub ignored: usize,
+}
+
+impl Revoked {
+    pub fn new(genesis: &Hash, revs: &[Revocation]) -> Self {
+        let mut r = Revoked::default();
+        for v in revs {
+            if v.valid(genesis) {
+                r.set.insert((v.validator, v.signer));
+            } else {
+                r.ignored += 1;
+            }
+        }
+        r
+    }
+    pub fn contains(&self, validator: &[u8; 32], signer: &[u8; 32]) -> bool {
+        self.set.contains(&(*validator, *signer))
+    }
+    pub fn len(&self) -> usize {
+        self.set.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
 }
 
 /// Autorizimi i një çelësi të veçantë nga identiteti, me afat.
@@ -142,6 +204,11 @@ pub struct QuorumReport {
 /// Kontrollon firmat dhe kuorumin > 2/3 të stake-ut. `epoch` është epoka e `slot`-it (e njëjta me
 /// atë të tabelës së stake-ut; thirrësi e kontrollon).
 pub fn verify_quorum(genesis: &Hash, epoch: u64, slot: u64, root: &Hash, atts: &[Attestation], table: &StakeTable) -> QuorumReport {
+    verify_quorum_with(genesis, epoch, slot, root, atts, table, &Revoked::default())
+}
+
+/// Si `verify_quorum`, por firmat e çelësave të revokuar (R5-1) s'numërohen.
+pub fn verify_quorum_with(genesis: &Hash, epoch: u64, slot: u64, root: &Hash, atts: &[Attestation], table: &StakeTable, revoked: &Revoked) -> QuorumReport {
     let mut seen = HashSet::new();
     let mut attested: u128 = 0;
     let mut valid = 0;
@@ -158,6 +225,10 @@ pub fn verify_quorum(genesis: &Hash, epoch: u64, slot: u64, root: &Hash, atts: &
             rejected += 1;
             continue;
         };
+        if a.signer.is_some_and(|s| s != a.validator && revoked.contains(&a.validator, &s)) {
+            rejected += 1;
+            continue;
+        }
         if a.verify(genesis, epoch, slot, root) {
             seen.insert(a.validator);
             valid += 1;
@@ -276,6 +347,43 @@ mod tests {
         // Identiteti që firmos vetë s'ka nevojë për autorizim dhe s'skadon.
         let own = Attestation { validator: id_pk, signer: None, authorization: None, signature: id.sign(&attest_message(&G, 7, &root)).to_bytes() };
         assert!(own.verify(&G, 99_999, 7, &root));
+    }
+
+    /// R5-1: një revokim i firmosur nga identiteti e heq çelësin menjëherë, edhe brenda periudhës;
+    /// një revokim i falsifikuar, për genesis tjetër ose i identitetit për veten s'ka efekt.
+    #[test]
+    fn revocation_removes_signer_immediately_and_cannot_be_forged() {
+        let id = SigningKey::generate(&mut OsRng);
+        let signer = SigningKey::generate(&mut OsRng);
+        let (s_pk, id_pk) = (signer.verifying_key().to_bytes(), id.verifying_key().to_bytes());
+        let table = StakeTable { entries: vec![(id_pk, 100)] };
+        let root = [9u8; 32];
+        let a = Attestation {
+            validator: id_pk,
+            signer: Some(s_pk),
+            authorization: Some(auth(&id, &G, &s_pk, E, E + 15)),
+            signature: signer.sign(&attest_message(&G, 7, &root)).to_bytes(),
+        };
+        let q = |r: &Revoked| verify_quorum_with(&G, E, 7, &root, std::slice::from_ref(&a), &table, r).reached;
+        assert!(q(&Revoked::default()));
+        let rev = Revocation { validator: id_pk, signer: s_pk, signature: id.sign(&revoke_message(&G, &s_pk)).to_bytes() };
+        let r = Revoked::new(&G, &[rev]);
+        assert_eq!((r.len(), r.ignored), (1, 0));
+        assert!(!q(&r), "çelësi i revokuar u numërua");
+        // Falsifikime: nga një tjetër, për genesis tjetër, me firmë të prishur, ose identiteti për veten.
+        let thief = SigningKey::generate(&mut OsRng);
+        let forged = [
+            Revocation { signature: thief.sign(&revoke_message(&G, &s_pk)).to_bytes(), ..rev },
+            Revocation { signature: id.sign(&revoke_message(&[1; 32], &s_pk)).to_bytes(), ..rev },
+            Revocation { signature: [7; 64], ..rev },
+            Revocation { signer: id_pk, signature: id.sign(&revoke_message(&G, &id_pk)).to_bytes(), ..rev },
+        ];
+        let r = Revoked::new(&G, &forged);
+        assert_eq!((r.len(), r.ignored), (0, 4));
+        assert!(q(&r));
+        // Identiteti që firmos vetë s'preket nga revokimet e çelësave.
+        let own = Attestation { validator: id_pk, signer: None, authorization: None, signature: id.sign(&attest_message(&G, 7, &root)).to_bytes() };
+        assert!(verify_quorum_with(&G, E, 7, &root, &[own], &table, &Revoked::new(&G, &[rev])).reached);
     }
 
     /// Opsioni A: një autorizim v1 (pa afat) s'pranohet, edhe i firmosur saktë.

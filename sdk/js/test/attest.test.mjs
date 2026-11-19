@@ -6,7 +6,7 @@ const v = JSON.parse(readFileSync(new URL("./vectors.json", import.meta.url), "u
 const table = new Map(v.table.map(([k, s]) => [k, BigInt(s)]));
 let fail = 0;
 for (const c of v.cases) {
-  const r = await verifyQuorum(v.genesis, c.epoch, c.slot, c.root, c.atts, table);
+  const r = await verifyQuorum(v.genesis, c.epoch, c.slot, c.root, c.atts, table, c.revocations);
   if (r.reached !== c.expectReached || r.attestedStake.toString() !== c.expectAttested) {
     fail++;
     console.error(`❌ ${c.name}: pritej ${c.expectReached}/${c.expectAttested}, erdhi ${r.reached}/${r.attestedStake}`);

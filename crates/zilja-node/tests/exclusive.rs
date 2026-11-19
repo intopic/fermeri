@@ -6,7 +6,7 @@ use zilja_node::{rpc, AttestOptions, Options, Service};
 use zilja_store::{PageOptions, PageTree};
 
 fn attest(log: &std::path::Path) -> AttestOptions {
-    AttestOptions { key: SigningKey::from_bytes(&[3; 32]), identity: None, authorization: None, authorization_file: None, genesis: [1; 32], log: Some(log.into()), adopt_legacy: false }
+    AttestOptions { key: SigningKey::from_bytes(&[3; 32]), identity: None, authorization: None, authorization_file: None, revocations_file: None, genesis: [1; 32], log: Some(log.into()), adopt_legacy: false }
 }
 
 fn tree(dir: &std::path::Path) -> Result<PageTree, String> {

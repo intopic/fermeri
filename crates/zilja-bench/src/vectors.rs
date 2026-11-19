@@ -93,7 +93,7 @@ fn main() {
 /// Vektorë për firmat e validatorëve: 10 validatorë me çelësa të njohur dhe stake të ndryshëm.
 fn attest_vectors() -> Value {
     use ed25519_dalek::{Signer, SigningKey};
-    use zilja_verifier::attest::{attest_message, authorize_message, verify_quorum, Attestation, Authorization, StakeTable};
+    use zilja_verifier::attest::{attest_message, authorize_message, revoke_message, verify_quorum_with, Attestation, Authorization, Revocation, Revoked, StakeTable};
     let genesis = zilja_verifier::sha256(b"zilja-vektoret-genesis");
     let keys: Vec<SigningKey> = (1u8..=10).map(|i| SigningKey::from_bytes(&[i; 32])).collect();
     let stakes: Vec<u64> = (1..=10).map(|i| i * 1_000_000_000).collect(); // 1..10 SOL, gjithsej 55
@@ -134,13 +134,19 @@ fn attest_vectors() -> Value {
     let root = [7u8; 32];
     let slot = 123_456u64;
     let mut cases = Vec::new();
-    let mut add_at = |name: &str, epoch: u64, s: u64, r: &[u8; 32], atts: Vec<Attestation>| {
-        let rep = verify_quorum(&genesis, epoch, s, r, &atts, &table);
+    let enc_rev = |revs: &[Revocation]| -> Value {
+        revs.iter()
+            .map(|r| json!({"validator": bs58::encode(r.validator).into_string(), "signer": bs58::encode(r.signer).into_string(), "signature": hex::encode(r.signature)}))
+            .collect()
+    };
+    let mut add_rev = |name: &str, epoch: u64, s: u64, r: &[u8; 32], atts: Vec<Attestation>, revs: Vec<Revocation>| {
+        let rep = verify_quorum_with(&genesis, epoch, s, r, &atts, &table, &Revoked::new(&genesis, &revs));
         cases.push(json!({
-            "name": name, "epoch": epoch, "slot": s, "root": hex::encode(r), "atts": enc(&atts),
+            "name": name, "epoch": epoch, "slot": s, "root": hex::encode(r), "atts": enc(&atts), "revocations": enc_rev(&revs),
             "expectReached": rep.reached, "expectAttested": rep.attested_stake.to_string(),
         }));
     };
+    let mut add_at = |name: &str, epoch: u64, s: u64, r: &[u8; 32], atts: Vec<Attestation>| add_rev(name, epoch, s, r, atts, Vec::new());
     let mut add = |name: &str, s: u64, r: &[u8; 32], atts: Vec<Attestation>| add_at(name, 805, s, r, atts);
     // 7 më të mëdhenjtë: 4+..+10 = 49/55 → po.
     add("quorum_reached", slot, &root, keys[3..].iter().map(|k| sign(k, slot, &root)).collect());
@@ -175,6 +181,20 @@ fn attest_vectors() -> Value {
         a.authorization.as_mut().unwrap().until_epoch = 816;
     }
     add_at("dedicated_signers_extended_period", 815, slot, &root, extended);
+    // R5-1: revokimi i 3 çelësave më të mëdhenj (8+9+10 = 27) → 22/55 → jo. I falsifikuar → po.
+    let signer_of = |id: &SigningKey| SigningKey::from_bytes(&zilja_verifier::sha256(&id.to_bytes())).verifying_key().to_bytes();
+    let revs: Vec<Revocation> = keys[7..]
+        .iter()
+        .map(|k| { let s = signer_of(k); Revocation { validator: k.verifying_key().to_bytes(), signer: s, signature: k.sign(&revoke_message(&genesis, &s)).to_bytes() } })
+        .collect();
+    let forged: Vec<Revocation> = revs.iter().map(|r| Revocation { signature: keys[0].sign(&revoke_message(&genesis, &r.signer)).to_bytes(), ..*r }).collect();
+    let other_chain: Vec<Revocation> = keys[7..]
+        .iter()
+        .map(|k| { let s = signer_of(k); Revocation { validator: k.verifying_key().to_bytes(), signer: s, signature: k.sign(&revoke_message(&[1u8; 32], &s)).to_bytes() } })
+        .collect();
+    add_rev("dedicated_signers_revoked", 805, slot, &root, ded(), revs);
+    add_rev("dedicated_signers_forged_revocation", 805, slot, &root, ded(), forged);
+    add_rev("dedicated_signers_revocation_other_chain", 805, slot, &root, ded(), other_chain);
     json!({
         "genesis": hex::encode(genesis),
         "table": table.entries.iter().map(|(k, s)| json!([bs58::encode(k).into_string(), s.to_string()])).collect::<Vec<_>>(),

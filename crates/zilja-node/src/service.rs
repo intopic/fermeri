@@ -429,7 +429,8 @@ fn sign_root(st: &mut State, signer: &mut Option<Attester>, m: &Metrics, slot: S
     }
     let Some(a) = signer else { return };
     // Rinovimi i autorizimit pa rinisje (skedari kontrollohet më së shumti një herë në sekondë).
-    if a.refresh_authorization() {
+    // `|` (jo `||`): të dy kontrollet bëhen çdo herë.
+    if a.refresh_authorization() | a.refresh_revocations() {
         st.attester = Some(a.info());
     }
     if !st.complete {

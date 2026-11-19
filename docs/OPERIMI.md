@@ -384,6 +384,7 @@ vëzhgua e plotë pas një ngarkimi në mes të punës. Prandaj:
    ```json
    "attest_keypair": "attest-signer.json",
    "attest_authorization": "zilja-authorization.json",
+   "attest_revocations": "revocations.json",
    "genesis_path": "<ledger>/genesis.bin"
    ```
 
@@ -404,9 +405,16 @@ Plugin-i e rilexon skedarin brenda një sekonde, **pa rinisje**, dhe e shkruan n
 periudhë > 15 epoka, v1) injorohet dhe mbetet autorizimi i mëparshëm. Kontrolli:
 `getZiljaAttestation` → `authorization.untilEpoch`.
 
-**Nëse çelësi i firmosjes vidhet:** krijo një çelës të ri (procedura më lart) dhe **mos e rinovo**
-të vjetrin. Ai vlen deri në `untilEpoch` të autorizimit të fundit, jo më. (Revokim i menjëhershëm
-do të kërkonte diçka mbi zinxhir; afati e kufizon dëmin.)
+**Nëse çelësi i firmosjes vidhet (R5-1):**
+1. Revokoje menjëherë, në makinën me identitetin:
+   `zilja-authorize --revoke validator-keypair.json <pubkey i çelësit të vjedhur> $(solana genesis-hash) > revocation.json`.
+2. Shtoje te skedari `attest_revocations` (listë JSON) i zilës suaj dhe, mundësisht, i zileve të
+   tjera që njihni: secila zile e shërben te `getZiljaRevocations` brenda një sekonde, pa
+   rinisje. Mjafton që klienti ta marrë nga **një** burim; revokimi e vërteton veten.
+3. Krijo një çelës të ri dhe autorizim të ri (procedura më lart). Zilja me çelësin e revokuar
+   ndalon së firmosuri dhe s'ngarkohet më me të.
+
+Revokimi është i përhershëm. Edhe pa të, çelësi i vjedhur vlen vetëm deri në `untilEpoch`.
 
 **Nga v1:** një skedar autorizimi pa `version: 2` refuzohet në ngarkim me udhëzimin për ta
 rikrijuar. Klientët e rinj s'numërojnë firma me autorizim v1.

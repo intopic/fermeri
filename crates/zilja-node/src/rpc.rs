@@ -9,6 +9,7 @@
 //!   slotin aktual; mbi majë `-32008`.
 //!
 //! `lamports` dhe `dataLen` dalin si tekst dhjetor (F-08): JSON-i s'mund t'i mbajë saktë mbi 2^53.
+//! - `getZiljaRevocations []` → `[{validator, signer, signature}]` (R5-1)
 //! - `getZiljaAttestation [slot?]` → `{slot, root, validator, signer, authorization, genesis, signature}`;
 //!   `authorization` = `{fromEpoch, untilEpoch, signature}` (v2) ose `null` kur firmos vetë identiteti
 //!   (kur zilja firmos; vetëm për pemë të plota, F-10).
@@ -173,6 +174,24 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
                 res["accounts"] = json!(st.tree.len());
             }
             json!({"jsonrpc": "2.0", "id": id, "result": res})
+        }
+        // R5-1: revokimet e verifikuara që njeh kjo zile (të çdo validatori). Secila e vërteton
+        // veten, ndaj klienti s'i beson zilës, vetëm i verifikon.
+        "getZiljaRevocations" => {
+            if !params.is_empty() {
+                return err(id, -32602, "duhet params: []");
+            }
+            let list: Vec<Value> = st
+                .attester
+                .as_ref()
+                .map(|a| {
+                    a.revocations
+                        .iter()
+                        .map(|r| json!({"validator": bs58::encode(r.validator).into_string(), "signer": bs58::encode(r.signer).into_string(), "signature": hex::encode(r.signature)}))
+                        .collect()
+                })
+                .unwrap_or_default();
+            json!({"jsonrpc": "2.0", "id": id, "result": list})
         }
         "getZiljaAttestation" => {
             if params.len() > 1 {
@@ -626,7 +645,7 @@ mod attest_tests {
         let keys: Vec<SigningKey> = (1u8..=4).map(|i| SigningKey::from_bytes(&[i; 32])).collect();
         let mut shareds = Vec::new();
         for k in &keys {
-            let attest = crate::AttestOptions { key: k.clone(), identity: None, authorization: None, authorization_file: None, genesis: [0x33; 32], log: None, adopt_legacy: false };
+            let attest = crate::AttestOptions { key: k.clone(), identity: None, authorization: None, authorization_file: None, revocations_file: None, genesis: [0x33; 32], log: None, adopt_legacy: false };
             let mut svc = Service::start_opts(crate::Options { attest: Some(attest), ..Default::default() }).unwrap();
             // Të gjitha zilet shohin të njëjtin zinxhir: duhet të dalë i njëjti root.
             svc.send(Event::Snapshot { slot: 1, pubkey: [7; 32], meta: Some(AccountMeta { lamports: 5, ..Default::default() }) });

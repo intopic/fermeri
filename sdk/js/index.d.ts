@@ -56,7 +56,16 @@ export function attestMessage(genesisHex: string, slot: number | bigint, rootHex
 export function authorizeMessage(genesisHex: string, signerB58: string, fromEpoch: number | bigint, untilEpoch: number | bigint): Uint8Array;
 /** `epoch` = epoka e `slot`-it (ajo e tabelës së stake-ut). */
 export function verifyAttestation(genesisHex: string, epoch: number | bigint, slot: number | bigint, rootHex: string, a: Attestation): Promise<boolean>;
-export function verifyQuorum(genesisHex: string, epoch: number | bigint, slot: number | bigint, rootHex: string, atts: Attestation[], table: Map<string, bigint>): Promise<QuorumReport>;
+export interface Revocation {
+  validator: string;
+  signer: string;
+  /** Firma e identitetit mbi revokeMessage(genesis, signer), hex. */
+  signature: string;
+}
+export function revokeMessage(genesisHex: string, signerB58: string): Uint8Array;
+export function verifyRevocation(genesisHex: string, r: Revocation): Promise<boolean>;
+/** `revocations` (R5-1): nga cilido burim; secila verifikohet. */
+export function verifyQuorum(genesisHex: string, epoch: number | bigint, slot: number | bigint, rootHex: string, atts: Attestation[], table: Map<string, bigint>, revocations?: Revocation[]): Promise<QuorumReport>;
 /** Vendi i llogarisë në pemë: SHA256("zilja/key/v2" ‖ pubkey). */
 export function treeKey(pubkeyB58: string): Promise<Uint8Array>;
 export const PROOF_VERSION: 2;
@@ -91,6 +100,8 @@ export interface ZiljaClientOptions {
   quorum?: boolean;
   /** Hash-i i genesis-it (base58 ose hex). Pa të, merret nga `solanaRpc`. */
   genesisHash?: string;
+  /** R5-1: revokime shtesë; bashkohen me ato që jep `getZiljaRevocations` i çdo zileje. */
+  revocations?: Revocation[];
   /** Nën këtë nivel besimi, `ok` del `false`. Parazgjedhja: "agreement". */
   minTrust?: Trust;
   /** Sa slote pas slotit të finalizuar të `solanaRpc` pranohen. Parazgjedhja: 150 kur ka `solanaRpc`; `null` = pa kontroll. */

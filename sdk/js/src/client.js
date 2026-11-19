@@ -85,6 +85,8 @@ export class ZiljaClient {
     this.minAgree = o.minAgree ?? DEFAULTS.minAgree;
     this.quorum = o.quorum ?? false;
     this.genesisHash = o.genesisHash;
+    /** R5-1: revokime shtesë (p.sh. të publikuara nga validatori); bashkohen me ato të zileve. */
+    this.revocations = o.revocations ?? [];
     this.minTrust = o.minTrust ?? DEFAULTS.minTrust;
     this.maxSlotLag = o.maxSlotLag !== undefined ? o.maxSlotLag : this.solanaRpc ? DEFAULTS.maxSlotLagWithRpc : null;
     this.minSlot = o.minSlot ?? null;
@@ -193,6 +195,11 @@ export class ZiljaClient {
         }
         const genesisHex = /^[0-9a-fA-F]{64}$/.test(g) ? g.toLowerCase() : bytesToHex(b58decode(g));
         const got = await Promise.allSettled(this.endpoints.map((ep) => this.rpc(ep, "getZiljaAttestation", [slot])));
+        // R5-1: revokimet nga cilado zile (secila verifikohet te verifyQuorum) + ato të dhëna nga thirrësi.
+        const revs = [...(this.revocations ?? [])];
+        for (const x of await Promise.allSettled(this.endpoints.map((ep) => this.rpc(ep, "getZiljaRevocations", [])))) {
+          if (x.status === "fulfilled" && Array.isArray(x.value)) revs.push(...x.value.filter((r) => r && typeof r === "object"));
+        }
         const byRoot = new Map();
         for (const a of got) {
           const x = a.status === "fulfilled" ? a.value : null;
@@ -202,7 +209,7 @@ export class ZiljaClient {
         }
         quorum = [];
         for (const [root, atts] of byRoot) {
-          const q = await verifyQuorum(genesisHex, toU64(e1.epoch), slot, root, atts, table);
+          const q = await verifyQuorum(genesisHex, toU64(e1.epoch), slot, root, atts, table, revs);
           quorum.push({ root, reached: q.reached });
           if (root === r.root) {
             const pct = q.totalStake > 0n ? Number((q.attestedStake * 10000n) / q.totalStake) / 100 : 0;

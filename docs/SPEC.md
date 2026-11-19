@@ -165,6 +165,15 @@ Kur zilja ndalon (boshllëk, zinxhir tjetër, disk i dëmtuar), çdo metodë kth
  "genesis": "<base58>", "signature": "<hex>"}
 ```
 
+### `getZiljaRevocations []`
+
+```json
+[{"validator": "<identiteti base58>", "signer": "<base58>", "signature": "<hex>"}]
+```
+
+Revokimet e verifikuara që njeh zilja (të çdo validatori, nga `attest_revocations`). Klienti i
+verifikon vetë; zila s'besohet.
+
 ### `GET /health`, `GET /metrics`
 
 - `/health`: `200 ok` vetëm kur jep dëftesa, përndryshe `503`.
@@ -186,6 +195,11 @@ authorization = "zilja/authorize/v2" ‖ genesis_hash[32] ‖ signer[32] ‖ fro
   Autorizimi v1 (`"zilja/authorize/v1" ‖ genesis ‖ signer`, pa afat) **s'pranohet**.
 - Rinovimi: identiteti firmos një periudhë të re (zakonisht nga epoka aktuale). Plugin-i e
   rilexon skedarin kur ndryshon, pa rinisje.
+- **Revokimi (R5-1):** `revocation = "zilja/revoke/v1" ‖ genesis_hash[32] ‖ signer[32]`, firmosur
+  nga identiteti. E vërteton veten, ndaj vlen nga cilido burim (`getZiljaRevocations` i çdo zileje,
+  ose i dhënë nga thirrësi). Klienti s'numëron asnjë firmë të atij `signer`-i për atë identitet,
+  edhe brenda periudhës. I përhershëm. Identiteti s'mund të revokojë veten. Zilja me çelës të
+  revokuar s'firmos më (dhe s'ngarkohet me të).
 - Root-i pranohet kur validatorët unikë me firmë të vlefshme kanë stake **> 2/3** e totalit
   të epokës. Stake-u numërohet sipas identitetit.
 - Zilja firmos vetëm kur pema është e plotë dhe, pas rinisjes, vetëm pasi zinxhiri u konfirmua.

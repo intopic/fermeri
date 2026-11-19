@@ -5,7 +5,7 @@ pub mod policy;
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use zilja_verifier::attest::{verify_quorum, Attestation, QuorumReport, StakeTable};
+use zilja_verifier::attest::{verify_quorum_with, Attestation, QuorumReport, Revocation, Revoked, StakeTable};
 
 /// JSON-RPC me kohë maksimale dhe kufi për madhësinë e përgjigjes (L-09).
 pub fn rpc(url: &str, method: &str, params: Value) -> Result<Value, String> {
@@ -147,10 +147,34 @@ pub fn parse_attestation(a: &Value, slot: u64) -> Result<(String, Attestation), 
 pub struct QuorumResult {
     pub groups: Vec<(String, QuorumReport)>,
     pub skipped: Vec<(String, String)>,
+    /// R5-1: revokime të vlefshme të mbledhura nga zilet (secila e verifikuar veç).
+    pub revoked: usize,
+}
+
+/// R5-1: një revokim i lexuar nga `getZiljaRevocations` (pa verifikim; e bën `Revoked::new`).
+pub fn parse_revocation(r: &Value) -> Result<Revocation, String> {
+    Ok(Revocation {
+        validator: b58_32(r["validator"].as_str().ok_or("revokimi: mungon validator")?)?,
+        signer: b58_32(r["signer"].as_str().ok_or("revokimi: mungon signer")?)?,
+        signature: zilja_verifier::wire::hex_lower(r["signature"].as_str().ok_or("revokimi: mungon signature")?).ok_or("revokimi: signature duhet 64 bajt hex i vogël")?,
+    })
+}
+
+/// Revokimet nga të gjitha zilet. Një zile që s'e ka metodën (version i vjetër) ose jep të dhëna të
+/// prishura thjesht s'kontribuon; revokimet e falsifikuara hidhen nga `Revoked::new`.
+pub fn collect_revocations(ziljas: &[String]) -> Vec<Revocation> {
+    let mut out = Vec::new();
+    for z in ziljas {
+        if let Ok(Value::Array(list)) = rpc(z, "getZiljaRevocations", json!([])) {
+            out.extend(list.iter().filter_map(|r| parse_revocation(r).ok()));
+        }
+    }
+    out
 }
 
 /// `epoch` = epoka e `slot`-it (ajo e tabelës së stake-ut, `StakeView::epoch`).
 pub fn quorum_by_root(ziljas: &[String], epoch: u64, slot: u64, genesis: &[u8; 32], table: &StakeTable) -> QuorumResult {
+    let revoked = Revoked::new(genesis, &collect_revocations(ziljas));
     let mut by_root: Vec<(String, Vec<Attestation>)> = Vec::new();
     let mut skipped = Vec::new();
     for z in ziljas {
@@ -166,9 +190,9 @@ pub fn quorum_by_root(ziljas: &[String], epoch: u64, slot: u64, genesis: &[u8; 3
         .into_iter()
         .map(|(root_hex, atts)| {
             let root = h32(&root_hex).expect("i kontrolluar nga is_root_hex");
-            let rep = verify_quorum(genesis, epoch, slot, &root, &atts, table);
+            let rep = verify_quorum_with(genesis, epoch, slot, &root, &atts, table, &revoked);
             (root_hex, rep)
         })
         .collect();
-    QuorumResult { groups, skipped }
+    QuorumResult { groups, skipped, revoked: revoked.len() }
 }
