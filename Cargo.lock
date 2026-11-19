@@ -4828,6 +4828,7 @@ dependencies = [
  "hex",
  "serde_json",
  "ureq",
+ "zilja-tree",
  "zilja-verifier",
 ]
 

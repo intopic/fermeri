@@ -1,77 +1,67 @@
 // Logjika e banorit, e përbashkët për faqen demo dhe për Node (web/check.mjs).
-import { verifyAccount, dataMatches } from "../sdk/js/src/index.js";
+// P-11: vendimi merret nga i njëjti kod si SDK-ja (ZiljaClient + policy.js), ndaj i njëjti rast jep
+// të njëjtin vendim në web, SDK dhe CLI. Kjo skedë vetëm i paraqet kontrollet veç e veç.
+import { ZiljaClient } from "../sdk/js/src/index.js";
 
-async function rpc(url, method, params = []) {
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  const j = await r.json();
-  if (j.error) throw new Error(`${method}: ${j.error.message}`);
-  return j.result;
-}
+const TRUST_TEXT = {
+  single: "nga një zile e vetme: i besohet asaj",
+  agreement: "disa zile të pavarura dhanë të njëjtin root",
+  quorum: "validatorët me > 2/3 e stake-ut e firmosën",
+  user: "root-i që dhe ti",
+};
+const FRESH_TEXT = {
+  fresh: "e freskët: afër slotit të finalizuar të RPC-së",
+  stale: "E VJETËR: larg slotit të finalizuar; s'është gjendja aktuale",
+  rollback: "KTHIM PAS: më e vjetër se një përgjigje e mëparshme",
+  unknown: "e panjohur: sloti i finalizuar s'u mor",
+  unchecked: "s'u kontrollua (jep një RPC Solana)",
+  historical: "slot i kërkuar (historik), jo gjendja aktuale",
+};
 
-function b64(s) {
-  const bin = atob(s);
-  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
-}
+// Mbrojtja nga kthimi pas për gjithë seancën e faqes.
+let highestSeen = null;
 
 /**
- * `ok` = dëftesa përputhet me root-in. `trust` tregon nga erdhi root-i: "self" (i njëjti
- * server, pra i besohet atij), "second" (një zile e dytë dha të njëjtin), "user" (e dhe ti).
- * @returns {Promise<{ok: boolean, trust: "self"|"second"|"user", steps: {ok: boolean|null, text: string}[], result: object}>}
+ * @param {object} o
+ * @param {string} o.ziljaUrl
+ * @param {string} o.pubkey
+ * @param {string} [o.solanaRpc]
+ * @param {string} [o.rootOverride]
+ * @param {string} [o.secondZilja]
+ * @param {"single"|"agreement"|"quorum"} [o.minTrust] parazgjedhja "agreement", si SDK-ja
+ * @returns {Promise<{ok: boolean, trust: string|null, verdict: string, checks: object|null, errors: string[], steps: {ok: boolean|null, text: string}[], result: object|null}>}
  */
-export async function checkAccount({ ziljaUrl, pubkey, solanaRpc, rootOverride, secondZilja }) {
+export async function checkAccount({ ziljaUrl, pubkey, solanaRpc, rootOverride, secondZilja, minTrust }) {
   const steps = [];
-  const r = await rpc(ziljaUrl, "getAccountProof", [pubkey]);
-  steps.push({ ok: null, text: `Zilja: slot ${r.slot}, dëftesë ${r.proofBytes} bajt${r.complete ? "" : " (pema nuk mbulon ende çdo llogari)"}` });
-
-  let root = r.root;
-  let trust = "self";
-  if (rootOverride) {
-    trust = "user";
-    root = rootOverride.trim().toLowerCase();
-    steps.push({ ok: null, text: "Root-i: ai që dhe ti" });
-  } else if (secondZilja) {
-    const r2 = await rpc(secondZilja, "getZiljaRoot", [r.slot]).catch(() => null);
-    if (r2 && r2.slot === r.slot) {
-      const same = r2.root === r.root;
-      steps.push({ ok: same, text: same ? "Zilja e dytë jep të njëjtin root për këtë slot" : "Zilja e dytë jep root TJETËR për të njëjtin slot" });
-      if (!same) return { ok: false, trust, steps, result: r };
-      trust = "second";
-    } else {
-      steps.push({ ok: null, text: `Zilja e dytë s'ka root për slotin ${r.slot}, s'mund të krahasohet` });
-    }
-  } else {
-    steps.push({ ok: null, text: "Root-i: nga i njëjti server (ende pa firmë validatorësh)" });
+  let client;
+  try {
+    client = new ZiljaClient({ endpoints: [ziljaUrl, secondZilja].filter(Boolean), solanaRpc, root: rootOverride || undefined, minTrust });
+  } catch (e) {
+    const errors = e.message.match(/config_[a-z_]+/g) ?? ["config"];
+    steps.push({ ok: false, text: `Konfigurimi: ${e.message}. Shto një zile të dytë, jep root-in, ose zgjidh nivelin "single" me vetëdije.` });
+    return { ok: false, trust: null, verdict: "invalid", checks: null, errors, steps, result: null };
   }
-
-  const verdict = await verifyAccount(root, pubkey, r.account, r.proof);
-  const ok = verdict !== "invalid";
+  client.highestSeen = highestSeen;
+  const r = await client.verifyAccount(pubkey);
+  if (r.ok && r.checks.freshness !== "historical") highestSeen = client.highestSeen;
+  const c = r.checks;
+  steps.push({ ok: null, text: `Zilja: slot ${r.slot}${c.completeness === "complete" ? "" : " (pema nuk mbulon çdo llogari)"}` });
   steps.push({
-    ok,
+    ok: c.proof === "valid",
     text:
-      verdict === "exists"
-        ? `Llogaria ekziston: ${Number(r.account.lamports) / 1e9} SOL`
-        : verdict === "does_not_exist"
-          ? "Llogaria NUK ekziston në këtë root"
-          : "Dëftesa NUK përputhet me root-in: dikush po gënjen",
+      c.proof !== "valid"
+        ? "Dëftesa NUK përputhet me root-in: dikush po gënjen"
+        : r.account
+          ? `Dëftesa e vlefshme: llogaria ekziston, ${r.account.lamports} lamports (${Number(r.account.lamports) / 1e9} SOL)`
+          : r.errors.includes("absence_incomplete")
+            ? "Dëftesa thotë 'nuk ekziston', por pema s'mbulon çdo llogari: s'pranohet"
+            : "Dëftesa e vlefshme: llogaria NUK ekziston në këtë root",
   });
-
-  if (ok && r.account && solanaRpc) {
-    const info = await rpc(solanaRpc, "getAccountInfo", [pubkey, { encoding: "base64", commitment: "finalized" }]);
-    if (!info.value) {
-      steps.push({ ok: false, text: `RPC-ja (slot ${info.context.slot}) nuk e gjen llogarinë` });
-    } else {
-      const same = (await dataMatches(r.account, b64(info.value.data[0]))) && BigInt(info.value.lamports) === BigInt(r.account.lamports);
-      steps.push({
-        ok: same ? true : null,
-        text: same
-          ? `Të dhënat nga RPC-ja (slot ${info.context.slot}) përputhen me vulën`
-          : `RPC-ja (slot ${info.context.slot}) jep të dhëna të tjera: ose llogaria ndryshoi pas slotit ${r.slot}, ose RPC-ja gënjen`,
-      });
-    }
-  }
-  return { ok, trust, steps, result: r };
+  steps.push({
+    ok: r.errors.includes("trust_below_min") || r.verdict === "conflict" ? false : r.trust === "single" ? null : true,
+    text: r.verdict === "conflict" ? "Root-i: zilet japin root-e të ndryshme për të njëjtin slot" : `Root-i: ${TRUST_TEXT[r.trust]}`,
+  });
+  steps.push({ ok: c.freshness === "fresh" ? true : ["stale", "rollback", "unknown"].includes(c.freshness) ? false : null, text: `Freskia: ${FRESH_TEXT[c.freshness]}` });
+  if (c.data !== "unchecked") steps.push({ ok: c.data === "match", text: c.data === "match" ? "Të dhënat nga RPC-ja përputhen me vulën" : "RPC-ja jep të dhëna të tjera nga vula" });
+  return { ok: r.ok, trust: r.trust, verdict: r.verdict, checks: c, errors: r.errors, steps, result: r };
 }

@@ -13,31 +13,9 @@
 //!
 //! Kodi i daljes: 0 = kuorumi u arrit, 1 = nuk u arrit, 2 = gabim.
 
-use serde_json::{json, Value};
-use std::collections::HashMap;
+use serde_json::json;
 use std::process::exit;
-use zilja_verifier::attest::{verify_quorum, Attestation, StakeTable};
-
-fn rpc(url: &str, method: &str, params: Value) -> Result<Value, String> {
-    let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
-    // L-09: kohë maksimale dhe kufi për madhësinë e përgjigjes (getVoteAccounts në mainnet ~ disa MB).
-    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(30)).build();
-    let r = agent.post(url).send_json(body).map_err(|e| e.to_string())?;
-    let mut text = String::new();
-    std::io::Read::read_to_string(&mut std::io::Read::take(r.into_reader(), 64 << 20), &mut text).map_err(|e| e.to_string())?;
-    if text.len() >= 64 << 20 {
-        return Err("përgjigje shumë e madhe (> 64 MB)".into());
-    }
-    let resp: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    if let Some(e) = resp.get("error") {
-        return Err(format!("{url} {method}: {e}"));
-    }
-    Ok(resp["result"].clone())
-}
-
-fn b58_32(s: &str) -> Result<[u8; 32], String> {
-    bs58::decode(s).into_vec().map_err(|e| e.to_string())?.try_into().map_err(|_| "duhen 32 bajt".into())
-}
+use zilja_cli::{genesis, quorum_by_root, rpc, stake_table};
 
 fn run() -> Result<bool, String> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -47,81 +25,60 @@ fn run() -> Result<bool, String> {
         v
     });
     if args.len() < 2 {
-        return Err("përdorimi: zilja-quorum <SOLANA_RPC_URL> <ZILJA_URL> [ZILJA_URL ...]".into());
+        return Err("përdorimi: zilja-quorum <SOLANA_RPC_URL> <ZILJA_URL> [ZILJA_URL ...] [--genesis <hash>]".into());
     }
     let (sol, ziljas) = (&args[0], &args[1..]);
 
-    let va = rpc(sol, "getVoteAccounts", json!([{"commitment": "finalized"}]))?;
-    let mut stakes: HashMap<[u8; 32], u64> = HashMap::new();
-    for group in ["current", "delinquent"] {
-        for v in va[group].as_array().into_iter().flatten() {
-            let node = b58_32(v["nodePubkey"].as_str().unwrap_or_default())?;
-            *stakes.entry(node).or_default() += v["activatedStake"].as_u64().unwrap_or(0);
-        }
-    }
-    let table = StakeTable { entries: stakes.into_iter().collect() };
-    let genesis_b58 = match genesis_arg {
-        Some(g) => g,
-        None => rpc(sol, "getGenesisHash", json!([]))?.as_str().ok_or("getGenesisHash")?.to_string(),
-    };
-    let genesis = b58_32(&genesis_b58)?;
-    println!("genesis: {genesis_b58}");
+    let table = stake_table(sol)?;
+    let g = genesis(sol, genesis_arg.as_deref())?;
+    println!("genesis: {}", bs58::encode(g).into_string());
     println!("stake total: {} lamports, {} validatorë", table.total(), table.entries.len());
 
     // Sloti i përbashkët: më i vogli nga slotet e fundit të firmosura.
     let mut latest = Vec::new();
     for z in ziljas {
-        latest.push(rpc(z, "getZiljaAttestation", json!([]))?["slot"].as_u64().ok_or("slot")?);
-    }
-    let slot = *latest.iter().min().unwrap();
-    println!("sloti i krahasimit: {slot}");
-
-    let mut by_root: HashMap<String, Vec<Attestation>> = HashMap::new();
-    for z in ziljas {
-        let a = rpc(z, "getZiljaAttestation", json!([slot]))?;
-        let validator = b58_32(a["validator"].as_str().ok_or("validator")?)?;
-        let signature: [u8; 64] = hex::decode(a["signature"].as_str().ok_or("signature")?)
-            .map_err(|e| e.to_string())?
-            .try_into()
-            .map_err(|_| "firma duhet 64 bajt")?;
-        let signer = match a["signer"].as_str() {
-            Some(s) => Some(b58_32(s)?),
-            None => None,
-        };
-        let authorization = match a["authorization"].as_str() {
-            Some(h) => Some(hex::decode(h).map_err(|e| e.to_string())?.try_into().map_err(|_| "autorizimi duhet 64 bajt")?),
-            None => None,
-        };
-        let root = a["root"].as_str().ok_or("root")?.to_string();
-        println!(
-            "  {z}: validator {}{} → root {}",
-            a["validator"].as_str().unwrap(),
-            if signer.is_some() { " (çelës i veçantë, i autorizuar)" } else { "" },
-            &root[..16]
-        );
-        by_root.entry(root).or_default().push(Attestation { validator, signer, authorization, signature });
-    }
-    if by_root.len() > 1 {
-        println!("⚠️  zilet japin {} root-e të ndryshme për slotin {slot}", by_root.len());
-    }
-    let mut best: Option<(String, zilja_verifier::attest::QuorumReport)> = None;
-    for (root_hex, atts) in &by_root {
-        let root: [u8; 32] = hex::decode(root_hex).map_err(|e| e.to_string())?.try_into().map_err(|_| "root")?;
-        let rep = verify_quorum(&genesis, slot, &root, atts, &table);
-        if best.as_ref().is_none_or(|(_, b)| rep.attested_stake > b.attested_stake) {
-            best = Some((root_hex.clone(), rep));
+        match rpc(z, "getZiljaAttestation", json!([])).map(|a| a["slot"].as_u64()) {
+            Ok(Some(s)) => latest.push(s),
+            Ok(None) => println!("  {z}: përgjigje pa slot, s'numërohet"),
+            Err(e) => println!("  {z}: {e}"),
         }
     }
-    let (root, rep) = best.ok_or("asnjë firmë")?;
-    let pct = if rep.total_stake > 0 { rep.attested_stake as f64 * 100.0 / rep.total_stake as f64 } else { 0.0 };
-    println!("root {root}");
-    println!("firma të vlefshme: {}, të refuzuara: {}, stake që firmosi: {pct:.2}%", rep.valid_signatures, rep.rejected);
-    if rep.reached {
-        println!("✅ kuorumi > 2/3 u arrit: pleqtë e firmosën ziles");
-    } else {
-        println!("❌ kuorumi nuk u arrit");
+    let slot = *latest.iter().min().ok_or("asnjë zile s'dha firmë")?;
+    println!("sloti i krahasimit: {slot}");
+
+    // P-11: çdo root kontrollohet (64 hex) para përdorimit; firmat grupohen sipas root-it dhe
+    // kuorumi vlerësohet për secilin veç. Dy root-e me kuorum = ndarje, dështim.
+    let q = quorum_by_root(ziljas, slot, &g, &table);
+    for (z, e) in &q.skipped {
+        println!("  {z}: s'numërohet ({e})");
     }
-    Ok(rep.reached)
+    if q.groups.len() > 1 {
+        println!("⚠️  zilet japin {} root-e të ndryshme për slotin {slot}", q.groups.len());
+    }
+    let mut reached = Vec::new();
+    for (root, rep) in &q.groups {
+        let pct = if rep.total_stake > 0 { rep.attested_stake as f64 * 100.0 / rep.total_stake as f64 } else { 0.0 };
+        println!("root {root}");
+        println!("  firma të vlefshme: {}, të refuzuara: {}, stake që firmosi: {pct:.2}%", rep.valid_signatures, rep.rejected);
+        if rep.reached {
+            reached.push(root);
+        }
+    }
+    println!("⚠️  tabela e stake-ut është e epokës aktuale dhe u mor nga {sol}: i besohet atij");
+    match reached.len() {
+        1 => {
+            println!("✅ kuorumi > 2/3 u arrit për root {}", reached[0]);
+            Ok(true)
+        }
+        0 => {
+            println!("❌ kuorumi nuk u arrit");
+            Ok(false)
+        }
+        n => {
+            println!("❌ kuorumi u arrit për {n} root-e të ndryshme: tabela e stake-ut ose firmat janë të dyshimta");
+            Ok(false)
+        }
+    }
 }
 
 fn main() {
