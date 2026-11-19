@@ -1,13 +1,9 @@
 [package]
 name = "zilja-store"
-description = "Pema e Ziles në disk (RocksDB ose skedar faqesh), me kujtesë të sloteve të fundit"
+description = "Pema e Ziles në disk (skedar faqesh 4 KB), me kujtesë të sloteve të fundit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-
-[features]
-# Motori i vjetër DiskTree (RocksDB). Kërkon libclang për ndërtim.
-rocksdb = ["dep:rocksdb"]
 
 [dependencies]
 sha2 = { workspace = true }
@@ -19,8 +15,6 @@ ahash = "0.8"
 crc32fast = "1"
 serde_json = { workspace = true }
 bs58 = { workspace = true }
-# A21: vetëm për motorin e vjetër (bench, krahasime). Release-i i plugin-it s'e përfshin.
-rocksdb = { version = "0.24", default-features = false, features = ["lz4"], optional = true }
 
 [dev-dependencies]
 rand = { workspace = true }

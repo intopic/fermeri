@@ -2,15 +2,19 @@
 
 use serde_json::Value;
 use zilja_node::{rpc::handle_jsonrpc, Event, Options, Service, Shared, Status};
-use zilja_store::DiskTree;
+use zilja_store::{PageOptions, PageTree};
 use zilja_verifier::{verify_account, AccountMeta, Proof, Verdict};
 
 fn m(l: u64) -> Option<AccountMeta> {
     Some(AccountMeta { lamports: l, ..Default::default() })
 }
 
+fn open(dir: &std::path::Path) -> Result<PageTree, String> {
+    PageTree::open(dir, PageOptions { cache_depth: 8, history: 32, durable: false, ..Default::default() })
+}
+
 fn start(dir: &std::path::Path) -> Service {
-    let tree = DiskTree::open(dir, 8).unwrap();
+    let tree = open(dir).unwrap();
     Service::start_opts(Options { tree: Some(Box::new(tree)), ..Default::default() }).unwrap()
 }
 
@@ -114,7 +118,7 @@ fn resume_history_and_wrong_chain() {
         assert_eq!(r["error"]["code"], -32003, "{r}");
         assert_eq!(sh.metrics.broken.load(std::sync::atomic::Ordering::Relaxed), 1);
         // F-13: asgjë s'u fshi ende; vetëm u shënua.
-        assert!(dir.path().join("CURRENT").exists());
+        assert!(dir.path().join("pages.dat").exists() && dir.path().join("MANIFEST").exists());
     }
     // Nisja tjetër e sheh shënimin dhe e rindërton nga e para (do të vijë snapshot-i).
     let svc = start(dir.path());
@@ -143,22 +147,22 @@ fn resume_history_and_wrong_chain() {
 fn unknown_state_version_is_refused_not_wiped() {
     let dir = tempfile::tempdir().unwrap();
     {
-        let mut t = DiskTree::open(dir.path(), 8).unwrap();
+        let mut t = open(dir.path()).unwrap();
         use zilja_tree::StateTree;
         t.stage_snapshot(1, vec![([1; 32], m(5))]).unwrap();
         t.finish_snapshot(1, true).unwrap();
     }
-    {
-        let cfs = ["nodes", "pages", "nodes_hist", "staging", "meta"];
-        let mut o = rocksdb::Options::default();
-        o.set_atomic_flush(true);
-        let db = rocksdb::DB::open_cf(&o, dir.path(), cfs).unwrap();
-        let cf = db.cf_handle("meta").unwrap();
-        let mut v = db.get_cf(cf, b"state").unwrap().unwrap();
-        v[0] = 99;
-        db.put_cf(cf, b"state", &v).unwrap();
-        db.flush().unwrap();
-    }
-    assert!(DiskTree::open(dir.path(), 8).is_err());
-    assert!(DiskTree::open(dir.path(), 8).is_err(), "gjendja duhet të jetë ende aty");
+    let mp = dir.path().join("MANIFEST");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&mp).unwrap()).unwrap();
+    v["format_version"] = serde_json::json!(99);
+    std::fs::write(&mp, v.to_string()).unwrap();
+    let snapshot = |d: &std::path::Path| -> Vec<(String, Vec<u8>)> {
+        let mut f: Vec<_> = std::fs::read_dir(d).unwrap().map(|e| e.unwrap()).filter(|e| e.file_type().unwrap().is_file()).map(|e| (e.file_name().to_string_lossy().to_string(), std::fs::read(e.path()).unwrap())).collect();
+        f.sort();
+        f
+    };
+    let before = snapshot(dir.path());
+    assert!(open(dir.path()).is_err());
+    assert!(open(dir.path()).is_err(), "gjendja duhet të jetë ende aty");
+    assert_eq!(snapshot(dir.path()), before, "asnjë skedar s'duhet ndryshuar");
 }

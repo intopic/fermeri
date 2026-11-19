@@ -19,7 +19,6 @@
 #   SIZES="100000000 500000000 1000000000"   madhësitë
 #   SLOTS=300                 slote për çdo madhësi
 #   PER_SLOT=10000            ndryshime për slot (mainnet: dhjetëra mijëra llogari/slot)
-#   COMPARE=1                 mat edhe RocksDB te madhësia e parë (0 = vetëm faqet)
 #   KEEP_TOOLS=0              1 = mos e fshi kodin dhe Rust-in në fund
 set -euo pipefail
 
@@ -27,7 +26,6 @@ DATA_DIR=${DATA_DIR:-$HOME/zilja-scale-data}
 SIZES=${SIZES:-"100000000 500000000 1000000000"}
 SLOTS=${SLOTS:-300}
 PER_SLOT=${PER_SLOT:-10000}
-COMPARE=${COMPARE:-1}
 KEEP_TOOLS=${KEEP_TOOLS:-0}
 SRC_DIR=${SRC_DIR:-$HOME/zilja-scale-src}
 OUT_DIR=${OUT_DIR:-$HOME/zilja-scale-results}
@@ -71,7 +69,7 @@ for n in $SIZES; do
   if [ "$need" -le "$FREE_GB" ]; then RUN_SIZES="$RUN_SIZES $n"; else echo "⚠ $n llogari kërkojnë ~$need GB; ke $FREE_GB GB: kapërcehet."; fi
 done
 [ -n "$RUN_SIZES" ] || die "Asnjë madhësi s'futet në disk. Liro hapësirë ose vendos DATA_DIR në një disk më të madh."
-echo "Do të matet:$RUN_SIZES llogari (RocksDB për krahasim: $([ "$COMPARE" = 1 ] && echo po || echo jo))"
+echo "Do të matet:$RUN_SIZES llogari (motori pages)"
 
 # ------------------------------------------------------------------ 2. mjetet
 say "2/4 Mjetet dhe ndërtimi"
@@ -137,11 +135,10 @@ PY
   echo "  ($(( (SECONDS - t0) / 60 )) min)"
 }
 
-first=1
+
 for n in $RUN_SIZES; do
   run_one pages "$n"
-  if [ "$first" = 1 ] && [ "$COMPARE" = 1 ]; then run_one rocksdb "$n"; fi
-  first=0
+
 done
 
 # ------------------------------------------------------------------ 4. raporti

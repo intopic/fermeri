@@ -189,6 +189,8 @@ export interface TokenAccount {
 }
 export function parseTokenAccount(data: Uint8Array): TokenAccount;
 export function parseMint(data: Uint8Array): { supply: bigint; decimals: number };
+/** Uint8Array → base64, me copa (pa spread), edhe pa Buffer. */
+export function bytesToBase64(u8: Uint8Array): string;
 export class VerifiableConnection {
   /** `zilja`: ZiljaClient ose opsionet e tij (duhet `solanaRpc`). `PublicKey`: konstruktori i web3.js (opsional). */
   constructor(o: { zilja: ZiljaClient | ZiljaClientOptions; PublicKey?: new (s: string) => any; onUnverified?: "throw" | "null" });

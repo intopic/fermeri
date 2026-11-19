@@ -345,6 +345,7 @@ fn connection_vectors() -> Value {
             "base64": base64::engine::general_purpose::STANDARD.encode(d),
         })).collect::<Vec<_>>(),
         "single": single,
-        "multi": [multi(&[wallet, ata, missing]), multi(&[ata, mint]), multi(&[mint, ata])],
+        // 150 llogari (dyfishe): klienti duhet ta ndajë getMultipleAccounts në copa ≤ 100.
+        "multi": [multi(&[wallet, ata, missing]), multi(&[ata, mint]), multi(&[mint, ata]), multi(&[wallet, ata].repeat(75))],
     })
 }

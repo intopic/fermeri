@@ -42,7 +42,7 @@ fn bundle_from_real_ziljas_reaches_quorum_with_one_call() {
     let mut urls: Vec<String> = ziles.iter().map(|(_, s)| format!("http://{}", s.addr())).collect();
     // Një adresë që s'përgjigjet: s'e prish bundle-in.
     urls.push("http://127.0.0.1:9".into());
-    let agg = Arc::new(Aggregator::new(urls, HttpFetch));
+    let agg = Arc::new(Aggregator::new(urls, G, HttpFetch));
     let srv = rpc::serve_handler("127.0.0.1:0", agg.clone(), Routes { jsonrpc: true, metrics: true, cors: false }, rpc::HttpLimits::default()).unwrap();
     // Klienti: një thirrje HTTP te aggregator-i.
     let b = zilja_cli::rpc(&format!("http://{}", srv.addr()), "getZiljaQuorumBundle", json!([2])).unwrap();
@@ -91,7 +91,7 @@ fn far_slots_and_new_slot_floods_are_refused() {
             }
         }
     }
-    let agg = Aggregator::new(vec!["http://x".into()], Null);
+    let agg = Aggregator::new(vec!["http://x".into()], G, Null);
     agg.learn_tip();
     assert_eq!(agg.bundle(1).unwrap_err().0, -32007, "shumë larg poshtë majës");
     assert_eq!(agg.bundle(10_010).unwrap_err().0, -32007, "mbi majë");
@@ -104,4 +104,43 @@ fn far_slots_and_new_slot_floods_are_refused() {
     let r = agg.jsonrpc(r#"{"id":1,"method":"getZiljaQuorumBundle","params":["x"]}"#);
     assert_eq!(r["error"]["code"], -32602);
     assert_eq!(agg.jsonrpc(r#"{"id":1,"method":"nope"}"#)["error"]["code"], -32601);
+}
+
+/// R5 (rishikimi): maja s'zvarritet nga kërkesa për slote që askush s'i ka firmosur; numrat e mëdhenj
+/// s'tejmbushen; revokimet e pavlefshme, të dyfishta ose të një genesis-i tjetër s'përcillen.
+#[test]
+fn tip_does_not_creep_overflow_is_safe_and_revocations_are_verified() {
+    use ed25519_dalek::Signer;
+    use zilja_verifier::attest::revoke_message;
+    let id = SigningKey::from_bytes(&[9; 32]);
+    let signer = SigningKey::from_bytes(&[8; 32]);
+    let thief = SigningKey::from_bytes(&[7; 32]);
+    let rev = |by: &SigningKey, g: &[u8; 32]| {
+        json!({
+            "validator": bs58::encode(id.verifying_key().to_bytes()).into_string(),
+            "signer": bs58::encode(signer.verifying_key().to_bytes()).into_string(),
+            "signature": hex::encode(by.sign(&revoke_message(g, &signer.verifying_key().to_bytes())).to_bytes()),
+        })
+    };
+    let revs = json!([rev(&id, &G), rev(&id, &G), rev(&thief, &G), rev(&id, &[1; 32]), {"validator": "x"}]);
+    struct Fx(Value);
+    impl Fetch for Fx {
+        fn call(&self, _: &str, m: &str, _: Value) -> Result<Value, String> {
+            match m {
+                "getZiljaRoot" => Ok(json!({"slot": 10_000})),
+                "getZiljaRevocations" => Ok(self.0.clone()),
+                _ => Err("s'ka firmë".into()),
+            }
+        }
+    }
+    let agg = Aggregator::new(vec!["http://x".into(), "http://y".into()], G, Fx(revs));
+    agg.learn_tip();
+    // +4 lejohet, por askush s'e ka firmosur: maja mbetet 10 000, ndaj +8 refuzohet sërish.
+    let b = agg.bundle(10_004).unwrap();
+    assert_eq!(b["answered"], 0);
+    assert_eq!(agg.bundle(10_008).unwrap_err().0, -32007, "maja u zvarrit nga një slot pa firma");
+    // Pa tejmbushje (në debug do të ishte panic).
+    assert_eq!(agg.bundle(u64::MAX).unwrap_err().0, -32007);
+    // Vetëm revokimi i vlefshëm, një herë (i njëjti nga dy zile, i falsifikuar, genesis tjetër, i prishur).
+    assert_eq!(b["revocations"].as_array().unwrap().len(), 1, "{}", b["revocations"]);
 }

@@ -30,6 +30,8 @@ pub const REVOCATIONS_TTL: Duration = Duration::from_secs(30);
 pub const FANOUT: usize = 32;
 /// Sa larg nga sloti më i lartë i njohur mund të jetë një kërkesë (poshtë; lart lejohen 4).
 pub const MAX_BEHIND: u64 = 4096;
+/// Sa revokime mbahen më së shumti (një zile keqdashëse s'e mbush kujtesën).
+pub const MAX_REVOCATIONS: usize = 10_000;
 
 /// Si i pyet zilet (e zëvendësueshme në teste).
 pub trait Fetch: Send + Sync + 'static {
@@ -49,7 +51,8 @@ struct Entry {
     /// zile → firma (objekti JSON siç e dha zilja, pas kontrollit të formës).
     got: HashMap<String, Value>,
     missing: Vec<String>,
-    fetched: Instant,
+    /// `None` = s'është pyetur ende.
+    fetched: Option<Instant>,
 }
 
 struct Inner {
@@ -63,15 +66,18 @@ struct Inner {
 
 pub struct Aggregator<F: Fetch = HttpFetch> {
     ziljas: Vec<String>,
+    /// Genesis-i i zinxhirit: revokimet verifikohen me të para se të përcillen.
+    genesis: [u8; 32],
     fetch: F,
     inner: Mutex<Inner>,
     pub served: std::sync::atomic::AtomicU64,
 }
 
 impl<F: Fetch> Aggregator<F> {
-    pub fn new(ziljas: Vec<String>, fetch: F) -> Self {
+    pub fn new(ziljas: Vec<String>, genesis: [u8; 32], fetch: F) -> Self {
         Aggregator {
             ziljas,
+            genesis,
             fetch,
             inner: Mutex::new(Inner {
                 cache: BTreeMap::new(),
@@ -128,12 +134,20 @@ impl<F: Fetch> Aggregator<F> {
                 return g.revocations.clone();
             }
         }
+        // Vetëm revokime të vlefshme për këtë genesis (firma e identitetit), pa dyfishe, me kufi.
+        let mut seen = std::collections::HashSet::new();
         let mut all: Vec<Value> = Vec::new();
-        for (_, r) in self.fan_out(&self.ziljas, "getZiljaRevocations", &json!([])) {
+        'outer: for (_, r) in self.fan_out(&self.ziljas, "getZiljaRevocations", &json!([])) {
             if let Ok(Value::Array(list)) = r {
                 for x in list {
-                    if zilja_cli::parse_revocation(&x).is_ok() && !all.contains(&x) {
-                        all.push(x);
+                    let Ok(rv) = zilja_cli::parse_revocation(&x) else { continue };
+                    if !rv.valid(&self.genesis) || !seen.insert((rv.validator, rv.signer)) {
+                        continue;
+                    }
+                    all.push(x);
+                    if all.len() >= MAX_REVOCATIONS {
+                        log::warn!("zilja-aggregator: më shumë se {MAX_REVOCATIONS} revokime; të tjerat s'përcillen");
+                        break 'outer;
                     }
                 }
             }
@@ -148,7 +162,7 @@ impl<F: Fetch> Aggregator<F> {
     pub fn bundle(&self, slot: u64) -> Result<Value, (i64, String)> {
         let entry = {
             let mut g = self.inner.lock().unwrap();
-            if g.highest > 0 && (slot + MAX_BEHIND < g.highest || slot > g.highest + 4) {
+            if g.highest > 0 && (slot.saturating_add(MAX_BEHIND) < g.highest || slot > g.highest.saturating_add(4)) {
                 return Err((-32007, format!("sloti {slot} është larg majës së njohur ({})", g.highest)));
             }
             match g.cache.get(&slot) {
@@ -162,7 +176,7 @@ impl<F: Fetch> Aggregator<F> {
                         return Err((-32005, "shumë slote të reja në sekondë; provo pas pak".into()));
                     }
                     g.new_in_window += 1;
-                    let e = Arc::new(Mutex::new(Entry { got: HashMap::new(), missing: self.ziljas.clone(), fetched: Instant::now() - RETRY_AFTER * 2 }));
+                    let e = Arc::new(Mutex::new(Entry { got: HashMap::new(), missing: self.ziljas.clone(), fetched: None }));
                     g.cache.insert(slot, e.clone());
                     while g.cache.len() > CACHE_SLOTS {
                         g.cache.pop_first();
@@ -173,7 +187,7 @@ impl<F: Fetch> Aggregator<F> {
         };
         // Një kërkesë njëkohësisht për slot (të tjerat presin dhe marrin të njëjtën përgjigje).
         let mut e = entry.lock().unwrap();
-        if !e.missing.is_empty() && e.fetched.elapsed() >= RETRY_AFTER {
+        if !e.missing.is_empty() && e.fetched.is_none_or(|t| t.elapsed() >= RETRY_AFTER) {
             let ask = std::mem::take(&mut e.missing);
             for (url, r) in self.fan_out(&ask, "getZiljaAttestation", &json!([slot])) {
                 match r {
@@ -183,9 +197,13 @@ impl<F: Fetch> Aggregator<F> {
                     _ => e.missing.push(url),
                 }
             }
-            e.fetched = Instant::now();
-            let mut g = self.inner.lock().unwrap();
-            g.highest = g.highest.max(slot);
+            e.fetched = Some(Instant::now());
+            // Maja lëviz vetëm kur të paktën një zile e njeh slotin: një kërkesë për një slot të
+            // largët që askush s'e ka firmosur s'e zhvendos dritaren e kërkesave të pranuara.
+            if !e.got.is_empty() {
+                let mut g = self.inner.lock().unwrap();
+                g.highest = g.highest.max(slot);
+            }
         }
         let mut atts: Vec<&Value> = e.got.values().collect();
         // Radhë e qëndrueshme (s'ka rëndësi për klientin, por e bën përgjigjen të krahasueshme).

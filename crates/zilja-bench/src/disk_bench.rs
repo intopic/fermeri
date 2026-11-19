@@ -2,7 +2,7 @@
 //!
 //! `cargo run -p zilja-bench --release --bin zilja-disk-bench -- [llogari] [slote] [ndryshime_per_slot] [dir] [history]`
 //!
-//! `ZILJA_ENGINE=pages` (parazgjedhja) = skedari i faqeve; `ZILJA_ENGINE=rocksdb` = RocksDB.
+//! Motori: skedari i faqeve (pages), i vetmi që nga R6.
 //! Çelësat nuk mbahen në RAM: çelësi `i` rillogaritet nga numri `i`, ndaj bench-i shkon deri në
 //! miliarda llogari me pak memorie.
 
@@ -10,7 +10,7 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde_json::json;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
-use zilja_store::{DiskTree, PageOptions, PageTree, StoreOptions};
+use zilja_store::{PageOptions, PageTree};
 use zilja_tree::StateTree;
 use zilja_verifier::{verify_tree_key, AccountMeta, Key, Verdict};
 
@@ -65,27 +65,23 @@ fn key_of(i: u64) -> Key {
 }
 
 enum Engine {
-    Rocks(Box<DiskTree>),
     Pages(Box<PageTree>),
 }
 
 impl Engine {
     fn tree(&mut self) -> &mut dyn StateTree {
         match self {
-            Engine::Rocks(x) => x.as_mut(),
             Engine::Pages(x) => x.as_mut(),
         }
     }
     fn view(&self) -> &dyn StateTree {
         match self {
-            Engine::Rocks(x) => x.as_ref(),
             Engine::Pages(x) => x.as_ref(),
         }
     }
     /// Leximet nga disku në slotin e fundit.
     fn reads(&self) -> u64 {
         match self {
-            Engine::Rocks(x) => x.last_disk_reads.load(Ordering::Relaxed),
             Engine::Pages(x) => x.last_disk_reads.load(Ordering::Relaxed),
         }
     }
@@ -133,19 +129,6 @@ fn main() {
     let cache_depth: u16 = std::env::var("ZILJA_CACHE_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(zilja_store::CACHE_DEPTH);
     let engine = std::env::var("ZILJA_ENGINE").unwrap_or_else(|_| "pages".into());
     let mut eng = match engine.as_str() {
-        "rocksdb" => Engine::Rocks(Box::new(
-            DiskTree::open_opts(
-                &dir,
-                StoreOptions {
-                    history,
-                    cache_depth,
-                    block_cache_mb: std::env::var("ZILJA_BLOCK_CACHE_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(256),
-                    durable,
-                    sync_every: std::env::var("ZILJA_SYNC_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(0),
-                },
-            )
-            .unwrap(),
-        )),
         "pages" => Engine::Pages(Box::new(
             PageTree::open(
                 &dir,
@@ -159,7 +142,7 @@ fn main() {
             )
             .unwrap(),
         )),
-        e => panic!("motor i panjohur: {e} (pages | rocksdb)"),
+        e => panic!("motor i panjohur: {e} (vetëm pages; RocksDB u hoq)"),
     };
     eprintln!("motori: {engine}, cache_depth {cache_depth}, history {history}, durable {durable}");
     let rss0 = rss_mb();
@@ -270,7 +253,7 @@ fn main() {
         "rss_growth_mb": rss_mb() - rss0,
         "disk_mb": dir_mb(&dir),
         "disk_bytes_per_account": dir_mb(&dir) * (1 << 20) as f64 / t.len() as f64,
-        "note": "device_* nga /proc/self/io (bajte të dërguara realisht në disk, përfshirë kompaktimin e RocksDB); rocksdb ka edhe 256 MB block cache në RSS",
+        "note": "device_* nga /proc/self/io (bajte të dërguara realisht në disk)",
     });
     println!("{}", serde_json::to_string_pretty(&out).unwrap());
 }

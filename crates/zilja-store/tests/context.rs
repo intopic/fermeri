@@ -36,11 +36,14 @@ fn tree_of_genesis_a_is_refused_for_genesis_b() {
     assert_eq!(t.version(), Some(1));
 }
 
+/// RocksDB u hoq, por një dosje e vjetër RocksDB (`CURRENT`, `IDENTITY`, `OPTIONS-*`, `*.sst`) s'duhet
+/// të hapet kurrë si instalim i ri pages, dhe s'preket.
 #[test]
-#[cfg(feature = "rocksdb")]
 fn rocksdb_directory_is_not_opened_as_a_new_pages_install() {
     let d = tempfile::tempdir().unwrap();
-    drop(zilja_store::DiskTree::open(d.path(), 4).unwrap());
+    for (f, c) in [("CURRENT", "MANIFEST-000005\n"), ("IDENTITY", "x"), ("OPTIONS-000007", "[Version]"), ("000004.sst", "sst")] {
+        std::fs::write(d.path().join(f), c).unwrap();
+    }
     let before = files(d.path());
     let e = PageTree::open(d.path(), opts([1; 32])).err().expect("dosja RocksDB s'duhet të hapet si pages");
     assert!(e.contains("RocksDB"), "{e}");

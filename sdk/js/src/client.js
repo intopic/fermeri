@@ -367,11 +367,18 @@ export class ZiljaClient {
     const want = pubkeys.map((_, i) => i).filter((i) => verdicts[i] === "exists");
     if (this.solanaRpc && this.compareData && reqSlot == null && want.length) {
       try {
-        const info = await this.rpc(this.solanaRpc, "getMultipleAccounts", [want.map((i) => pubkeys[i]), { encoding: "base64", commitment: "finalized" }]);
-        const rpcSlot = info?.context?.slot;
-        if (!Array.isArray(info?.value) || info.value.length !== want.length) throw new Error("getMultipleAccounts: përgjigje e pavlefshme");
+        // Agave pranon ≤ 100 llogari për getMultipleAccounts: kërkesa ndahet në copa.
+        const values = [];
+        let rpcSlot = null;
+        for (let c = 0; c < want.length; c += 100) {
+          const part = want.slice(c, c + 100);
+          const info = await this.rpc(this.solanaRpc, "getMultipleAccounts", [part.map((i) => pubkeys[i]), { encoding: "base64", commitment: "finalized" }]);
+          if (!Array.isArray(info?.value) || info.value.length !== part.length) throw new Error("getMultipleAccounts: përgjigje e pavlefshme");
+          rpcSlot = rpcSlot == null ? info?.context?.slot : Math.min(rpcSlot, info?.context?.slot);
+          values.push(...info.value);
+        }
         for (const [j, i] of want.entries()) {
-          const v = info.value[j];
+          const v = values[j];
           const account = accounts[i];
           let same = false;
           let bytes = null;

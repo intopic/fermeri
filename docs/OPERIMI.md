@@ -124,22 +124,22 @@ ngarkohet dhe nuk e fshin. Fshije dosjen me dorë, ose përdor versionin e duhur
 bëhen commit-i i slotit, publikimi i root-it, firmosja dhe kalimi në `serving`. Kur ndalimi
 kthehet, puna e pranuar në radhë s'bëhet më commit, s'firmoset dhe s'e rishkruan fazën.
 
-## Motori i diskut: `tree_engine` (A21)
+## Motori i diskut (A21, R6)
 
-**Release-i mbështet vetëm `"tree_engine": "pages"` (A21).** Me `db_path`, `tree_engine: "pages"` është
-i detyrueshëm. Një konfigurim i vjetër me `db_path` pa `tree_engine` (parazgjedhja e dikurshme ishte
-RocksDB), me `"rocksdb"`, ose me `block_cache_mb` (opsion i RocksDB) refuzohet në ngarkim. Plugin-i
-s'ngarkohet dhe s'krijohet asnjë skedar. Release-i ndërtohet pa RocksDB dhe pa libclang/bindgen: CI
-e kontrollon grafikun e varësive dhe ndërton nga zero pa libclang.
+**Motori i vetëm në disk është `pages`.** RocksDB u hoq krejt nga kodi (R6). Me `db_path`, zilja
+hap gjithmonë `pages`; `"tree_engine": "pages"` lejohet, por s'nevojitet. `"tree_engine": "rocksdb"`
+ose `block_cache_mb` (opsion i RocksDB) refuzohen në ngarkim me mesazh të qartë: plugin-i s'ngarkohet
+dhe s'krijohet asnjë skedar. Release-i s'ka varësi nga libclang/bindgen; CI e kontrollon grafikun e
+varësive dhe ndërton nga zero pa libclang.
 
-**Kalimi nga RocksDB:** ndalo validatorin, zhvendos dosjen e vjetër `db_path`, vendos
-`tree_engine: "pages"` dhe `genesis_path`, pastaj rinise validatorin. Zilja ndërton pemën nga snapshot-i.
-Një dosje RocksDB (`CURRENT`, `IDENTITY`, `OPTIONS-*`, `*.sst`, `MANIFEST-*`) s'hapet si `pages` dhe
-s'preket.
+**Kalimi nga RocksDB:** ndalo validatorin, zhvendos dosjen e vjetër `db_path`, hiq `tree_engine:
+"rocksdb"` dhe `block_cache_mb`, vendos `genesis_path`, pastaj rinise validatorin. Zilja ndërton pemën
+nga snapshot-i. Një dosje RocksDB (`CURRENT`, `IDENTITY`, `OPTIONS-*`, `*.sst`, `MANIFEST-*`) s'hapet
+si `pages` dhe s'preket (testi `rocksdb_directory_is_not_opened_as_a_new_pages_install` dhe e2e hapi 0).
 
-Motori i vjetër mbetet vetëm për bench dhe krahasime (`--features legacy-rocksdb`, kërkon libclang).
-Të dy motorët japin të njëjtat root-e dhe dëftesa, bit për bit (testi
-`pages_match_rocksdb_tree_exactly` dhe fuzz-i diferencial).
+Saktësia kontrollohet kundrejt pemës në RAM: `differential_many_seeds`, fuzz-i diferencial, dhe
+`zilja-snapshot-bench`, që lexon vetë një snapshot të Agave dhe duhet të japë të njëjtin root si
+plugin-i (e2e).
 
 `"pages"` ruan pemën në një skedar blloqesh 4 KB (`pages.dat`), pa bazë të dhënash:
 - çdo faqe ka adresë direkte, ndaj leximi është një `pread` pa indeks;
@@ -209,8 +209,7 @@ historinë dhe me `reuse_slack`. Ky ndryshim s'është bërë ende.
 
 - **Pema me faqe:** `db_path/LOCK` mbahet me lock ekskluziv (`flock`) gjatë gjithë jetës së
   instancës. Lock-u merret para çdo recovery, wipe ose shkrimi, dhe rindërtimi s'e fshin. Një
-  hapje e dytë e së njëjtës dosje refuzohet me gabim dhe pa ndryshuar asnjë skedar. RocksDB ka
-  lock-un e vet (`LOCK`).
+  hapje e dytë e së njëjtës dosje refuzohet me gabim dhe pa ndryshuar asnjë skedar.
 - **Log-u i firmave:** `<attest_state>.lock` mbahet në të njëjtën mënyrë, ndaj dy procese në të
   njëjtin host s'mund të firmosin përmes të njëjtit log. Një log që përmban dy root-e të ndryshme
   për të njëjtin slot refuzohet në hapje dhe nuk preket. Ai është provë firmosjeje të dyfishtë dhe
@@ -343,7 +342,7 @@ nuk mjafton: `ok` / kodi 0 kërkon që të kalojnë katër kontrolle të ndara.
 
 - `cache_depth`: 12–24. Me ~2^thellësi nyje në RAM, 20 do të thotë ~1M nyje (~150 MB).
 - `history_slots`: ≤ 100 000.
-- `block_cache_mb`: vetëm për motorin e vjetër (`legacy-rocksdb`); me `pages` refuzohet.
+- `block_cache_mb`: s'ekziston më (RocksDB u hoq); refuzohet me mesazh.
 
 ## Metrikat kryesore
 
@@ -451,7 +450,7 @@ Kur ka shumë zile, një kuletë s'mund t'i pyesë të gjitha. `zilja-aggregator
 klientëve të gjitha firmat për një slot me një thirrje (`getZiljaQuorumBundle`):
 
 ```bash
-zilja-aggregator --bind 0.0.0.0:7800 --metrics-bind 127.0.0.1:7801 --ziljas-file zilet.txt
+zilja-aggregator --genesis $(solana genesis-hash) --bind 0.0.0.0:7800 --metrics-bind 127.0.0.1:7801 --ziljas-file zilet.txt
 ```
 
 - **I pabesuar:** klienti (`aggregators: [...]` në SDK) verifikon çdo firmë dhe revokim vetë. Një
@@ -462,3 +461,31 @@ zilja-aggregator --bind 0.0.0.0:7800 --metrics-bind 127.0.0.1:7801 --ziljas-file
   (512 slote). Zilet që s'u përgjigjën pyeten sërish pas 2 s.
 - Serveri HTTP është i njëjti si i zilës (afat 5 s, 2 lidhje për IP, trup ≤ 64 KB), me CORS të
   ndezur. `/metrics` (`zilja_aggregator_*`) në portin privat.
+
+
+## Benchmark mbi një snapshot të vërtetë (`zilja-snapshot-bench`, R6)
+
+Mat numrat realë të Testnet/Mainnet në një PC, pa nisur validatorin. Lexon arkivin
+`snapshot-<slot>-<hash>.tar.zst` në streaming (pa e çkompresuar në disk), ndërton pemën, pastaj
+mat slote dhe dëftesa.
+
+```bash
+cargo build --release -p zilja-bench --bin zilja-snapshot-bench
+./target/release/zilja-snapshot-bench snapshot-SLOT-HASH.tar.zst /nvme/zilja-bench-db \
+    --out /nvme/zilja-bench-out/results.csv --cache-depth 20 --slots 300 --updates 5000,15000,30000 --proofs 5000
+python3 scripts/plot-bench.py /nvme/zilja-bench-out/results.csv   # ms_slot.png, ram.png, cpu_io.png
+```
+
+- **Dalja:** `results.csv` (një rresht për slot: prepare/commit/total ms, checkpoint, RSS, CPU, I/O),
+  `timeline.csv` (një rresht në sekondë që nga fillimi, me fazën) dhe `summary.json` (p50/p95/p99/max,
+  koha e ndërtimit, RAM maksimal, GB në disk, dëftesat).
+- **Formati:** AppendVec i Agave 4.3.2, i verifikuar: e2e e krahason root-in e bench-it me root-in që
+  llogarit plugin-i kur Agave ngarkon të njëjtin snapshot. Një rekord i pavlefshëm e ndal bench-in.
+- **Disku:** ~570 B/llogari për `pages.dat` + kovat e përkohshme + vetë arkivi. Për Mainnet
+  (~600M llogari) llogarit **≥ 700 GB – 1 TB të lira** në NVMe. `db_dir` duhet të jetë dosje e re
+  (bench-i s'fshin asgjë që s'e krijoi).
+- **WSL2:** mbaj arkivin dhe `db_dir` brenda Linux-it (p.sh. `~/zilja`), jo te `/mnt/c`: aksesi në
+  disqet e Windows-it është disa herë më i ngadaltë.
+- **Provë e shpejtë:** `--limit 2000000` lexon vetëm 2M rekordet e para (pema s'shënohet e plotë).
+- **Kujdes te checkpoint-i:** slotet 256, 512… bëjnë checkpoint; shihen si pika të kuqe te
+  `ms_slot.png`.

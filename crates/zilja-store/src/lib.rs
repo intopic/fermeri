@@ -1,10 +1,10 @@
 //! # zilja-store: pema e Ziles në disk
 //!
-//! Dy motorë me të njëjtin algoritëm dhe të njëjtat root-e/dëftesa: `DiskTree` (RocksDB, më poshtë)
-//! dhe `PageTree` (skedar blloqesh pa bazë të dhënash, në `pagefile.rs`).
+//! Një motor: `PageTree` (skedar blloqesh 4 KB pa bazë të dhënash, në `pagefile.rs`). Motori i vjetër
+//! RocksDB (`DiskTree`) u hoq; një dosje e vjetër RocksDB refuzohet në hapje dhe s'preket.
 //!
 //! **Tavolina dhe rafti.** Nivelet e sipërme të pemës (`cache_depth`) jetojnë vetëm
-//! në RAM. Poshtë tyre, pema ruhet në RocksDB me **faqe**: çdo faqe mban 4 nivele
+//! në RAM. Poshtë tyre, pema ruhet në disk me **faqe**: çdo faqe mban 4 nivele
 //! (deri në 15 nyje, gjethe ose të brendshme) dhe lexohet/shkruhet si një hyrje e
 //! vetme. Kështu një ndryshim kërkon ~1–2 lexime nga disku në vend të një leximi për
 //! çdo nivel. Gjethet mbi `cache_depth` (të rralla) ruhen më vete. Kur hapet disku,
@@ -47,11 +47,7 @@ const PAGE_SLOTS: usize = (1 << PAGE_H) - 1;
 
 
 mod pagefile;
-#[cfg(feature = "rocksdb")]
-mod rocks;
-#[cfg(feature = "rocksdb")]
-pub use rocks::{DiskTree, StoreOptions};
-pub use pagefile::{fuzz_decode_pages, fuzz_seeds_pages, PageOptions, PageStats, PageTree, BLOCK as PAGE_BLOCK, FORMAT_VERSION as PAGE_FORMAT_VERSION};
+pub use pagefile::{fuzz_decode_pages, fuzz_seeds_pages, PageOptions, PageStats, PageTree, SNAPSHOT_FLUSH_BLOCKS, BLOCK as PAGE_BLOCK, FORMAT_VERSION as PAGE_FORMAT_VERSION};
 
 // ---------------------------------------------------------------- rruga
 
@@ -75,22 +71,10 @@ impl NPath {
         }
         NPath { depth: self.depth + 1, bits }
     }
-    #[cfg_attr(not(feature = "rocksdb"), allow(dead_code))]
     fn enc(&self) -> PKey {
         let mut k = [0u8; 34];
         k[..2].copy_from_slice(&self.depth.to_be_bytes());
         k[2..].copy_from_slice(&self.bits);
-        k
-    }
-    #[cfg_attr(not(feature = "rocksdb"), allow(dead_code))]
-    fn dec(k: &[u8]) -> Option<Self> {
-        (k.len() == 34).then(|| NPath { depth: u16::from_be_bytes([k[0], k[1]]), bits: k[2..34].try_into().unwrap() })
-    }
-    #[cfg_attr(not(feature = "rocksdb"), allow(dead_code))]
-    fn enc_ver(&self, v: u64) -> [u8; 42] {
-        let mut k = [0u8; 42];
-        k[..34].copy_from_slice(&self.enc());
-        k[34..].copy_from_slice(&v.to_be_bytes());
         k
     }
     /// E njëjta rrugë, e shkurtuar në thellësinë `d`.
@@ -196,12 +180,6 @@ impl Node {
     fn to_ref(&self) -> Ref {
         let kind = if self.is_leaf() { Kind::Leaf } else { Kind::Internal };
         Ref { kind, hash: self.hash() }
-    }
-    #[cfg_attr(not(feature = "rocksdb"), allow(dead_code))]
-    fn enc(&self) -> Vec<u8> {
-        let mut v = Vec::with_capacity(114);
-        self.enc_into(&mut v);
-        v
     }
     fn enc_into(&self, v: &mut Vec<u8>) {
         match self {
@@ -322,12 +300,6 @@ pub fn fuzz_seeds(rng_bytes: &[u8]) -> Vec<Vec<u8>> {
     vec![pg.enc(), st.enc(), enc_staged(3, &Some(m)), enc_staged(4, &None)]
 }
 
-#[cfg_attr(not(feature = "rocksdb"), allow(dead_code))]
-fn dec_page_val(v: &[u8]) -> Option<(u64, Page)> {
-    let (ver, body) = split_u64(v)?;
-    Some((ver, Page::dec(body)?))
-}
-
 /// Rrënja e faqes (në thellësinë `pd`) dhe pozicioni i `p` brenda saj.
 fn page_pos(p: &NPath, pd: u16) -> (NPath, usize) {
     let mut x = 0usize;
@@ -388,22 +360,10 @@ fn dec_meta(b: &[u8]) -> Option<AccountMeta> {
     })
 }
 
-#[cfg_attr(not(feature = "rocksdb"), allow(dead_code))]
-fn with_u64(v: u64, body: &[u8]) -> Vec<u8> {
-    [&v.to_be_bytes()[..], body].concat()
-}
-
-#[cfg_attr(not(feature = "rocksdb"), allow(dead_code))]
-fn split_u64(b: &[u8]) -> Option<(u64, &[u8])> {
-    (b.len() >= 8).then(|| (u64::from_be_bytes(b[..8].try_into().unwrap()), &b[8..]))
-}
-
-/// Një ndryshim nyjeje: vendos `new` në `path` (None = hiq), `old` = ç'ishte aty.
+/// Një ndryshim nyjeje: vendos `new` në `path` (None = hiq).
 struct NodeW {
     path: NPath,
     new: Option<Node>,
-    #[cfg_attr(not(feature = "rocksdb"), allow(dead_code))]
-    old: Option<(u64, Node)>,
 }
 
 fn emit(out: &mut Vec<NodeW>, path: NPath, new: Option<Node>, old: Option<(u64, Node)>) {
@@ -413,7 +373,7 @@ fn emit(out: &mut Vec<NodeW>, path: NPath, new: Option<Node>, old: Option<(u64, 
         _ => false,
     };
     if !same {
-        out.push(NodeW { path, new, old });
+        out.push(NodeW { path, new });
     }
 }
 
@@ -463,10 +423,6 @@ impl State {
     }
 }
 
-
-/// Ndryshimet e niveleve të sipërme në një slot: vlerat e vjetra, për dëftesat historike.
-#[cfg_attr(not(feature = "rocksdb"), allow(dead_code))]
-type CacheDiff = (u64, HashMap<PKey, Option<(u64, Node)>>);
 
 // ---------------------------------------------------------------- algoritmi
 

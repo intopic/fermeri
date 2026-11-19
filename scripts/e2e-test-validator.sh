@@ -8,7 +8,7 @@
 #      pema rindërtohet me të gjitha llogaritë.
 #
 # Përdorimi: scripts/e2e-test-validator.sh [rruga/te/solana-release/bin]
-# Me ZILJA_DB=1 pema mbahet në disk (RocksDB), me ZILJA_DB=pages në skedarin e faqeve; rinisja vazhdon nga disku, pa snapshot.
+# Me ZILJA_DB=pages pema mbahet në skedarin e faqeve (motori i vetëm në disk, R6); rinisja vazhdon nga disku, pa snapshot.
 set -euo pipefail
 
 BIN="${1:-$HOME/.local/share/solana/install/active_release/bin}"
@@ -31,10 +31,8 @@ STRICT_F01="${STRICT_F01:-1}"
 [ -x "$CHECK" ] || { echo "Mungon $CHECK: cargo build --release -p zilja-cli"; exit 2; }
 
 DBCONF=""
-if [ "${ZILJA_DB:-0}" = "1" ]; then
-  # A21: motori i vjetër RocksDB, vetëm me plugin-in e ndërtuar me --features legacy-rocksdb.
-  DBCONF=", \"db_path\": \"$WORK/zdb\", \"tree_engine\": \"rocksdb\", \"history_slots\": 256, \"cache_depth\": 4"
-elif [ "${ZILJA_DB:-0}" = "pages" ]; then
+case "${ZILJA_DB:-0}" in 0|pages) ;; *) echo "ZILJA_DB duhet 0 ose pages (RocksDB u hoq, R6)"; exit 2 ;; esac
+if [ "${ZILJA_DB:-0}" = "pages" ]; then
   DBCONF=", \"db_path\": \"$WORK/zdb\", \"tree_engine\": \"pages\", \"history_slots\": 256, \"cache_depth\": 4"
 fi
 # Pema e cekët (cache_depth 4) me qëllim, që edhe me pak llogari të punojnë faqet në disk.
@@ -103,13 +101,18 @@ wait_rooted_past() {
 }
 
 if [ "${ZILJA_DB:-0}" = "pages" ]; then
-  echo "== Hapi 0 (A21): konfigurimi i vjetër (db_path pa tree_engine = RocksDB i dikurshëm) refuzohet"
+  echo "== Hapi 0 (R6): RocksDB u hoq: tree_engine \"rocksdb\" dhe një dosje e vjetër RocksDB refuzohen"
   cp "$WORK/zilja.json" "$WORK/zilja.pages.json"
-  sed -i 's/, "tree_engine": "pages"//' "$WORK/zilja.json"
-  start_refused "tree_engine" --reset
+  sed -i 's/"tree_engine": "pages"/"tree_engine": "rocksdb"/' "$WORK/zilja.json"
+  start_refused "rocksdb" --reset
   cp "$WORK/zilja.pages.json" "$WORK/zilja.json"
   [ ! -e "$WORK/zdb" ] || { echo "GABIM: konfigurimi i refuzuar krijoi dosjen e pemës"; exit 1; }
-  echo "   ✅ refuzohet pa krijuar asgjë"
+  # Një dosje e vjetër RocksDB te db_path: s'hapet dhe s'preket.
+  mkdir -p "$WORK/zdb" && echo "MANIFEST-000005" > "$WORK/zdb/CURRENT" && echo sst > "$WORK/zdb/000004.sst"
+  start_refused "RocksDB" --reset
+  [ "$(cat "$WORK/zdb/CURRENT")" = "MANIFEST-000005" ] && [ ! -e "$WORK/zdb/pages.dat" ] || { echo "GABIM: dosja RocksDB u prek"; exit 1; }
+  rm -rf "$WORK/zdb"
+  echo "   ✅ refuzohen pa krijuar dhe pa prekur asgjë"
 fi
 echo "== Hapi 1: nis validatorin me Ziles (punë në $WORK)"
 start --reset
@@ -238,6 +241,18 @@ else
   node "$ROOT/web/check.mjs" "$ZILJA" "$NOBODY" --min-trust single
   node "$ROOT/sdk/js/examples/verify.mjs" "$NOBODY" --zilja "$ZILJA" --min-trust single
   echo "   ✅ pema e plotë jep dëftesa 'nuk ekziston' të verifikuara"
+  # zilja-snapshot-bench lexon vetë arkivin .tar.zst (AppendVec): root-i duhet të jetë ai që
+  # llogariti plugin-i nga Geyser kur Agave ngarkoi të njëjtin snapshot.
+  SNAPBENCH="$ROOT/target/release/zilja-snapshot-bench"
+  if [ -x "$SNAPBENCH" ]; then
+    SNAPF=$(ls "$LEDGER"/snapshot-"$S1"-*.tar.zst 2>/dev/null | head -1)
+    PLUGIN_ROOT=$(awk -v s="$S1" '$1==s {print $2; exit}' "$WORK/roots.log")
+    BENCH_ROOT=$("$SNAPBENCH" "$SNAPF" "$WORK/snapbench-db" --out "$WORK/snapbench/results.csv" --ingest-only 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["root"])')
+    echo "   snapshot $S1: plugin $PLUGIN_ROOT"
+    echo "   snapshot $S1: bench  $BENCH_ROOT"
+    [ -n "$PLUGIN_ROOT" ] && [ "$PLUGIN_ROOT" = "$BENCH_ROOT" ] || { echo "GABIM: parser-i i snapshot-it jep root tjetër nga plugin-i"; exit 1; }
+    echo "   ✅ zilja-snapshot-bench (AppendVec nga .tar.zst) = plugin-i (Geyser) për snapshot-in $S1"
+  fi
 fi
 SLOT=$(solana -u "$RPC" slot --commitment finalized)
 wait_rooted_past "$((SLOT + 1))"
@@ -351,7 +366,7 @@ console.log("   ✅ VerifiableConnection: getBalance", bal, "+ getMultipleAccoun
   # R5-3: aggregator-i i pabesuar: firmat me një thirrje; SDK-ja i verifikon vetë.
   if [ -x "$ROOT/target/release/zilja-aggregator" ]; then
     AGG="http://127.0.0.1:17800"
-    "$ROOT/target/release/zilja-aggregator" --bind 127.0.0.1:17800 --zilja "$ZILJA" > "$WORK/aggregator.log" 2>&1 &
+    "$ROOT/target/release/zilja-aggregator" --genesis "$GENESIS" --bind 127.0.0.1:17800 --zilja "$ZILJA" > "$WORK/aggregator.log" 2>&1 &
     AGG_PID=$!
     for _ in $(seq 1 30); do curl -s --noproxy '*' "$AGG/health" | grep -q ok && break; sleep 0.5; done
     node --input-type=module -e '
@@ -408,7 +423,6 @@ c["attest_state"] = sys.argv[3] + "/attest-reset.log"
 json.dump(c, open(sys.argv[1], "w"), indent=1)
 PY
   sleep 2
-  if [ "${ZILJA_DB:-0}" = "pages" ]; then
     # P-05: pema me faqe është e lidhur me genesis-in (MANIFEST): s'hapet fare në rrjetin e ri.
     start_refused "genesis" --reset
     echo "   ✅ pema e genesis-it të vjetër u refuzua në ngarkim; skedarët u ruajtën"
@@ -442,26 +456,6 @@ PY
     wait_rooted_past "$(( $(solana -u "$RPC" slot --commitment finalized) + 3 ))"
     [ "$(metric broken)" = "0" ] && [ "$(health)" = "200" ] || { echo "GABIM: pas rindërtimit"; exit 1; }
     echo "   ✅ u rindërtua dhe punon"
-  else
-  start --reset
-  for _ in $(seq 1 240); do [ "$(metric broken)" = "1" ] && break; sleep 1; done
-  [ "$(metric broken)" = "1" ] || { echo "GABIM: zilja nuk e kuptoi që zinxhiri ndryshoi"; exit 1; }
-  R=$(curl -s --noproxy '*' -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getZiljaRoot"}' "$ZILJA")
-  echo "   $R"
-  echo "$R" | grep -q "zilja ndaloi" || { echo "GABIM: RPC-ja duhet të refuzojë"; exit 1; }
-  [ "$(health)" = "503" ] || { echo "GABIM: /health duhet 503 pas ndalimit (F-12)"; exit 1; }
-  [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "$ZILJA/metrics")" = "404" ] || { echo "GABIM: /metrics s'duhet në portin publik"; exit 1; }
-  echo "   ✅ zilja ndaloi, nuk jep vula të gabuara, /health = 503; disku u shënua për rindërtim (F-13)"
-  echo "== Hapi 8 (disk): rinisja tjetër e rindërton pemën (pa fshirje me dorë)"
-  stop
-  sleep 2
-  start
-  [ "$(metric resumed)" = "0" ] || { echo "GABIM: pema e shënuar s'duhej të vazhdonte"; exit 1; }
-  wait_rooted_past "$(( $(solana -u "$RPC" slot --commitment finalized) + 1 ))"
-  [ "$(metric broken)" = "0" ] || { echo "GABIM: zilja ndaloi pas rindërtimit"; exit 1; }
-  [ "$(health)" = "200" ] || { echo "GABIM: /health duhet 200"; exit 1; }
-  echo "   ✅ u rindërtua vetë dhe punon"
-  fi
 else
   echo "== Hapi 7 (RAM): ringarkimi i plugin-it me admin RPC (F-07, A02)"
   RAYON_BEFORE=$(rayon_threads)

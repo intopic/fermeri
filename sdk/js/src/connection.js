@@ -74,6 +74,17 @@ export function parseMint(data) {
   return { supply: u64le(data, 36), decimals: data[44] };
 }
 
+/**
+ * Uint8Array → base64. Pa `...u8` (spread): një llogari 10 MB do ta tejkalonte kufirin e
+ * argumenteve të funksionit; ndahet në copa 32 KB.
+ */
+export function bytesToBase64(u8) {
+  if (typeof Buffer !== "undefined") return Buffer.from(u8).toString("base64");
+  let s = "";
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
 function uiAmountString(amount, decimals) {
   const s = amount.toString().padStart(decimals + 1, "0");
   const int = s.slice(0, s.length - decimals);
@@ -100,7 +111,10 @@ export class VerifiableConnection {
   /** Verifikon të gjitha me një multi-proof; kthen [{ok, exists, account, bytes, slot}] ose hedh. */
   async verified(pubkeys) {
     const keys = pubkeys.map(addr);
-    const rs = keys.length === 1 ? [await this.client.verifyAccount(keys[0])] : await this.client.verifyAccounts(keys);
+    // Multi-proof-i mban ≤ 256 llogari: listat më të gjata ndahen.
+    const rs = [];
+    if (keys.length === 1) rs.push(await this.client.verifyAccount(keys[0]));
+    else for (let i = 0; i < keys.length; i += 256) rs.push(...(await this.client.verifyAccounts(keys.slice(i, i + 256))));
     const bad = rs.filter((r) => !r.ok);
     if (bad.length && this.onUnverified === "throw") {
       const why = bad[0].errors?.join(", ") || bad[0].verdict;
@@ -141,6 +155,7 @@ export class VerifiableConnection {
 
   /** web3.js: `getMultipleAccountsInfo(publicKeys)` → (AccountInfo | null)[], me një multi-proof. */
   async getMultipleAccountsInfo(pubkeys) {
+    if (pubkeys.length === 0) return [];
     return (await this.verified(pubkeys)).map((v) => this.toInfo(v));
   }
 
@@ -148,7 +163,9 @@ export class VerifiableConnection {
   async getBalance(pubkey) {
     const [v] = await this.verified([pubkey]);
     if (!v.ok) return null;
-    return v.exists ? Number(v.account.lamports) : 0;
+    if (!v.exists) return 0;
+    if (v.account.lamports > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("lamports > 2^53: përdor createVerifiedRpc (bigint)");
+    return Number(v.account.lamports);
   }
 
   /** Llogaria e tokenit, e verifikuar dhe e lexuar; programi pronar duhet të jetë Token ose Token-2022. */
@@ -184,7 +201,7 @@ export class VerifiableConnection {
  */
 export function createVerifiedRpc(zilja, { onUnverified = "throw" } = {}) {
   const conn = new VerifiableConnection({ zilja, onUnverified });
-  const b64 = (u8) => (typeof Buffer !== "undefined" ? Buffer.from(u8).toString("base64") : btoa(String.fromCharCode(...u8)));
+  const b64 = bytesToBase64;
   const kitInfo = (v) =>
     !v.exists || v.bytes == null
       ? null
@@ -198,6 +215,7 @@ export function createVerifiedRpc(zilja, { onUnverified = "throw" } = {}) {
       }),
     getMultipleAccounts: (addresses) =>
       wrap(async () => {
+        if (addresses.length === 0) return { context: { slot: 0n }, value: [] };
         const vs = await conn.verified(addresses);
         return { context: { slot: BigInt(vs[0]?.slot ?? 0) }, value: vs.map(kitInfo) };
       }),

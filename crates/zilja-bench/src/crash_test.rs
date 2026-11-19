@@ -9,45 +9,30 @@
 //! `-- --snapshot [raunde]` (Safer-6): vret procesin gjatë ndërtimit nga snapshot-i. Pas
 //! rihapjes disku duhet të jetë ose bosh (ndërtim i mbetur në mes → rindërtim), ose i plotë.
 //!
-//! `ZILJA_ENGINE=pages` teston motorin me faqe; parazgjedhja është RocksDB.
+//! Motori është pages (i vetmi që nga R6; `ZILJA_ENGINE` injorohet).
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::time::Duration;
-use zilja_store::{DiskTree, PageOptions, PageTree};
+use zilja_store::{PageOptions, PageTree};
 use zilja_tree::StateTree;
 
-/// Pema në disk, me motorin e zgjedhur nga `ZILJA_ENGINE`.
-enum Disk {
-    Rocks(Box<DiskTree>),
-    Pages(Box<PageTree>),
-}
+/// Pema në disk (pages).
+struct Disk(Box<PageTree>);
 
 impl Disk {
     fn open(dir: &str) -> Disk {
-        match std::env::var("ZILJA_ENGINE").as_deref() {
-            Ok("pages") => Disk::Pages(Box::new(PageTree::open(dir, PageOptions { history: 16, ..Default::default() }).unwrap())),
-            _ => Disk::Rocks(Box::new(DiskTree::open(dir, 16).unwrap())),
-        }
+        Disk(Box::new(PageTree::open(dir, PageOptions { history: 16, ..Default::default() }).unwrap()))
     }
     fn tree(&mut self) -> &mut dyn StateTree {
-        match self {
-            Disk::Rocks(t) => t.as_mut(),
-            Disk::Pages(t) => t.as_mut(),
-        }
+        self.0.as_mut()
     }
     fn resume_point(&self) -> Option<zilja_tree::Resume> {
-        match self {
-            Disk::Rocks(t) => t.resume_point(),
-            Disk::Pages(t) => t.resume_point(),
-        }
+        self.0.resume_point()
     }
     fn verify_integrity(&self) -> Result<(), String> {
-        match self {
-            Disk::Rocks(t) => t.verify_integrity(),
-            Disk::Pages(t) => t.verify_integrity(),
-        }
+        self.0.verify_integrity()
     }
 }
 use zilja_verifier::{AccountMeta, Key};

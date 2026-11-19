@@ -8,10 +8,6 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
-[features]
-# A21: motori i vjetër RocksDB (`tree_engine: "rocksdb"`). Jo në release: kërkon libclang/bindgen.
-legacy-rocksdb = ["zilja-store/rocksdb"]
-
 [dependencies]
 zilja-verifier = { workspace = true }
 zilja-node = { workspace = true }
