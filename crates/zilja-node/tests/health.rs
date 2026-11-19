@@ -330,3 +330,56 @@ fn history_contract_matches_the_spec() {
         assert_eq!(code(&r), Some(-32602), "{m} pranoi parametra të tepërt: {r}");
     }
 }
+
+/// R4-3: një IP s'mund t'i zërë të gjithë punëtorët me lidhje të ngadalta. Lidhja e tretë nga e
+/// njëjta IP refuzohet menjëherë me 503; kur të ngadaltat mbyllen, vendi lirohet.
+#[test]
+fn one_address_cannot_hold_more_than_its_share_of_workers() {
+    let svc = Service::start_opts(Default::default()).unwrap();
+    let limits = rpc::HttpLimits { deadline: Duration::from_secs(3), per_ip: 2, exempt_loopback: false };
+    let mut srv = rpc::serve_routes_with("127.0.0.1:0", svc.shared.clone(), rpc::Routes { jsonrpc: true, metrics: false, cors: false }, limits).unwrap();
+    let slow: Vec<std::net::TcpStream> = (0..2).map(|_| std::net::TcpStream::connect(srv.addr()).unwrap()).collect();
+    std::thread::sleep(Duration::from_millis(200));
+    let get = |addr| {
+        let mut s = std::net::TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let _ = s.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n");
+        let mut out = String::new();
+        let t = Instant::now();
+        let _ = s.read_to_string(&mut out);
+        (out, t.elapsed())
+    };
+    let (out, took) = get(srv.addr());
+    assert!(out.contains("503") && out.contains("too many connections"), "lidhja e tretë s'u refuzua: {out:?}");
+    assert!(took < Duration::from_secs(1), "refuzimi duhet të jetë i menjëhershëm: {took:?}");
+    drop(slow);
+    // Punëtorët i mbyllin të ngadaltat (EOF) dhe vendet lirohen.
+    let mut ok = false;
+    for _ in 0..50 {
+        let (out, _) = get(srv.addr());
+        if out.starts_with("HTTP/1.1") && !out.contains("too many connections") {
+            ok = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(ok, "vendi s'u lirua pasi lidhjet e ngadalta u mbyllën");
+    srv.stop();
+}
+
+/// R4-3: loopback-u (reverse proxy në të njëjtin host) përjashtohet si parazgjedhje.
+#[test]
+fn loopback_is_exempt_from_the_per_address_limit_by_default() {
+    let svc = Service::start_opts(Default::default()).unwrap();
+    let mut srv = rpc::serve_routes("127.0.0.1:0", svc.shared.clone(), rpc::Routes { jsonrpc: true, metrics: false, cors: false }).unwrap();
+    let held: Vec<std::net::TcpStream> = (0..rpc::MAX_CONN_PER_IP + 1).map(|_| std::net::TcpStream::connect(srv.addr()).unwrap()).collect();
+    std::thread::sleep(Duration::from_millis(200));
+    let mut s = std::net::TcpStream::connect(srv.addr()).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    s.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut out = String::new();
+    let _ = s.read_to_string(&mut out);
+    assert!(!out.contains("too many connections"), "{out:?}");
+    drop(held);
+    srv.stop();
+}

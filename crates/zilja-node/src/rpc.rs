@@ -227,6 +227,66 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// operacion; pa këtë, një klient që dërgon një bajt në çdo 4 s e mbante punëtorin pa fund.
 pub const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 const WORKERS: usize = 8;
+/// R4-3: sa lidhje njëkohësisht (në radhë + në shërbim) lejohen nga një IP në një port. Me 8
+/// punëtorë, një sulmues duhet ≥ 4 IP për t'i zënë të gjithë (secila lidhje zgjat ≤ afatin e
+/// kërkesës). Loopback-u përjashtohet si parazgjedhje: një reverse proxy në të njëjtin host
+/// (OPERIMI.md) i sjell të gjitha kërkesat nga 127.0.0.1 dhe i buferon vetë kërkesat e ngadalta.
+pub const MAX_CONN_PER_IP: usize = 2;
+
+/// Kufijtë e lidhjeve të një porti.
+#[derive(Clone, Copy, Debug)]
+pub struct HttpLimits {
+    /// Afati i plotë i një kërkese (A17).
+    pub deadline: Duration,
+    /// Lidhje njëkohësisht për IP (R4-3).
+    pub per_ip: usize,
+    /// Loopback-u s'kufizohet për IP.
+    pub exempt_loopback: bool,
+}
+
+impl Default for HttpLimits {
+    fn default() -> Self {
+        HttpLimits { deadline: REQUEST_DEADLINE, per_ip: MAX_CONN_PER_IP, exempt_loopback: true }
+    }
+}
+
+type PerIp = Arc<std::sync::Mutex<std::collections::HashMap<std::net::IpAddr, usize>>>;
+
+/// Një vend i zënë për IP-në e lidhjes; lirohet kur lidhja mbaron (edhe në gabim ose panic).
+struct IpSlot {
+    map: PerIp,
+    ip: Option<std::net::IpAddr>,
+}
+
+impl IpSlot {
+    /// `None` kur IP-ja ka arritur kufirin.
+    fn take(map: &PerIp, ip: std::net::IpAddr, l: &HttpLimits) -> Option<IpSlot> {
+        if l.exempt_loopback && ip.is_loopback() {
+            return Some(IpSlot { map: map.clone(), ip: None });
+        }
+        let mut m = map.lock().unwrap();
+        let n = m.entry(ip).or_insert(0);
+        if *n >= l.per_ip {
+            return None;
+        }
+        *n += 1;
+        Some(IpSlot { map: map.clone(), ip: Some(ip) })
+    }
+}
+
+impl Drop for IpSlot {
+    fn drop(&mut self) {
+        if let Some(ip) = self.ip {
+            let mut m = self.map.lock().unwrap();
+            if let Some(n) = m.get_mut(&ip) {
+                *n -= 1;
+                if *n == 0 {
+                    m.remove(&ip);
+                }
+            }
+        }
+    }
+}
 
 /// Çfarë shërben një port.
 #[derive(Clone, Copy, Debug)]
@@ -279,21 +339,24 @@ pub fn serve(bind: &str, shared: Shared) -> std::io::Result<HttpServer> {
 /// kohë maksimale leximi/shkrimi dhe kufi për trupin, ndaj një klient i ngadaltë zë
 /// vetëm një punëtor për pak sekonda dhe s'bllokon kurrë /health.
 pub fn serve_routes(bind: &str, shared: Shared, routes: Routes) -> std::io::Result<HttpServer> {
-    serve_routes_with(bind, shared, routes, REQUEST_DEADLINE)
+    serve_routes_with(bind, shared, routes, HttpLimits::default())
 }
 
-/// Si `serve_routes`, me afatin e kërkesës të dhënë (testet).
-pub fn serve_routes_with(bind: &str, shared: Shared, routes: Routes, deadline: Duration) -> std::io::Result<HttpServer> {
+/// Si `serve_routes`, me kufijtë e dhënë (testet).
+pub fn serve_routes_with(bind: &str, shared: Shared, routes: Routes, limits: HttpLimits) -> std::io::Result<HttpServer> {
     let listener = TcpListener::bind(bind)?;
     let addr = listener.local_addr()?;
     let stop = Arc::new(AtomicBool::new(false));
-    let (tx, rx) = crossbeam_channel::bounded::<(TcpStream, Instant)>(WORKERS * 8);
+    let deadline = limits.deadline;
+    let per_ip: PerIp = Arc::default();
+    let (tx, rx) = crossbeam_channel::bounded::<(TcpStream, Instant, IpSlot)>(WORKERS * 8);
     let mut threads = Vec::new();
     for i in 0..WORKERS {
         let rx = rx.clone();
         let sh = shared.clone();
         threads.push(std::thread::Builder::new().name(format!("zilja-http-{i}")).spawn(move || {
-            for (mut stream, accepted) in rx.iter() {
+            // `_slot` lirohet në fund të çdo iterimi, pasi lidhja mbyllet.
+            for (mut stream, accepted, _slot) in rx.iter() {
                 let until = accepted + deadline;
                 // A17: e skaduar në radhë: përgjigje e shkurtër dhe mbyllje, pa lexuar asgjë.
                 if Instant::now() >= until {
@@ -311,11 +374,20 @@ pub fn serve_routes_with(bind: &str, shared: Shared, routes: Routes, deadline: D
             if st.load(Ordering::SeqCst) {
                 break;
             }
-            let Ok(s) = conn else { continue };
+            let Ok(mut s) = conn else { continue };
             let accepted = Instant::now();
             let _ = s.set_read_timeout(Some(IO_TIMEOUT));
             let _ = s.set_write_timeout(Some(IO_TIMEOUT));
-            if let Err(crossbeam_channel::TrySendError::Full((mut s, _))) = tx.try_send((s, accepted)) {
+            // R4-3: kufi lidhjesh për IP, para radhës: një IP s'mund t'i zërë të gjithë punëtorët.
+            let slot = match s.peer_addr().map(|a| IpSlot::take(&per_ip, a.ip(), &limits)) {
+                Ok(Some(slot)) => slot,
+                _ => {
+                    let _ = s.set_write_timeout(Some(Duration::from_millis(200)));
+                    let _ = write_resp(&mut s, 503, "text/plain", b"too many connections from this address", false);
+                    continue;
+                }
+            };
+            if let Err(crossbeam_channel::TrySendError::Full((mut s, _, _))) = tx.try_send((s, accepted, slot)) {
                 let _ = s.set_write_timeout(Some(Duration::from_millis(200)));
                 let _ = write_resp(&mut s, 503, "text/plain", b"busy", false);
             }

@@ -139,7 +139,7 @@ Auditimi u bë mbi `46b7a60` kundër `anza-xyz/agave@a203300` (`v4.3.2`). Çdo g
 |---|---|---|---|
 | R4-1 | Quorum shadowing (identiteti shënohet para firmës) | Ishte rregulluar me A15 (#17) | `invalid_signature_does_not_shadow_valid_one` (Rust, JS) |
 | R4-2 | Autorizimi i `signer`-it pa afat dhe pa revokim | **Rregulluar:** `zilja/authorize/v2` me `[from_epoch, until_epoch)`, maksimumi 15 epoka; v1 refuzohet; rinovim pa rinisje | `authorization_expires_and_cannot_be_extended`, `v1_authorization_is_rejected`, `authorization_file_is_reloaded_without_restart`, vektorët `dedicated_signers_*`, e2e hapi 6 |
-| R4-3 | Slowloris me 1 bajt / 4 s | Ishte rregulluar me A17 (#23): afat i plotë për kërkesë | `slow_drip_client_is_cut_at_the_request_deadline` |
+| R4-3 | Slowloris me 1 bajt / 4 s | Afati i plotë: A17 (#23). **Rreziku që mbetej** (8+ lidhje të ngadalta zinin portin vazhdimisht): kufi 2 lidhje/IP (loopback përjashtohet); monitorimi te porti privat me punëtorët e vet | `slow_drip_client_is_cut_at_the_request_deadline`, `one_address_cannot_hold_more_than_its_share_of_workers`, `loopback_is_exempt_from_the_per_address_limit_by_default` |
 | R4-4 | Kufiri i sipërm i epokës | Ishte rregulluar me A10 (#17): të dy kufijtë + epoka para/pas | `StakeView::covers`, `client.js` |
 | R4-5 | `StakeTable` me dyfishe, `MemTree::prove_at`, `accounts` historik, numri i parametrave | `accounts` dhe parametrat: A19 (#26). Mbledhja: `checked_add` qysh në A11. `StakeTable` dhe `MemTree`: PR i veçantë | — |
 
