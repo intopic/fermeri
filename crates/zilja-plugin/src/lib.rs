@@ -16,7 +16,6 @@
 //!   "tree_engine": "pages",
 //!   "history_slots": 32,
 //!   "cache_depth": 20,
-//!   "block_cache_mb": 512,
 //!   "metrics_bind": "127.0.0.1:7798",
 //!   "cors": false,
 //!   "snapshot_on_resume": false }
@@ -194,12 +193,25 @@ impl Config {
         if self.block_cache_mb.is_some_and(|m| m == 0 || m > 1 << 20) {
             return Err("block_cache_mb duhet në (0, 1048576]".into());
         }
+        // A21: release-i mbështet vetëm "pages". Një konfigurim i vjetër me `db_path` pa `tree_engine`
+        // (parazgjedhja e dikurshme ishte RocksDB) refuzohet, që motori të mos ndërrohet në heshtje.
         match self.tree_engine.as_deref() {
-            None | Some("rocksdb") | Some("pages") => {}
-            Some(e) => return Err(format!("tree_engine i panjohur: {e} (rocksdb | pages)")),
+            Some("pages") => {}
+            Some("rocksdb") if cfg!(feature = "legacy-rocksdb") => {}
+            Some("rocksdb") => {
+                return Err("tree_engine \"rocksdb\" s'është në këtë build (A21: release-i përdor vetëm \"pages\"); shih docs/OPERIMI.md për kalimin".into())
+            }
+            Some(e) => return Err(format!("tree_engine i panjohur: {e} (vetëm \"pages\")")),
+            None if self.db_path.is_some() => {
+                return Err("db_path pa tree_engine: release-i mbështet vetëm tree_engine = \"pages\" (parazgjedhja e vjetër RocksDB s'ekziston më; A21)".into())
+            }
+            None => {}
         }
         if self.tree_engine.is_some() && self.db_path.is_none() {
             return Err("tree_engine kërkon db_path".into());
+        }
+        if self.tree_engine.as_deref() == Some("pages") && self.block_cache_mb.is_some() {
+            return Err("block_cache_mb është opsion i motorit të vjetër RocksDB; s'vlen për \"pages\" (A21)".into());
         }
         // P-03: motori me faqe mbështet vetëm fsync në çdo slot në këtë release.
         if self.tree_engine.as_deref() == Some("pages") && self.sync_every_slots.is_some_and(|n| n != 1) {
@@ -358,6 +370,7 @@ impl GeyserPlugin for ZiljaPlugin {
                 };
                 Some(Box::new(zilja_store::PageTree::open(p, o).map_err(custom)?))
             }
+            #[cfg(feature = "legacy-rocksdb")]
             Some(p) => {
                 let d = zilja_store::StoreOptions::default();
                 let o = zilja_store::StoreOptions {
@@ -369,6 +382,8 @@ impl GeyserPlugin for ZiljaPlugin {
                 };
                 Some(Box::new(zilja_store::DiskTree::open_opts(p, o).map_err(custom)?))
             }
+            #[cfg(not(feature = "legacy-rocksdb"))]
+            Some(_) => unreachable!("validate() pranon db_path vetëm me tree_engine \"pages\""),
             None => None,
         };
         let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree, mid_run_load: is_reload, max_root_age_secs: Some(cfg.max_root_age_secs), limits: Some(zilja_node::tracker::Limits { max_pending_banks: cfg.max_pending_banks, max_pending_updates: cfg.max_pending_updates }) }).map_err(custom)?;
@@ -572,8 +587,11 @@ mod tests {
     fn tree_engine_is_validated() {
         let cfg = |extra: &str| serde_json::from_str::<Config>(&format!(r#"{{"libpath": "x"{extra}}}"#)).unwrap();
         assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages""#).validate().is_ok());
-        assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "rocksdb""#).validate().is_ok());
-        assert!(cfg(r#", "db_path": "/tmp/z""#).validate().is_ok());
+        // A21: RocksDB vetëm me feature-in legacy-rocksdb; db_path pa tree_engine (parazgjedhja e
+        // vjetër) refuzohet gjithmonë; opsionet e RocksDB s'pranohen me pages.
+        assert_eq!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "rocksdb""#).validate().is_ok(), cfg!(feature = "legacy-rocksdb"));
+        assert!(cfg(r#", "db_path": "/tmp/z""#).validate().is_err(), "db_path pa tree_engine");
+        assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages", "block_cache_mb": 64"#).validate().is_err(), "block_cache_mb me pages");
         assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "lmdb""#).validate().is_err());
         assert!(cfg(r#", "tree_engine": "pages""#).validate().is_err(), "pa db_path");
         assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages", "sync_every_slots": 1"#).validate().is_ok());

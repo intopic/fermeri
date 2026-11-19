@@ -32,7 +32,8 @@ STRICT_F01="${STRICT_F01:-1}"
 
 DBCONF=""
 if [ "${ZILJA_DB:-0}" = "1" ]; then
-  DBCONF=", \"db_path\": \"$WORK/zdb\", \"history_slots\": 256, \"cache_depth\": 4"
+  # A21: motori i vjetër RocksDB, vetëm me plugin-in e ndërtuar me --features legacy-rocksdb.
+  DBCONF=", \"db_path\": \"$WORK/zdb\", \"tree_engine\": \"rocksdb\", \"history_slots\": 256, \"cache_depth\": 4"
 elif [ "${ZILJA_DB:-0}" = "pages" ]; then
   DBCONF=", \"db_path\": \"$WORK/zdb\", \"tree_engine\": \"pages\", \"history_slots\": 256, \"cache_depth\": 4"
 fi
@@ -101,6 +102,15 @@ wait_rooted_past() {
   echo "Zilja nuk arriti slotin $target"; exit 1
 }
 
+if [ "${ZILJA_DB:-0}" = "pages" ]; then
+  echo "== Hapi 0 (A21): konfigurimi i vjetër (db_path pa tree_engine = RocksDB i dikurshëm) refuzohet"
+  cp "$WORK/zilja.json" "$WORK/zilja.pages.json"
+  sed -i 's/, "tree_engine": "pages"//' "$WORK/zilja.json"
+  start_refused "tree_engine" --reset
+  cp "$WORK/zilja.pages.json" "$WORK/zilja.json"
+  [ ! -e "$WORK/zdb" ] || { echo "GABIM: konfigurimi i refuzuar krijoi dosjen e pemës"; exit 1; }
+  echo "   ✅ refuzohet pa krijuar asgjë"
+fi
 echo "== Hapi 1: nis validatorin me Ziles (punë në $WORK)"
 start --reset
 solana-keygen new --force --no-bip39-passphrase -s -o "$WORK/payer.json" >/dev/null

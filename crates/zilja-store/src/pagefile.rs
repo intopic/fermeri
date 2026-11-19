@@ -840,6 +840,15 @@ impl PageTree {
             return Err(format!("motori me faqe kërkon sync_every = 1 (u dha {}); mënyra asinkrone s'mbështetet ende", o.sync_every));
         }
         std::fs::create_dir_all(&dir).map_err(io("krijimi i dosjes"))?;
+        // A21: një dosje e motorit të vjetër RocksDB s'hapet si "pages" (edhe skedari LOCK ka të
+        // njëjtin emër): asgjë s'krijohet dhe asgjë s'ndryshohet.
+        if let Some(m) = rocksdb_marker(&dir) {
+            return Err(format!(
+                "{} është dosje e motorit të vjetër RocksDB (u gjet {m}); \"pages\" s'e hap dhe s'e prek. \
+                 Zhvendose dhe lëre zilen ta ndërtojë nga snapshot-i (docs/OPERIMI.md, A21)",
+                dir.display()
+            ));
+        }
         let lock = lock_exclusive(&dir.join("LOCK"))?;
         check_manifest(&dir, &o)?;
         match std::fs::read(dir.join("INVALID")) {
@@ -1639,6 +1648,18 @@ fn check_manifest(dir: &Path, o: &PageOptions) -> Result<(), String> {
         }
         Err(e) => Err(format!("leximi i {}: {e}", path.display())),
     }
+}
+
+/// A21: shenjat e një dosjeje RocksDB.
+fn rocksdb_marker(dir: &Path) -> Option<String> {
+    let rd = std::fs::read_dir(dir).ok()?;
+    for e in rd.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n == "CURRENT" || n == "IDENTITY" || n.starts_with("OPTIONS-") || n.ends_with(".sst") || (n.starts_with("MANIFEST-") && n != "MANIFEST") {
+            return Some(n);
+        }
+    }
+    None
 }
 
 /// Fshin skedarët e pemës (jo `LOCK` dhe jo `MANIFEST`). Thirret vetëm nga mbajtësi i lock-ut.

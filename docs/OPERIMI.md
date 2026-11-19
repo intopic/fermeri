@@ -116,10 +116,22 @@ ngarkohet dhe nuk e fshin. Fshije dosjen me dorë, ose përdor versionin e duhur
 bëhen commit-i i slotit, publikimi i root-it, firmosja dhe kalimi në `serving`. Kur ndalimi
 kthehet, puna e pranuar në radhë s'bëhet më commit, s'firmoset dhe s'e rishkruan fazën.
 
-## Motori i diskut: `tree_engine`
+## Motori i diskut: `tree_engine` (A21)
 
-`"tree_engine": "rocksdb"` (parazgjedhja) ose `"pages"`. Të dy japin të njëjtat root-e dhe
-dëftesa, bit për bit (testi `pages_match_rocksdb_tree_exactly` dhe fuzz-i diferencial).
+**Release-i mbështet vetëm `"tree_engine": "pages"` (A21).** Me `db_path`, `tree_engine: "pages"` është
+i detyrueshëm. Një konfigurim i vjetër me `db_path` pa `tree_engine` (parazgjedhja e dikurshme ishte
+RocksDB), me `"rocksdb"`, ose me `block_cache_mb` (opsion i RocksDB) refuzohet në ngarkim. Plugin-i
+s'ngarkohet dhe s'krijohet asnjë skedar. Release-i ndërtohet pa RocksDB dhe pa libclang/bindgen: CI
+e kontrollon grafikun e varësive dhe ndërton nga zero pa libclang.
+
+**Kalimi nga RocksDB:** ndalo validatorin, zhvendos dosjen e vjetër `db_path`, vendos
+`tree_engine: "pages"` dhe `genesis_path`, pastaj rinise validatorin. Zilja ndërton pemën nga snapshot-i.
+Një dosje RocksDB (`CURRENT`, `IDENTITY`, `OPTIONS-*`, `*.sst`, `MANIFEST-*`) s'hapet si `pages` dhe
+s'preket.
+
+Motori i vjetër mbetet vetëm për bench dhe krahasime (`--features legacy-rocksdb`, kërkon libclang).
+Të dy motorët japin të njëjtat root-e dhe dëftesa, bit për bit (testi
+`pages_match_rocksdb_tree_exactly` dhe fuzz-i diferencial).
 
 `"pages"` ruan pemën në një skedar blloqesh 4 KB (`pages.dat`), pa bazë të dhënash:
 - çdo faqe ka adresë direkte, ndaj leximi është një `pread` pa indeks;
@@ -323,7 +335,7 @@ nuk mjafton: `ok` / kodi 0 kërkon që të kalojnë katër kontrolle të ndara.
 
 - `cache_depth`: 12–24. Me ~2^thellësi nyje në RAM, 20 do të thotë ~1M nyje (~150 MB).
 - `history_slots`: ≤ 100 000.
-- `block_cache_mb`: 1 – 1 048 576.
+- `block_cache_mb`: vetëm për motorin e vjetër (`legacy-rocksdb`); me `pages` refuzohet.
 
 ## Metrikat kryesore
 

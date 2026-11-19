@@ -37,6 +37,7 @@ fn tree_of_genesis_a_is_refused_for_genesis_b() {
 }
 
 #[test]
+#[cfg(feature = "rocksdb")]
 fn rocksdb_directory_is_not_opened_as_a_new_pages_install() {
     let d = tempfile::tempdir().unwrap();
     drop(zilja_store::DiskTree::open(d.path(), 4).unwrap());
@@ -68,4 +69,18 @@ fn manifest_with_other_format_version_is_refused() {
     std::fs::write(d.path().join("MANIFEST"), m.replace("\"format_version\": 1", "\"format_version\": 99")).unwrap();
     let e = PageTree::open(d.path(), opts([1; 32])).err().expect("format i panjohur");
     assert!(e.contains("format"), "{e}");
+}
+
+/// A21: një dosje e motorit të vjetër RocksDB (skedarët e saj tipikë) s'hapet si "pages" dhe s'preket.
+#[test]
+fn rocksdb_layout_is_refused_and_left_untouched() {
+    for marker in ["CURRENT", "IDENTITY", "OPTIONS-000007", "000005.sst", "MANIFEST-000004"] {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join(marker), b"x").unwrap();
+        std::fs::write(d.path().join("LOCK"), b"").unwrap();
+        let before = files(d.path());
+        let e = PageTree::open(d.path(), opts([1; 32])).err().unwrap_or_else(|| panic!("{marker}: dosja RocksDB u hap si pages"));
+        assert!(e.contains("RocksDB"), "{marker}: {e}");
+        assert_eq!(files(d.path()), before, "{marker}: skedarët ndryshuan");
+    }
 }

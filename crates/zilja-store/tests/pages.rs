@@ -107,6 +107,7 @@ fn pages_equal_memory_with_history() {
 }
 
 #[test]
+#[cfg(feature = "rocksdb")]
 fn pages_match_rocksdb_tree_exactly() {
     // I njëjti varg slotesh në të dy motorët: root-e dhe dëftesa identike.
     let dir_a = tempfile::tempdir().unwrap();

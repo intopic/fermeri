@@ -46,7 +46,8 @@ node web/check.mjs http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899 --min-tr
 # ose hap web/index.html në shfletues
 
 # Pema në disk në vend të RAM-it: shto te zilja.json
-#   "db_path": "/var/lib/zilja/db", "history_slots": 32, "cache_depth": 20
+#   "db_path": "/var/lib/zilja/db", "tree_engine": "pages", "genesis_path": "<ledger>/genesis.bin",
+#   "history_slots": 32, "cache_depth": 20       (release-i: vetëm "pages", pa RocksDB/libclang)
 ./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> --min-trust single --slot <SLOT>   # dëftesë historike
 
 # 4. A e kanë firmosur pleqtë? Shto te zilja.json:
