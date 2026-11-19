@@ -275,3 +275,34 @@ fn stop_from_rpc_freezes_queued_work() {
     assert_eq!(svc.shared.metrics.phase.load(Ordering::Relaxed), zilja_node::service::PHASE_HALTED, "faza u rishkrua pas ndalimit");
     assert_eq!(svc.shared.metrics.ready.load(Ordering::Relaxed), 0, "gatishmëria u rishkrua pas ndalimit");
 }
+
+/// A17: një klient që dërgon një bajt kokash në çdo 300 ms s'kapërcen kurrë kohën e një operacioni
+/// (5 s), por afati i plotë i kërkesës (5 s nga pranimi) e mbyll lidhjen. Pa të, punëtori zihej pa fund.
+#[test]
+fn slow_drip_client_is_cut_at_the_request_deadline() {
+    let svc = Service::start_opts(Default::default()).unwrap();
+    let mut srv = rpc::serve_routes("127.0.0.1:0", svc.shared.clone(), rpc::Routes { jsonrpc: true, metrics: false, cors: false }).unwrap();
+    let mut s = std::net::TcpStream::connect(srv.addr()).unwrap();
+    let t = Instant::now();
+    let head = b"POST / HTTP/1.1\r\nHost: x\r\nX-Pad: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n";
+    let mut closed_at = None;
+    for b in head.iter().cycle().take(40) {
+        if s.write_all(&[*b]).is_err() {
+            closed_at = Some(t.elapsed());
+            break;
+        }
+        // Serveri mbyll: leximi kthen 0 (ose 503) pa pritur.
+        s.set_read_timeout(Some(Duration::from_millis(1))).unwrap();
+        let mut x = [0u8; 64];
+        if let Ok(n) = s.read(&mut x) {
+            if n == 0 || std::str::from_utf8(&x[..n]).is_ok() {
+                closed_at = Some(t.elapsed());
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    let at = closed_at.unwrap_or_else(|| panic!("lidhja e ngadaltë mbeti hapur {:?} (> afati {:?})", t.elapsed(), rpc::REQUEST_DEADLINE));
+    assert!(at <= rpc::REQUEST_DEADLINE + Duration::from_millis(1500), "u mbyll vonë: {at:?}");
+    srv.stop();
+}

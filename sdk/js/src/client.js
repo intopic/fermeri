@@ -7,6 +7,43 @@ import { parseJsonExact } from "./json.js";
 
 export { TRUST };
 
+/**
+ * A17: lexon trupin e përgjigjes deri në `max` bajte; më shumë = gabim (pa e mbajtur të gjithë në RAM
+ * kur `fetch` jep stream). Kthen `null` kur përgjigjja s'ka as `body`, as `text` (mock të thjeshta).
+ */
+async function readLimited(r, max, what) {
+  const cl = Number(r.headers?.get?.("content-length"));
+  if (Number.isFinite(cl) && cl > max) throw new Error(`${what}: përgjigje ${cl} B, mbi kufirin ${max} B`);
+  if (r.body && typeof r.body.getReader === "function") {
+    const rd = r.body.getReader();
+    const parts = [];
+    let n = 0;
+    for (;;) {
+      const { done, value } = await rd.read();
+      if (done) break;
+      n += value.length;
+      if (n > max) {
+        await rd.cancel().catch(() => {});
+        throw new Error(`${what}: përgjigje mbi kufirin ${max} B`);
+      }
+      parts.push(value);
+    }
+    const all = new Uint8Array(n);
+    let o = 0;
+    for (const p of parts) {
+      all.set(p, o);
+      o += p.length;
+    }
+    return new TextDecoder().decode(all);
+  }
+  if (typeof r.text === "function") {
+    const t = await r.text();
+    if (t.length > max) throw new Error(`${what}: përgjigje mbi kufirin ${max} B`);
+    return t;
+  }
+  return null;
+}
+
 /** A11: u64 i saktë nga JSON-i (shih `rpc`): BigInt, tekst dhjetor ose Number i sigurt; ndryshe gabim. */
 function exactU64(v) {
   if (typeof v === "bigint") return v;
@@ -57,6 +94,8 @@ export class ZiljaClient {
     if (this.anchor?.slot != null && !Number.isSafeInteger(this.anchor.slot)) throw new Error("root.slot duhet numër i plotë");
     this.compareData = o.compareData ?? true;
     this.timeoutMs = o.timeoutMs ?? 10_000;
+    // A17: kufijtë e përgjigjeve (bajte). `timeoutMs` mbulon edhe leximin e trupit.
+    this.maxResponseBytes = { zilja: 1 << 20, solana: 64 << 20, ...(o.maxResponseBytes ?? {}) };
     this.fetch = o.fetch ?? globalThis.fetch.bind(globalThis);
     // P-11: mbrojtja nga kthimi te një gjendje më e vjetër (për këtë klient).
     this.highestSeen = null;
@@ -76,8 +115,11 @@ export class ZiljaClient {
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
         signal: ctl.signal,
       });
+      // A17: përgjigja lexohet me kufi madhësie (zilja: dëftesa të vogla; solanaRpc: tabela e stake-ut).
       // A11: numrat e plotë mbi 2^53 - 1 (stake, lamports) lexohen pa humbje si tekst.
-      const j = typeof r.text === "function" ? parseJsonExact(await r.text()) : await r.json();
+      const max = url === this.solanaRpc ? this.maxResponseBytes.solana : this.maxResponseBytes.zilja;
+      const text = await readLimited(r, max, `${method} nga ${url}`);
+      const j = text != null ? parseJsonExact(text) : await r.json();
       if (j.error) throw new Error(`${method}: ${j.error.message}`);
       return j.result;
     } finally {

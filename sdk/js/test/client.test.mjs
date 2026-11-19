@@ -136,8 +136,34 @@ for (const [name, o] of [
   check(`konfigurim: ${name}`, threw);
 }
 
+// A17: një zile që kthen një përgjigje të madhe (stream ose Content-Length) s'lexohet e gjitha në RAM.
+{
+  const big = (stream) => async () => {
+    const chunk = new TextEncoder().encode(" ".repeat(64 << 10));
+    if (!stream) return { headers: new Map([["content-length", String(8 << 20)]]), text: async () => " ".repeat(8 << 20) };
+    let sent = 0;
+    const body = new ReadableStream({
+      pull(c) {
+        sent += chunk.length;
+        if (sent > 32 << 20) c.close();
+        else c.enqueue(chunk);
+      },
+    });
+    return { headers: new Map(), body };
+  };
+  for (const stream of [true, false]) {
+    let msg = "";
+    try {
+      await new ZiljaClient({ endpoints: ["a"], minTrust: "single", fetch: big(stream) }).verifyAccount(inc.pubkey);
+    } catch (e) {
+      msg = e.message;
+    }
+    check(`A17: përgjigje e madhe ${stream ? "(stream)" : "(content-length)"} → refuzohet`, msg.includes("kufirin"), msg);
+  }
+}
+
 if (fail) {
   console.error(`${fail} gabime`);
   process.exit(1);
 }
-console.log("✅ 15 teste të klientit kaluan");
+console.log("✅ 17 teste të klientit kaluan");
