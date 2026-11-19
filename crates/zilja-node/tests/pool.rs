@@ -40,7 +40,15 @@ fn unload_leaves_no_threads_behind() {
         svc.shutdown();
         assert_eq!(svc.pool_threads(), 0, "raundi {round}: thread-e të pool-it mbetën gjallë pas shutdown");
         drop(svc);
-        let after = threads();
+        // `join` kthehet kur kerneli zgjon pritësin (CLONE_CHILD_CLEARTID, në `do_exit`): thread-i s'ekzekuton
+        // më kod të bibliotekës, por hyrja e tij te /proc hiqet pak më vonë. Pritet ky kontabilitet (≤ 2 s);
+        // një thread i gjallë (p.sh. i regjistrit global të Rayon) s'zhduket kurrë.
+        let t = Instant::now();
+        let mut after = threads();
+        while after.len() != before.len() && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+            after = threads();
+        }
         assert_eq!(after.len(), before.len(), "raundi {round}: thread-e mbetën pas shutdown: para {before:?}, pas {after:?}");
     }
 }
