@@ -141,3 +141,46 @@ fn quorum_tool_rejects_malformed_root_without_panicking() {
     let code = o.status.code().unwrap_or(-1);
     assert!(code == 1 || code == 2, "zilja-quorum ra (kodi {code}): {}", String::from_utf8_lossy(&o.stderr));
 }
+
+/// Një validator (stake 100) që firmos root-in `[4; 32]` në slotin 5, dhe një zile që e shërben.
+fn signed_setup(epoch_info: Value, stake: Value) -> (String, String, [u8; 32]) {
+    use ed25519_dalek::{Signer, SigningKey};
+    let key = SigningKey::from_bytes(&[5u8; 32]);
+    let genesis = [1u8; 32];
+    let root = [4u8; 32];
+    let sig = key.sign(&zilja_verifier::attest::attest_message(&genesis, 5, &root)).to_bytes();
+    let id = bs58::encode(key.verifying_key().to_bytes()).into_string();
+    let sol = serve(HashMap::from([
+        ("getVoteAccounts", json!({"current": [{"nodePubkey": id, "votePubkey": id, "activatedStake": stake, "epochVoteAccount": true}], "delinquent": []})),
+        ("getEpochInfo", epoch_info),
+        ("getGenesisHash", json!(bs58::encode(genesis).into_string())),
+    ]));
+    let z = serve(HashMap::from([("getZiljaAttestation", json!({"slot": 5, "root": hex::encode(root), "validator": id, "signature": hex::encode(sig)}))]));
+    (sol, z, root)
+}
+
+fn quorum(sol: &str, z: &str) -> i32 {
+    let o = Command::new(env!("CARGO_BIN_EXE_zilja-quorum")).args([sol, z]).output().unwrap();
+    eprintln!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    o.status.code().unwrap_or(-1)
+}
+
+#[test]
+fn quorum_counts_only_inside_the_stake_tables_epoch() {
+    // A10: epoka e tabelës (slotet 0–99) përmban slotin 5 → kuorumi arrihet.
+    let (sol, z, _) = signed_setup(json!({"epoch": 0, "absoluteSlot": 50, "slotIndex": 50, "slotsInEpoch": 100}), json!(100));
+    assert_eq!(quorum(&sol, &z), 0, "rasti i rregullt duhet të kalojë");
+    // Tabela është e epokës 3 (slotet 990–1089): sloti 5 s'mbulohet, kuorumi s'numërohet.
+    let (sol, z, _) = signed_setup(json!({"epoch": 3, "absoluteSlot": 1000, "slotIndex": 10, "slotsInEpoch": 100}), json!(100));
+    assert_eq!(quorum(&sol, &z), 1, "kuorumi u numërua me tabelën e një epoke tjetër");
+}
+
+#[test]
+fn quorum_rejects_inexact_stake_numbers() {
+    // A11: activatedStake jo-u64 (thyesë, tekst) s'bëhet 0 në heshtje: gabim.
+    let ei = json!({"epoch": 0, "absoluteSlot": 50, "slotIndex": 50, "slotsInEpoch": 100});
+    for bad in [json!(1.5), json!("100"), json!(-1)] {
+        let (sol, z, _) = signed_setup(ei.clone(), bad.clone());
+        assert_eq!(quorum(&sol, &z), 2, "stake {bad} u pranua");
+    }
+}

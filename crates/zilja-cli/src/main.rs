@@ -21,7 +21,7 @@ use base64::Engine;
 use serde_json::{json, Value};
 use std::process::exit;
 use zilja_cli::policy::{self, decide, explain, Input, Other, Policy, Primary, QuorumGroup};
-use zilja_cli::{b58_32, genesis, h32, is_root_hex, quorum_by_root, rpc, slot_in_current_epoch, stake_table, u64_field};
+use zilja_cli::{b58_32, genesis, h32, is_root_hex, quorum_by_root, rpc, stake_view, u64_field};
 use zilja_verifier::{data_matches, verify_account, AccountMeta, Proof, Verdict};
 
 const USAGE: &str = "përdorimi: zilja-check <ZILJA_URL> <pubkey> [SOLANA_RPC_URL] [--also <ZILJA_URL>]... \
@@ -192,10 +192,9 @@ fn run() -> Result<bool, String> {
     let (mut quorum, mut quorum_epoch_ok) = (None, None);
     if let (true, Some(slot), None, Some(sol)) = (a.quorum, slot, &a.root_override, &a.sol) {
         let res = (|| -> Result<_, String> {
-            let epoch_ok = slot_in_current_epoch(sol, slot)?;
-            let table = stake_table(sol)?;
+            let view = stake_view(sol)?;
             let g = genesis(sol, a.genesis.as_deref())?;
-            Ok((epoch_ok, quorum_by_root(&a.endpoints, slot, &g, &table)))
+            Ok((view.covers(slot), quorum_by_root(&a.endpoints, slot, &g, &view.table)))
         })();
         match res {
             Ok((epoch_ok, q)) => {
@@ -207,7 +206,7 @@ fn run() -> Result<bool, String> {
                     let pct = if rep.total_stake > 0 { rep.attested_stake as f64 * 100.0 / rep.total_stake as f64 } else { 0.0 };
                     println!("kuorumi:       root {}… {pct:.2}% e stake-ut{}", &root[..16], if rep.reached { " ✅" } else { "" });
                 }
-                notes.push("tabela e stake-ut u mor nga SOLANA_RPC_URL dhe i besohet atij".into());
+                notes.push("pesha e kuorumit është pamja e SOLANA_RPC_URL (getVoteAccounts), jo tabela e konsensusit e epokës; i besohet atij".into());
                 quorum = Some(q.groups.iter().map(|(root, rep)| QuorumGroup { root: root.clone(), reached: rep.reached }).collect());
             }
             Err(e) => notes.push(format!("kuorumi s'u kontrollua: {e}")),

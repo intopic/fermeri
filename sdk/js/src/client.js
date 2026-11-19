@@ -1,8 +1,9 @@
 // ZiljaClient: një thirrje e vetme për kuletat: verifyAccount(pubkey). Vendimi merret nga
 // politika e përbashkët (policy.js), e njëjta me web-in dhe CLI-në (P-11).
-import { verifyAccount, dataMatches, normalizeAccount, b58decode, bytesToHex } from "./verifier.js";
+import { verifyAccount, dataMatches, normalizeAccount, b58decode, bytesToHex, toU64 } from "./verifier.js";
 import { verifyQuorum, stakeTableFromVoteAccounts } from "./attest.js";
 import { decide, configErrors, DEFAULTS, TRUST } from "./policy.js";
+import { parseJsonExact } from "./json.js";
 
 export { TRUST };
 
@@ -62,7 +63,8 @@ export class ZiljaClient {
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
         signal: ctl.signal,
       });
-      const j = await r.json();
+      // A11: numrat e plotë mbi 2^53 - 1 (stake, lamports) lexohen pa humbje si tekst.
+      const j = typeof r.text === "function" ? parseJsonExact(await r.text()) : await r.json();
       if (j.error) throw new Error(`${method}: ${j.error.message}`);
       return j.result;
     } finally {
@@ -115,9 +117,19 @@ export class ZiljaClient {
     let quorumReport = null;
     if (this.quorum && slot != null && this.rootOverride == null) {
       try {
-        const [va, ei] = await Promise.all([this.rpc(this.solanaRpc, "getVoteAccounts", [{ commitment: "finalized" }]), this.rpc(this.solanaRpc, "getEpochInfo", [{ commitment: "finalized" }])]);
-        quorumEpochOk = slot >= ei.absoluteSlot - ei.slotIndex;
-        if (!quorumEpochOk) warnings.push(`sloti ${slot} është në një epokë të kaluar: tabela e stake-ut e epokës aktuale s'vlen për të`);
+        // A10: pesha është pamja e RPC-së (getVoteAccounts), jo tabela e konsensusit e epokës. Vlen
+        // vetëm për një slot brenda epokës së saj (të dy kufijtë), dhe vetëm kur epoka s'ndryshoi gjatë
+        // leximit (getEpochInfo para dhe pas).
+        const fin = [{ commitment: "finalized" }];
+        const e1 = await this.rpc(this.solanaRpc, "getEpochInfo", fin);
+        const va = await this.rpc(this.solanaRpc, "getVoteAccounts", fin);
+        const e2 = await this.rpc(this.solanaRpc, "getEpochInfo", fin);
+        const start = toU64(e1?.absoluteSlot) - toU64(e1?.slotIndex);
+        const end = start + toU64(e1?.slotsInEpoch) - 1n;
+        const coherent = e1?.epoch === e2?.epoch;
+        quorumEpochOk = coherent && BigInt(slot) >= start && BigInt(slot) <= end;
+        if (!coherent) warnings.push("epoka ndryshoi gjatë leximit të tabelës së stake-ut: kuorumi s'numërohet");
+        else if (!quorumEpochOk) warnings.push(`sloti ${slot} s'është në epokën e tabelës së stake-ut (${start}–${end}): kuorumi s'numërohet`);
         const table = stakeTableFromVoteAccounts(va);
         let g = this.genesisHash;
         if (g == null) {
@@ -142,7 +154,7 @@ export class ZiljaClient {
             quorumReport = { reached: q.reached, stakePercent: pct, validSignatures: q.validSignatures };
           }
         }
-        warnings.push("tabela e stake-ut u mor nga solanaRpc dhe i besohet asaj");
+        warnings.push("pesha e kuorumit është pamja e solanaRpc (getVoteAccounts), jo tabela e konsensusit e epokës; i besohet asaj");
       } catch (e) {
         warnings.push(`kuorumi s'u kontrollua: ${e.message}`);
       }

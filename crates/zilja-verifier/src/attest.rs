@@ -102,8 +102,10 @@ pub fn verify_quorum(genesis: &Hash, slot: u64, root: &Hash, atts: &[Attestation
     let mut valid = 0;
     let mut rejected = 0;
     for a in atts {
-        // Një validator numërohet vetëm një herë.
-        if !seen.insert(a.validator) {
+        // Një validator numërohet vetëm një herë. A15: shënohet si "i parë" vetëm pas një firme të
+        // vlefshme, ndaj një firmë e pavlefshme s'e përjashton një të vlefshme të të njëjtit identitet,
+        // dhe rezultati s'varet nga radha.
+        if seen.contains(&a.validator) {
             rejected += 1;
             continue;
         }
@@ -112,6 +114,7 @@ pub fn verify_quorum(genesis: &Hash, slot: u64, root: &Hash, atts: &[Attestation
             continue;
         };
         if a.verify(genesis, slot, root) {
+            seen.insert(a.validator);
             valid += 1;
             attested += stake as u128;
         } else {
@@ -197,5 +200,26 @@ mod tests {
         let thief = SigningKey::generate(&mut OsRng);
         let fake = thief.sign(&authorize_message(&G, &s_pk)).to_bytes();
         assert!(!Attestation { authorization: Some(fake), ..a }.verify(&G, 7, &root));
+    }
+
+    /// A15: një firmë e pavlefshme e një identiteti, para një të vlefshme të të njëjtit identitet, s'e
+    /// fshin të vlefshmen; rezultati është i njëjtë në çdo radhë.
+    #[test]
+    fn invalid_signature_does_not_shadow_valid_one() {
+        let (keys, table) = setup(3);
+        let root = [7u8; 32];
+        let good = |k: &SigningKey| Attestation {
+            validator: k.verifying_key().to_bytes(),
+            signer: None,
+            authorization: None,
+            signature: k.sign(&attest_message(&G, 5, &root)).to_bytes(),
+        };
+        let bad = |k: &SigningKey| Attestation { signature: [1u8; 64], ..good(k) };
+        let mut atts = vec![bad(&keys[0]), good(&keys[0]), good(&keys[1]), good(&keys[2])];
+        let a = verify_quorum(&G, 5, &root, &atts, &table);
+        atts.reverse();
+        let b = verify_quorum(&G, 5, &root, &atts, &table);
+        assert!(a.reached && b.reached, "{a:?} / {b:?}");
+        assert_eq!((a.attested_stake, a.valid_signatures), (b.attested_stake, b.valid_signatures));
     }
 }

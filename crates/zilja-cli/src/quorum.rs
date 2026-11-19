@@ -15,7 +15,7 @@
 
 use serde_json::json;
 use std::process::exit;
-use zilja_cli::{genesis, quorum_by_root, rpc, stake_table};
+use zilja_cli::{genesis, quorum_by_root, rpc, stake_view};
 
 fn run() -> Result<bool, String> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -29,10 +29,18 @@ fn run() -> Result<bool, String> {
     }
     let (sol, ziljas) = (&args[0], &args[1..]);
 
-    let table = stake_table(sol)?;
+    let view = stake_view(sol)?;
+    let table = &view.table;
     let g = genesis(sol, genesis_arg.as_deref())?;
     println!("genesis: {}", bs58::encode(g).into_string());
-    println!("stake total: {} lamports, {} validatorë", table.total(), table.entries.len());
+    println!(
+        "stake total: {} lamports, {} validatorë (A10: pamja e RPC-së, epoka {}, slotet {}–{}; jo tabela e konsensusit)",
+        table.total(),
+        table.entries.len(),
+        view.epoch,
+        view.first_slot,
+        view.last_slot
+    );
 
     // Sloti i përbashkët: më i vogli nga slotet e fundit të firmosura.
     let mut latest = Vec::new();
@@ -48,7 +56,12 @@ fn run() -> Result<bool, String> {
 
     // P-11: çdo root kontrollohet (64 hex) para përdorimit; firmat grupohen sipas root-it dhe
     // kuorumi vlerësohet për secilin veç. Dy root-e me kuorum = ndarje, dështim.
-    let q = quorum_by_root(ziljas, slot, &g, &table);
+    // A10: tabela e stake-ut vlen vetëm për slotet e epokës së saj.
+    if !view.covers(slot) {
+        println!("❌ sloti {slot} s'është në epokën e tabelës së stake-ut ({}–{}): kuorumi s'numërohet", view.first_slot, view.last_slot);
+        return Ok(false);
+    }
+    let q = quorum_by_root(ziljas, slot, &g, table);
     for (z, e) in &q.skipped {
         println!("  {z}: s'numërohet ({e})");
     }
@@ -64,7 +77,7 @@ fn run() -> Result<bool, String> {
             reached.push(root);
         }
     }
-    println!("⚠️  tabela e stake-ut është e epokës aktuale dhe u mor nga {sol}: i besohet atij");
+    println!("⚠️  pesha është pamja e {sol} (getVoteAccounts), jo tabela e konsensusit e epokës: i besohet atij");
     match reached.len() {
         1 => {
             println!("✅ kuorumi > 2/3 u arrit për root {}", reached[0]);

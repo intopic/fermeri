@@ -30,14 +30,84 @@ if (bytesToHex(m.subarray(47, 55)) !== "0100000000000000" || m.length !== 15 + 3
   }
 }
 
-// getVoteAccounts → tabela (stake 0 hiqet, i njëjti node mblidhet).
+// getVoteAccounts → tabela (stake 0 hiqet, i njëjti node mblidhet, vetëm epochVoteAccount).
+const K1 = "11111111111111111111111111111111", K2 = "SysvarS1otHashes111111111111111111111111111", K3 = "Vote111111111111111111111111111111111111111";
+const va = (node, vote, stake, epochVoteAccount = true) => ({ nodePubkey: node, votePubkey: vote, activatedStake: stake, epochVoteAccount });
 const t = stakeTableFromVoteAccounts({
-  current: [{ nodePubkey: "A", activatedStake: 5 }, { nodePubkey: "A", activatedStake: 2 }],
-  delinquent: [{ nodePubkey: "B", activatedStake: 0 }],
+  current: [va(K1, K3, 5), va(K1, K2, 2), va(K3, K1, 9, false)],
+  delinquent: [va(K2, K3, 0)],
 });
-if (t.get("A") !== 7n || t.has("B")) {
+if (t.get(K1) !== 7n || t.has(K2) || t.has(K3)) {
   fail++;
-  console.error("❌ stakeTableFromVoteAccounts");
+  console.error("❌ stakeTableFromVoteAccounts", t);
+}
+// A11: stake mbi 2^53 lexohet saktë nga teksti; Number i pasigurt, grup që mungon ose çelës i
+// pavlefshëm refuzohen (s'bëhen 0 në heshtje).
+const big = stakeTableFromVoteAccounts({ current: [va(K1, K3, "9007199254740993")], delinquent: [] });
+if (big.get(K1) !== 9007199254740993n) {
+  fail++;
+  console.error("❌ stake mbi 2^53 humbi saktësi", big);
+}
+for (const [name, r] of [
+  ["Number i pasigurt", { current: [va(K1, K3, 9007199254740993)], delinquent: [] }],
+  ["pa delinquent", { current: [va(K1, K3, 5)] }],
+  ["çelës i pavlefshëm", { current: [va("A", K3, 5)], delinquent: [] }],
+  ["stake negativ", { current: [va(K1, K3, -1)], delinquent: [] }],
+]) {
+  let threw = false;
+  try {
+    stakeTableFromVoteAccounts(r);
+  } catch {
+    threw = true;
+  }
+  if (!threw) {
+    fail++;
+    console.error(`❌ A11: ${name} u pranua`);
+  }
+}
+// A16: sloti jashtë u64 s'mbështillet në 64 bit.
+for (const bad of [2n ** 64n, -1n, -1, 2 ** 53, 1.5, "18446744073709551616"]) {
+  let threw = false;
+  try {
+    attestMessage("11".repeat(32), bad, "22".repeat(32));
+  } catch {
+    threw = true;
+  }
+  if (!threw) {
+    fail++;
+    console.error(`❌ A16: slot ${bad} u pranua`);
+  }
+}
+// A15: një firmë e pavlefshme e një identiteti s'e fshin të vlefshmen; radha s'ka rëndësi.
+{
+  const { generateKeyPairSync, sign } = await import("node:crypto");
+  const keys = [0, 1, 2].map(() => generateKeyPairSync("ed25519"));
+  const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+  const b58 = (bytes) => {
+    let n = BigInt("0x" + Buffer.from(bytes).toString("hex"));
+    let s = "";
+    while (n > 0n) {
+      s = B58[Number(n % 58n)] + s;
+      n /= 58n;
+    }
+    for (const b of bytes) {
+      if (b !== 0) break;
+      s = "1" + s;
+    }
+    return s;
+  };
+  const ids = keys.map((k) => b58(new Uint8Array(k.publicKey.export({ format: "der", type: "spki" }).subarray(-32))));
+  const G = "33".repeat(32), R = "44".repeat(32);
+  const good = (i) => ({ validator: ids[i], signer: null, authorization: null, signature: Buffer.from(sign(null, attestMessage(G, 9, R), keys[i].privateKey)).toString("hex") });
+  const bad = (i) => ({ ...good(i), signature: "01".repeat(64) });
+  const table = new Map(ids.map((id) => [id, 10n]));
+  const atts = [bad(0), good(0), good(1), good(2)];
+  const a = await verifyQuorum(G, 9, R, atts, table);
+  const b = await verifyQuorum(G, 9, R, [...atts].reverse(), table);
+  if (!a.reached || !b.reached || a.attestedStake !== b.attestedStake) {
+    fail++;
+    console.error("❌ A15: firma e pavlefshme fshehu të vlefshmen ose radha ndryshoi rezultatin", a, b);
+  }
 }
 
 if (fail) {
