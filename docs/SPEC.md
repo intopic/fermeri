@@ -109,7 +109,7 @@ dhe `SHA256(data) == data_hash`.
 
 ## 6. RPC (JSON-RPC 2.0 mbi HTTP, porta e paracaktuar 7799)
 
-Kërkesat janë deri në 64 KB, dhe çdo lidhje ka kohë maksimale prej 5 s. Parametrat e
+Kërkesat janë deri në 64 KB, dhe çdo kërkesë ka afat të plotë prej 5 s, monoton, që nga pranimi i lidhjes: përfshin kohën në radhë, leximin dhe shkrimin e përgjigjes (A17). Një kërkesë që skadon në radhë merr `503 timeout` pa u lexuar. Parametrat e
 gabuar kthejnë `-32602` (L-04). Shih `docs/OPERIMI.md` për portet dhe proxy-n.
 
 ### `getAccountProof`

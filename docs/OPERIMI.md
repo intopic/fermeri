@@ -17,7 +17,7 @@ të pemës dhe `503 halted` pasi ka ndaluar (F-12). Load balancer-i duhet ta pë
 
 Serveri i Ziles ka kufij të vetët:
 - trupi i kërkesës deri në 64 KB;
-- 5 sekonda kohë maksimale leximi dhe shkrimi;
+- 5 sekonda afat i plotë për kërkesë, që nga pranimi (radha, kokat, trupi, përgjigja; A17), dhe ≤ 5 s për çdo operacion leximi/shkrimi; prandaj edhe `on_unload` pret serverin ≤ ~5 s;
 - 8 punëtorë, ndaj një klient i ngadaltë zë vetëm një punëtor për pak sekonda.
 
 Nuk ka TLS, kufij për IP ose cache. Për to, vendose pas një proxy. Shembull me nginx:

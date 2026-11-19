@@ -97,7 +97,10 @@ export interface ZiljaClientOptions {
   root?: string | { root: string; slot?: number; complete?: boolean };
   /** Krahaso lamports, owner, executable dhe bajtet me `solanaRpc`. Parazgjedhja: po. A13: kur kërkohet, vetëm përputhja jep `ok`. */
   compareData?: boolean;
+  /** Koha maksimale e një kërkese, përfshi leximin e trupit. Parazgjedhja: 10000. */
   timeoutMs?: number;
+  /** A17: kufijtë e përgjigjeve në bajte. Parazgjedhja: zilja 1 MB, solana 64 MB. */
+  maxResponseBytes?: { zilja?: number; solana?: number };
   fetch?: typeof fetch;
 }
 

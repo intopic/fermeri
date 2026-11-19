@@ -22,7 +22,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use zilja_verifier::Key;
 
 /// Gabim RPC: (kodi, mesazhi).
@@ -205,6 +205,10 @@ fn err(id: Value, code: i64, msg: &str) -> Value {
 pub const MAX_BODY: usize = 64 << 10;
 const MAX_HEADERS: usize = 16 << 10;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// A17: afati i plotë i një kërkese, monoton, që nga pranimi i lidhjes: përfshin kohën në radhë,
+/// leximin e kokave dhe të trupit, dhe shkrimin e përgjigjes. `IO_TIMEOUT` kufizon vetëm një
+/// operacion; pa këtë, një klient që dërgon një bajt në çdo 4 s e mbante punëtorin pa fund.
+pub const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 const WORKERS: usize = 8;
 
 /// Çfarë shërben një port.
@@ -258,17 +262,29 @@ pub fn serve(bind: &str, shared: Shared) -> std::io::Result<HttpServer> {
 /// kohë maksimale leximi/shkrimi dhe kufi për trupin, ndaj një klient i ngadaltë zë
 /// vetëm një punëtor për pak sekonda dhe s'bllokon kurrë /health.
 pub fn serve_routes(bind: &str, shared: Shared, routes: Routes) -> std::io::Result<HttpServer> {
+    serve_routes_with(bind, shared, routes, REQUEST_DEADLINE)
+}
+
+/// Si `serve_routes`, me afatin e kërkesës të dhënë (testet).
+pub fn serve_routes_with(bind: &str, shared: Shared, routes: Routes, deadline: Duration) -> std::io::Result<HttpServer> {
     let listener = TcpListener::bind(bind)?;
     let addr = listener.local_addr()?;
     let stop = Arc::new(AtomicBool::new(false));
-    let (tx, rx) = crossbeam_channel::bounded::<TcpStream>(WORKERS * 8);
+    let (tx, rx) = crossbeam_channel::bounded::<(TcpStream, Instant)>(WORKERS * 8);
     let mut threads = Vec::new();
     for i in 0..WORKERS {
         let rx = rx.clone();
         let sh = shared.clone();
         threads.push(std::thread::Builder::new().name(format!("zilja-http-{i}")).spawn(move || {
-            for stream in rx.iter() {
-                let _ = handle_conn(stream, &sh, routes);
+            for (mut stream, accepted) in rx.iter() {
+                let until = accepted + deadline;
+                // A17: e skaduar në radhë: përgjigje e shkurtër dhe mbyllje, pa lexuar asgjë.
+                if Instant::now() >= until {
+                    let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
+                    let _ = write_resp(&mut stream, 503, "text/plain", b"timeout", false);
+                    continue;
+                }
+                let _ = handle_conn(stream, &sh, routes, until);
             }
         })?);
     }
@@ -279,9 +295,11 @@ pub fn serve_routes(bind: &str, shared: Shared, routes: Routes) -> std::io::Resu
                 break;
             }
             let Ok(s) = conn else { continue };
+            let accepted = Instant::now();
             let _ = s.set_read_timeout(Some(IO_TIMEOUT));
             let _ = s.set_write_timeout(Some(IO_TIMEOUT));
-            if let Err(crossbeam_channel::TrySendError::Full(mut s)) = tx.try_send(s) {
+            if let Err(crossbeam_channel::TrySendError::Full((mut s, _))) = tx.try_send((s, accepted)) {
+                let _ = s.set_write_timeout(Some(Duration::from_millis(200)));
                 let _ = write_resp(&mut s, 503, "text/plain", b"busy", false);
             }
         }
@@ -337,7 +355,18 @@ fn health(shared: &Shared) -> (u16, &'static str) {
     }
 }
 
-fn handle_conn(mut s: TcpStream, shared: &Shared, routes: Routes) -> std::io::Result<()> {
+/// A17: koha që i mbetet kërkesës; çdo lexim/shkrim merr vetëm aq (dhe kurrë më shumë se IO_TIMEOUT).
+fn budget(s: &TcpStream, until: Instant) -> std::io::Result<()> {
+    let left = until.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "afati i kërkesës kaloi"));
+    }
+    let t = Some(left.min(IO_TIMEOUT));
+    s.set_read_timeout(t)?;
+    s.set_write_timeout(t)
+}
+
+fn handle_conn(mut s: TcpStream, shared: &Shared, routes: Routes, until: Instant) -> std::io::Result<()> {
     // Kokat: lexo deri te rreshti bosh, jo më shumë se MAX_HEADERS.
     let mut buf = Vec::with_capacity(1024);
     let mut chunk = [0u8; 4096];
@@ -348,6 +377,7 @@ fn handle_conn(mut s: TcpStream, shared: &Shared, routes: Routes) -> std::io::Re
         if buf.len() > MAX_HEADERS {
             return write_resp(&mut s, 431, "text/plain", b"headers too large", routes.cors);
         }
+        budget(&s, until)?;
         let n = s.read(&mut chunk)?;
         if n == 0 {
             return Ok(());
@@ -372,6 +402,7 @@ fn handle_conn(mut s: TcpStream, shared: &Shared, routes: Routes) -> std::io::Re
         }
     }
     let cors = routes.cors;
+    budget(&s, until)?;
     match (method, path) {
         ("OPTIONS", _) if cors => write_resp(&mut s, 204, "text/plain", b"", cors),
         ("GET", "/health") => {
@@ -391,6 +422,7 @@ fn handle_conn(mut s: TcpStream, shared: &Shared, routes: Routes) -> std::io::Re
             let mut body = buf[head_end..].to_vec();
             body.truncate(n);
             while body.len() < n {
+                budget(&s, until)?;
                 let k = s.read(&mut chunk)?;
                 if k == 0 {
                     return Ok(());
@@ -398,6 +430,7 @@ fn handle_conn(mut s: TcpStream, shared: &Shared, routes: Routes) -> std::io::Re
                 body.extend_from_slice(&chunk[..k.min(n - body.len())]);
             }
             let v = handle_jsonrpc(shared, &String::from_utf8_lossy(&body));
+            budget(&s, until)?;
             write_resp(&mut s, 200, "application/json", v.to_string().as_bytes(), cors)
         }
         _ => write_resp(&mut s, 404, "text/plain", b"not found", cors),
