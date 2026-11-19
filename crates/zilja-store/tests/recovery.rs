@@ -170,31 +170,15 @@ fn page_corruption_is_refused_not_wiped() {
     assert_eq!(files(d.path()), before, "faqet e dëmtuara u fshinë");
 }
 
-/// I vetmi rast i toleruar: bishti pas rekordit të fundit të vlefshëm (rekord i papërfunduar, zero,
-/// ose rekordi i fundit me CRC të gabuar deri në fund të skedarit). Hapja jep slotin e fundit të plotë.
+/// I vetmi rast i toleruar: bishti pas rekordit të fundit të vlefshëm që s'është kornizë e plotë
+/// (kokë ose trup i prerë, zero pas tij). Hapja jep slotin e fundit të plotë.
 #[test]
 fn tail_after_last_valid_record_is_tolerated() {
     type Edit = fn(&mut Vec<u8>, &[(usize, usize)]);
-    let cases: [(&str, Edit, usize); 5] = [
+    let cases: [(&str, Edit, usize); 3] = [
         ("koka e prerë", |l, r| l.truncate(r.last().unwrap().0 + 9), 1),
         ("trupi i prerë", |l, r| l.truncate(r.last().unwrap().0 + r.last().unwrap().1 - 3), 1),
         ("zero pas rekordit të fundit", |l, _| l.extend_from_slice(&[0; 300]), 0),
-        (
-            "CRC e gabuar në rekordin e fundit",
-            |l, r| {
-                let i = r.last().unwrap().0 + 20;
-                l[i] ^= 1
-            },
-            1,
-        ),
-        (
-            "rekordi i fundit i mbushur me zero",
-            |l, r| {
-                let (a, n) = *r.last().unwrap();
-                l[a + 16..a + n].fill(0)
-            },
-            1,
-        ),
     ];
     for (name, edit, lost) in cases {
         let d = tempfile::tempdir().unwrap();
@@ -208,6 +192,136 @@ fn tail_after_last_valid_record_is_tolerated() {
         let want = roots[roots.len() - 1 - lost];
         assert_eq!((t.version().unwrap(), t.root()), want, "{name}");
         t.verify_integrity().unwrap();
+    }
+}
+
+/// A04: rekordi i fundit është kornizë e PLOTË (kokë + gjithë trupi) por CRC s'përputhet. Mund të jetë
+/// dëmtim i një sloti të konfirmuar: s'hidhet si bisht, hapja refuzohet dhe asnjë skedar s'ndryshon.
+#[test]
+fn complete_last_frame_with_bad_crc_is_refused() {
+    type Edit = fn(&mut Vec<u8>, &[(usize, usize)]);
+    let cases: [(&str, Edit); 2] = [
+        ("bit i ndryshuar në rekordin e fundit", |l, r| l[r.last().unwrap().0 + 20] ^= 1),
+        ("trupi i rekordit të fundit me zero", |l, r| {
+            let (a, n) = *r.last().unwrap();
+            l[a + 16..a + n].fill(0)
+        }),
+    ];
+    for (name, edit) in cases {
+        let d = tempfile::tempdir().unwrap();
+        build(d.path(), 8);
+        let lp = d.path().join("meta.log");
+        let mut log = std::fs::read(&lp).unwrap();
+        let r = records(&log);
+        edit(&mut log, &r);
+        std::fs::write(&lp, &log).unwrap();
+        let before = files(d.path());
+        let e = PageTree::open(d.path(), opts()).err().unwrap_or_else(|| panic!("{name}: u pranua (u hodh si bisht)"));
+        assert!(e.contains("CRC"), "{name}: {e}");
+        assert_eq!(files(d.path()), before, "{name}: skedarët ndryshuan");
+    }
+}
+
+/// A05: checkpoint-i i një instalimi ekzistues humbet menjëherë pas zbrazjes së log-ut. Faqet s'fshihen.
+#[test]
+fn missing_checkpoint_with_existing_pages_is_refused() {
+    let d = tempfile::tempdir().unwrap();
+    build(d.path(), 0);
+    assert_eq!(std::fs::metadata(d.path().join("meta.log")).unwrap().len(), 0);
+    std::fs::remove_file(d.path().join("meta.ckpt")).unwrap();
+    let before = files(d.path());
+    assert!(before["pages.dat"].len() > 0);
+    let e = PageTree::open(d.path(), opts()).err().expect("faqet pa checkpoint u fshinë");
+    assert!(e.contains("meta.ckpt"), "{e}");
+    assert_eq!(files(d.path()), before, "pages.dat u zbraz");
+}
+
+/// A05: ndërtimi i parë i ndërprerë (shënuesi BUILDING) rindërtohet automatikisht.
+#[test]
+fn interrupted_first_build_restarts_cleanly() {
+    let d = tempfile::tempdir().unwrap();
+    {
+        let mut t = PageTree::open(d.path(), opts()).unwrap();
+        t.stage_snapshot(1, vec![([7u8; 32], Some(AccountMeta { lamports: 5, ..Default::default() }))]).unwrap();
+        t.flush_staging_for_test().unwrap();
+        // "Rrëzim" para finish_snapshot.
+    }
+    assert!(d.path().join("BUILDING").exists());
+    let mut t = PageTree::open(d.path(), opts()).unwrap();
+    assert_eq!(t.version(), None);
+    t.stage_snapshot(1, vec![([7u8; 32], Some(AccountMeta { lamports: 5, ..Default::default() }))]).unwrap();
+    t.finish_snapshot(1, true).unwrap();
+    assert!(!d.path().join("BUILDING").exists(), "shënuesi mbeti pas checkpoint-it");
+    drop(t);
+    let t = PageTree::open(d.path(), opts()).unwrap();
+    assert_eq!(t.version(), Some(1));
+}
+
+/// A06: shënuesi INVALID ekziston por s'lexohet (këtu: është dosje). S'dihet nëse pema është e
+/// vlefshme: hapja refuzohet dhe asgjë s'ndryshon.
+#[test]
+fn unreadable_invalid_marker_is_refused() {
+    let d = tempfile::tempdir().unwrap();
+    let roots = build(d.path(), 2);
+    std::fs::create_dir(d.path().join("INVALID")).unwrap();
+    let before = files(d.path());
+    let e = PageTree::open(d.path(), opts()).err().unwrap_or_else(|| panic!("u hap si pemë e vlefshme në slotin {:?}", roots.last()));
+    assert!(e.contains("INVALID"), "{e}");
+    assert_eq!(files(d.path()), before);
+}
+
+/// A26: kovat e staging-ut kontrollohen (numri + SHA-256) para ndërtimit. Një fushë e ndryshuar që
+/// dekodohet ende, ose një kovë që mungon, ndalin ndërtimin; pa ndryshime root-i = referenca.
+#[test]
+fn staging_buckets_are_checked_end_to_end() {
+    let accs: Vec<_> = (0..300u32)
+        .map(|i| {
+            let mut k = [0u8; 32];
+            k[0] = (i * 7) as u8;
+            k[1..5].copy_from_slice(&i.to_le_bytes());
+            (k, Some(AccountMeta { lamports: i as u64 + 1, ..Default::default() }))
+        })
+        .collect();
+    let reference = {
+        let d = tempfile::tempdir().unwrap();
+        let mut t = PageTree::open(d.path(), opts()).unwrap();
+        t.stage_snapshot(9, accs.clone()).unwrap();
+        t.finish_snapshot(9, true).unwrap()
+    };
+    let bucket = |dir: &Path| {
+        let mut v: Vec<_> = std::fs::read_dir(dir.join("staging")).unwrap().map(|e| e.unwrap().path()).collect();
+        v.sort();
+        v[0].clone()
+    };
+    type Edit = fn(&Path);
+    let cases: [(&str, Option<Edit>); 3] = [
+        ("pa ndryshim", None),
+        ("lamports i ndryshuar", Some(|p| {
+            let mut b = std::fs::read(p).unwrap();
+            b[49] ^= 0x01;
+            std::fs::write(p, b).unwrap();
+        })),
+        ("kova mungon", Some(|p| std::fs::remove_file(p).unwrap())),
+    ];
+    for (name, edit) in cases {
+        let d = tempfile::tempdir().unwrap();
+        let mut t = PageTree::open(d.path(), opts()).unwrap();
+        t.stage_snapshot(9, accs.clone()).unwrap();
+        t.flush_staging_for_test().unwrap();
+        let r = match edit {
+            None => t.finish_snapshot(9, true),
+            Some(f) => {
+                f(&bucket(d.path()));
+                t.finish_snapshot(9, true)
+            }
+        };
+        match edit {
+            None => assert_eq!(r.unwrap(), reference, "{name}"),
+            Some(_) => {
+                let e = r.err().unwrap_or_else(|| panic!("{name}: u ndërtua dhe do të shpallej e plotë"));
+                assert!(e.contains("staging"), "{name}: {e}");
+            }
+        }
     }
 }
 

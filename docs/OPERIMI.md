@@ -130,7 +130,7 @@ hash-in e prindit dhe me rrugën e saj.
 
 Ndryshimi i motorit kërkon një dosje të re ose rindërtim nga snapshot-i.
 
-## Rikuperimi dhe dëmtimi i ruajtjes (P-02, P-03)
+## Rikuperimi dhe dëmtimi i ruajtjes (P-02, P-03, A04–A06, A26)
 
 Në hapje, motori me faqe lexon `meta.ckpt` dhe pas tij rekordet e `meta.log`. Çdo rekord
 duhet të jetë i plotë, me CRC të saktë dhe i formatit të njohur. Rekordet duhet të jenë në
@@ -138,19 +138,28 @@ rend: numri rendor rritet me 1, sloti rritet rreptësisht. Madhësitë kontrollo
 buxhetit: një rekord deri në 64 MB, log-u deri në 256 MB, checkpoint-i deri në 8 GB.
 
 **I vetmi rast i toleruar** është bishti pas rekordit të fundit të vlefshëm, kur shtrihet
-deri në fund të skedarit:
+deri në fund të skedarit dhe **s'është kornizë e plotë**:
 - kokë ose trup i prerë;
-- vetëm zero;
-- korniza e fundit me CRC të gabuar.
+- vetëm zero.
 
 Me `sync_every_slots = 1`, ky është gjithmonë një slot që s'u konfirmua kurrë: commit-i kthehet
 vetëm pas fsync-ut të rekordit, ndaj ai slot s'u shërbye dhe s'u firmos kurrë. Bishti ruhet në
 `meta.log.tail-<offset>` dhe hiqet nga log-u.
 
-Kufizim: një bit-flip në rekordin e fundit, që ishte i konfirmuar, s'dallohet nga një shkrim
-i prerë. Në atë rast zilja kthehet një slot mbrapa. Pas rinisjes, kontrolli i zinxhirit
-(fingerprint) s'gjen vazhdimësi me validatorin dhe e ndalon zilen (fail-closed). Ajo s'jep
-dëftesa të gabuara.
+**Korniza e plotë me CRC të gabuar refuzohet (A04)**, edhe kur është e fundit. Pas faktit, një
+slot i konfirmuar i dëmtuar s'dallohet nga një shkrim i papërfunduar, ndaj zilja s'e hedh.
+Kjo vlen edhe kur trupi i saj është krejt zero. Pas një ikjeje rryme kjo mund të kërkojë
+rindërtim me dorë (procedura më poshtë), por kurrë s'humbet në heshtje një slot të konfirmuar.
+
+**Checkpoint-i që mungon (A05).** Pa `meta.ckpt`, pema fshihet dhe rindërtohet vetëm kur dosja
+është bosh, ose kur ekziston shënuesi `BUILDING`. Ky shënues shkruhet (me fsync) para hapit të
+parë shkatërrues të një ndërtimi nga snapshot-i, dhe hiqet vetëm pasi checkpoint-i i parë është
+në disk. Faqe ose `staging/` pa checkpoint dhe pa shënues refuzohen: asgjë s'fshihet.
+
+**Staging-u i snapshot-it (A26).** Gjatë ndërtimit, llogaritë shkruhen në kova të përkohshme në
+`staging/`. Për çdo kovë mbahen në RAM numri i rekordeve dhe SHA-256 i bajteve. Para ndërtimit
+kontrollohen që të dyja përputhen; një kovë që mungon lejohet vetëm kur priteshin zero rekorde.
+Mospërputhja ndal ndërtimin para publikimit dhe firmosjes.
 
 **Çdo gjë tjetër ndalon hapjen me gabim.** Këtu hyjnë: CRC e gabuar me rekorde të vlefshme
 pas saj, format i panjohur, rekord i përsëritur ose që mungon, log pa checkpoint, dhe faqe që
@@ -162,8 +171,9 @@ Procedura:
 2. Ruaj dosjen për diagnozë: `mv /var/lib/zilja/db /var/lib/zilja/db.damaged-$(date +%s)`.
 3. Rinise validatorin. Zilja ndërton pemën e re nga snapshot-i.
 
-`INVALID` (zinxhir tjetër, ndalim) mbetet rruga e vetme e rindërtimit automatik, sepse
-shënohet qëllimisht nga vetë zilja. Nëse shkrimi i tij dështon, `zilja_invalidate_failed`
+`INVALID` (zinxhir tjetër, ndalim) mbetet rruga e vetme e rindërtimit automatik të një peme
+ekzistuese, sepse shënohet qëllimisht nga vetë zilja. **Kur `INVALID` ekziston por s'lexohet**
+(leje, I/O, s'është skedar), hapja refuzohet pa ndryshuar asgjë (A06). Nëse shkrimi i tij dështon, `zilja_invalidate_failed`
 bëhet 1, dhe dosja duhet zhvendosur me dorë para rinisjes.
 
 **`sync_every_slots`**: motori me faqe pranon vetëm 1 në këtë release. Mënyra asinkrone kërkon
