@@ -4812,6 +4812,7 @@ dependencies = [
  "hex",
  "rand 0.8.8",
  "serde_json",
+ "tempfile",
  "zilja-node",
  "zilja-store",
  "zilja-tree",

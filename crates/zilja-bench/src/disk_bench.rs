@@ -97,6 +97,15 @@ fn meta(rng: &mut StdRng) -> AccountMeta {
     AccountMeta { lamports: rng.gen_range(890_880..10_000_000_000), owner, executable: false, data_len: 165, data_hash: rng.gen() }
 }
 
+/// A22: dosja e krijuar nga ky ekzekutim; fshihet vetëm ajo, në fund (edhe pas panic-u).
+struct OwnedDir(std::path::PathBuf);
+
+impl Drop for OwnedDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn pct(v: &[f64], p: f64) -> f64 {
     let mut v = v.to_vec();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -108,8 +117,14 @@ fn main() {
     let n: usize = a.first().and_then(|x| x.parse().ok()).unwrap_or(1_000_000);
     let slots: u64 = a.get(1).and_then(|x| x.parse().ok()).unwrap_or(200);
     let per_slot: usize = a.get(2).and_then(|x| x.parse().ok()).unwrap_or(5_000);
-    let dir = std::path::PathBuf::from(a.get(3).cloned().unwrap_or_else(|| "/tmp/zilja-disk-bench".into()));
-    let _ = std::fs::remove_dir_all(&dir);
+    // A22: argumenti është dosja PRIND. Bench-i krijon brenda saj një dosje të re vetëm për këtë
+    // ekzekutim (dështon nëse ekziston) dhe fshin vetëm atë. Asgjë tjetër te prindi s'preket.
+    let parent = std::path::PathBuf::from(a.get(3).cloned().unwrap_or_else(|| std::env::temp_dir().to_string_lossy().into_owned()));
+    std::fs::create_dir_all(&parent).expect("dosja prind");
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = parent.join(format!("zilja-disk-bench-{}-{stamp}", std::process::id()));
+    std::fs::create_dir(&dir).expect("dosja e ekzekutimit (s'duhet të ekzistojë)");
+    let _own = OwnedDir(dir.clone());
     let mut rng = StdRng::seed_from_u64(42);
     eprintln!("zilja-disk-bench: {n} llogari, {slots} slote × {per_slot}, në {}", dir.display());
 

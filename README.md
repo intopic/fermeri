@@ -93,7 +93,7 @@ const zilja = new ZiljaClient({ endpoints: ["https://zilja-1.example", "https://
 const r = await zilja.verifyAccount(pubkey);   // r.ok, r.verdict, r.account.lamports, r.trust
 ```
 
-Pa varësi, 8.7 KB e paketuar, me tipe TypeScript. Shih [`sdk/js/README.md`](sdk/js/README.md).
+Pa varësi, me tipe TypeScript. Madhësia (A25, `5b079ed`, e matur nga `scripts/release.sh`): tarball-i npm 21.0 kB; bundle i minifikuar 6.3 KB gzip i gjithë SDK-ja, 1.7 KB gzip vetëm `verifyAccount`. Shifrat e çdo commit-i janë te `MANIFEST.json` i release-it. Shih [`sdk/js/README.md`](sdk/js/README.md).
 
 ## Dokumentet
 

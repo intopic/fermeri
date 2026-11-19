@@ -183,7 +183,7 @@ sfond konkurron për të njëjtat bërthama, prandaj p99 ka zhurmë.
   - sipas dëshirës, kontrollon kuorumin e validatorëve (> 2/3 e stake-ut);
   - krahason `lamports` dhe hash-in e të dhënave me RPC-në e zakonshme.
 - Tre nivele besimi, `single` → `agreement` → `quorum`, me `minTrust` për të kërkuar një nivel minimal. Dy zile që japin root të ndryshëm japin `invalid`.
-- Pa varësi (vetëm WebCrypto, edhe Ed25519), 8.7 KB e paketuar, tipe TypeScript të kontrolluara me `strict`.
+- Pa varësi (vetëm WebCrypto, edhe Ed25519), tipe TypeScript të kontrolluara me `strict`. *(A25: shifra e dikurshme "8.7 KB" s'e përshkruan paketën aktuale; në `5b079ed` tarball-i npm është 21.0 kB dhe bundle-i i minifikuar 6.3 KB gzip. Madhësia e çdo release-i jepet te `MANIFEST.json`, me komandën dhe commit-in.)*
 - Teste: 110 vektorë dëftesash dhe 8 vektorë firmash, të njëjtë me Rust bajt për bajt, plus 12 teste të klientit me zile të simuluara. Testi mbi validatorin e vërtetë: `single`, `quorum` (100% e stake-ut), dhe `minTrust=agreement` me një zile, që refuzohet siç duhet.
 - CI kontrollon që vektorët në repo janë pikërisht ata që gjeneron Rust.
 - **Kufizim:** me `quorum`, tabela e stake-ut i besohet `solanaRpc`-së. Light client-i me checkpoint është shtyrë për më vonë.
