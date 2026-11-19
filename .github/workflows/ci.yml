@@ -21,6 +21,8 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
       - name: cargo test
         run: cargo test --workspace --all-features
+      - name: cargo test (vetëm faqe, si release-i; pa RocksDB)
+        run: cargo test -p zilja-store -p zilja-node -p zilja-plugin
       - name: testi i rrymës që ikën (pema në disk)
         run: cargo run -q --release -p zilja-bench --bin zilja-crash-test -- 6
       - name: vrasje gjatë ndërtimit nga snapshot-i (Safer-6)
