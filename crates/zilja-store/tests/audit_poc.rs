@@ -1,4 +1,5 @@
 //! Audit proof-of-concept tests for the disk store (2026-11-15, commit f59be06).
+#![cfg(feature = "rocksdb")] // A21: motori i vjetër, vetëm me feature-in `rocksdb`.
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::sync::atomic::Ordering;

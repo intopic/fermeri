@@ -1,3 +1,4 @@
+#![cfg(feature = "rocksdb")] // A21: motori i vjetër, vetëm me feature-in `rocksdb`.
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::collections::BTreeMap;
 use zilja_store::{DiskTree, StoreOptions};

@@ -13,7 +13,8 @@ zilja-tree = { workspace = true }
 rand = { workspace = true }
 serde_json = { workspace = true }
 zilja-node = { workspace = true }
-zilja-store = { workspace = true }
+# A21: bench-et krahasojnë edhe motorin e vjetër RocksDB.
+zilja-store = { workspace = true, features = ["rocksdb"] }
 hex = { workspace = true }
 bs58 = { workspace = true }
 

@@ -1,6 +1,7 @@
 //! Simpler-4 (V7): matje para vendimit. Sa kushton një lexim me `seek_for_prev` mbi çelësa me
 //! version, kundrejt një `get` të thjeshtë? Nisja:
 //!   cargo test --release -p zilja-store --test seek_bench -- --ignored --nocapture
+#![cfg(feature = "rocksdb")] // A21: motori i vjetër, vetëm me feature-in `rocksdb`.
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use rocksdb::{BlockBasedOptions, Cache, Options, DB};
 use std::time::Instant;

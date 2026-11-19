@@ -38,7 +38,7 @@ jobs:
           cargo run -q -p zilja-bench --bin zilja-wire-vectors > sdk/js/test/wire-vectors.json
           git diff --exit-code sdk/js/test/wire-vectors.json
       - name: testet e auditimit që janë rregulluar (pa --ignored)
-        run: cargo test -p zilja-node -p zilja-store --test audit_poc
+        run: cargo test -p zilja-node -p zilja-store --features zilja-store/rocksdb --test audit_poc
       - name: SDK zilja-verify (npm test + pack)
         working-directory: sdk/js
         run: |
@@ -75,13 +75,34 @@ jobs:
       - name: Rust (versioni nga rust-toolchain.toml)
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
-      - name: libclang (për RocksDB)
+      - name: libclang (vetëm për motorin e vjetër RocksDB, disk=1)
+        if: matrix.db == '1'
         run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
       - name: build plugin + cli
-        run: cargo build --release -p zilja-plugin -p zilja-cli
+        run: |
+          if [ "${{ matrix.db }}" = "1" ]; then F="--features zilja-plugin/legacy-rocksdb"; fi
+          cargo build --release -p zilja-plugin -p zilja-cli $F
       - name: shkarko Agave
         run: |
           curl -sSL -o agave.tar.bz2 "https://github.com/anza-xyz/agave/releases/download/${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
           tar xjf agave.tar.bz2
       - name: e2e
         run: ZILJA_DB=${{ matrix.db }} WORK=$RUNNER_TEMP/e2e scripts/e2e-test-validator.sh "$PWD/solana-release/bin"
+
+  release:
+    name: Release pa RocksDB dhe pa libclang (A21)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (versioni nga rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - name: grafiku i varësive të release-it pa rocksdb/bindgen/clang-sys
+        run: |
+          cargo tree -p zilja-plugin -e normal,build --target x86_64-unknown-linux-gnu > tree.txt
+          cargo tree -p zilja-cli -e normal,build --target x86_64-unknown-linux-gnu >> tree.txt
+          if grep -iE "rocksdb|bindgen|clang-sys" tree.txt; then echo "release-i përmban motorin e vjetër"; exit 1; fi
+      - name: ndërtim nga zero pa libclang
+        run: |
+          if ldconfig -p | grep -q libclang; then sudo apt-get remove -y -q 'libclang*' || true; fi
+          cargo build --release -p zilja-plugin -p zilja-cli
+          ls -l target/release/libzilja_plugin.so

@@ -20,6 +20,7 @@ log = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }
-zilja-store = { workspace = true }
+# A21: testet e motorit të vjetër (disk_service) kërkojnë RocksDB; release-i s'e përfshin.
+zilja-store = { workspace = true, features = ["rocksdb"] }
 rocksdb = { version = "0.24", default-features = false, features = ["lz4"] }
 tempfile = "3"
