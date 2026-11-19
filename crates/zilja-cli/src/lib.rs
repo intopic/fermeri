@@ -46,25 +46,58 @@ pub fn u64_field(v: &Value) -> Option<u64> {
     }
 }
 
-/// Tabela e stake-ut nga `getVoteAccounts` (current + delinquent).
-pub fn stake_table(sol: &str) -> Result<StakeTable, String> {
-    let va = rpc(sol, "getVoteAccounts", json!([{"commitment": "finalized"}]))?;
+/// Tabela e stake-ut nga `getVoteAccounts` (current + delinquent), sipas identitetit (nodePubkey).
+///
+/// A10: kjo është pamja e RPC-së (`bank.vote_accounts()`), jo tabela e konsensusit e epokës; i
+/// besohet RPC-së. Merren vetëm llogaritë me `epochVoteAccount`. A11: kërkohen të dy grupet, çelësat
+/// 32 bajt, `activatedStake` u64 i saktë; shuma kontrollohet për tejmbushje. Çdo shkelje = gabim.
+pub fn stake_table_from(va: &Value) -> Result<StakeTable, String> {
     let mut stakes: HashMap<[u8; 32], u64> = HashMap::new();
     for group in ["current", "delinquent"] {
-        for v in va[group].as_array().into_iter().flatten() {
-            let node = b58_32(v["nodePubkey"].as_str().unwrap_or_default())?;
-            *stakes.entry(node).or_default() += v["activatedStake"].as_u64().unwrap_or(0);
+        let list = va[group].as_array().ok_or(format!("getVoteAccounts pa grupin \"{group}\""))?;
+        for v in list {
+            let node = b58_32(v["nodePubkey"].as_str().ok_or("getVoteAccounts: nodePubkey")?).map_err(|e| format!("getVoteAccounts: nodePubkey {e}"))?;
+            b58_32(v["votePubkey"].as_str().ok_or("getVoteAccounts: votePubkey")?).map_err(|e| format!("getVoteAccounts: votePubkey {e}"))?;
+            let stake = v["activatedStake"].as_u64().ok_or(format!("getVoteAccounts: activatedStake i pavlefshëm: {}", v["activatedStake"]))?;
+            if v["epochVoteAccount"].as_bool() != Some(true) || stake == 0 {
+                continue;
+            }
+            let e = stakes.entry(node).or_default();
+            *e = e.checked_add(stake).ok_or("getVoteAccounts: stake jashtë u64")?;
         }
     }
     Ok(StakeTable { entries: stakes.into_iter().collect() })
 }
 
-/// A i përket sloti epokës aktuale (tabela e stake-ut nga RPC vlen vetëm për të).
-pub fn slot_in_current_epoch(sol: &str, slot: u64) -> Result<bool, String> {
-    let ei = rpc(sol, "getEpochInfo", json!([{"commitment": "finalized"}]))?;
-    let abs = ei["absoluteSlot"].as_u64().ok_or("getEpochInfo: absoluteSlot")?;
-    let idx = ei["slotIndex"].as_u64().ok_or("getEpochInfo: slotIndex")?;
-    Ok(slot >= abs.saturating_sub(idx))
+/// A10: pamja e stake-ut nga RPC-ja, e lexuar në mënyrë koherente (epoka para dhe pas
+/// `getVoteAccounts` duhet të jetë e njëjtë), bashkë me kufijtë e epokës së saj.
+pub struct StakeView {
+    pub table: StakeTable,
+    pub epoch: u64,
+    pub first_slot: u64,
+    pub last_slot: u64,
+}
+
+impl StakeView {
+    /// A10: tabela vlen vetëm për slotet e epokës së saj (të dy kufijtë).
+    pub fn covers(&self, slot: u64) -> bool {
+        (self.first_slot..=self.last_slot).contains(&slot)
+    }
+}
+
+pub fn stake_view(sol: &str) -> Result<StakeView, String> {
+    let fin = json!([{"commitment": "finalized"}]);
+    let e1 = rpc(sol, "getEpochInfo", fin.clone())?;
+    let va = rpc(sol, "getVoteAccounts", fin.clone())?;
+    let e2 = rpc(sol, "getEpochInfo", fin)?;
+    let f = |e: &Value, k: &str| e[k].as_u64().ok_or(format!("getEpochInfo: {k}"));
+    let epoch = f(&e1, "epoch")?;
+    if f(&e2, "epoch")? != epoch {
+        return Err(format!("epoka ndryshoi gjatë leximit të tabelës së stake-ut ({epoch} → {})", e2["epoch"]));
+    }
+    let first_slot = f(&e1, "absoluteSlot")?.checked_sub(f(&e1, "slotIndex")?).ok_or("getEpochInfo: slotIndex > absoluteSlot")?;
+    let last_slot = first_slot.checked_add(f(&e1, "slotsInEpoch")?.checked_sub(1).ok_or("getEpochInfo: slotsInEpoch 0")?).ok_or("getEpochInfo: tejmbushje")?;
+    Ok(StakeView { table: stake_table_from(&va)?, epoch, first_slot, last_slot })
 }
 
 pub fn genesis(sol: &str, arg: Option<&str>) -> Result<[u8; 32], String> {

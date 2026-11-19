@@ -69,9 +69,10 @@ ta arrijë kurrë `minTrust`, p.sh. një zile me `"agreement"`, hedh gabim që n
 E njëjta politikë (`decide`) përdoret nga faqja web dhe nga `zilja-check` në Rust. Të tria
 testohen me të njëjtët vektorë (`test/policy-vectors.json`).
 
-> **Kufizim i sotëm:** me `quorum`, tabela e stake-ut merret nga `solanaRpc` dhe i
-> besohet asaj. Ajo vlen vetëm për epokën aktuale: për një slot në një epokë të kaluar,
-> kuorumi s'numërohet (`quorum_epoch_unsupported`). Light client-i që e verifikon edhe
+> **Kufizim i sotëm:** me `quorum`, pesha merret nga `getVoteAccounts` i `solanaRpc` dhe i
+> besohet asaj: është pamja e RPC-së, jo tabela e konsensusit e epokës. Vlen vetëm për slotet
+> e epokës së saj (të dy kufijtë) dhe kur epoka s'ndryshon gjatë leximit; përndryshe kuorumi
+> s'numërohet (`quorum_epoch_unsupported`). Light client-i që e verifikon edhe
 > tabelën (nga një checkpoint, epokë pas epoke) është punë e ardhshme.
 
 ## Dëftesë për një slot të kaluar

@@ -281,7 +281,12 @@ nuk mjafton: `ok` / kodi 0 kërkon që të kalojnë katër kontrolle të ndara.
 - Një konfigurim që s'mund ta arrijë kurrë `min-trust` refuzohet që në fillim: një zile me `agreement` jep `config_min_agree`. `min-agree` s'ulet vetë sipas numrit të zileve.
 - Dy zile me root-e të ndryshme për të njëjtin slot japin `conflict`, jo `invalid`. Kuorumi për root-in e dëftesës e mposht konfliktin, por me paralajmërim. Kuorumi për një root tjetër, ose për dy root-e, është `conflict`.
 - `zilja-quorum` dhe `--quorum` grupojnë firmat sipas root-it dhe e kontrollojnë root-in (64 hex) para përdorimit. Një zile me përgjigje të keqformuar s'numërohet dhe s'e rrëzon veglën.
-- **Burimi i besimit për kuorumin:** tabela e stake-ut merret nga `getVoteAccounts` i RPC-së dhe i besohet asaj. Ajo vlen vetëm për epokën aktuale. Për një slot të një epoke të kaluar, kuorumi s'numërohet (`quorum_epoch_unsupported`).
+- **Burimi i besimit për kuorumin (A10, A11):** pesha merret nga `getVoteAccounts` i RPC-së dhe i besohet asaj. Kjo është **pamja e RPC-së** (`bank.vote_accounts()` i bankës së saj), jo tabela e konsensusit e epokës, dhe kështu etiketohet në çdo dalje. SDK-ja dhe të dy CLI-të përdorin të njëjtin furnizues:
+  - merren vetëm llogaritë me `epochVoteAccount`, sipas identitetit (`nodePubkey`);
+  - kërkohen të dy grupet (`current`, `delinquent`), çelësat 32 bajt dhe `activatedStake` u64 i saktë (në JS lexohet nga teksti i përgjigjes, pa kaluar nga `Number`); shuma kontrollohet për tejmbushje; çdo vlerë e pasigurt = gabim;
+  - `getEpochInfo` lexohet para dhe pas `getVoteAccounts`: epoka duhet të jetë e njëjtë;
+  - tabela vlen vetëm për slotet e epokës së saj, **të dy kufijtë** (`quorum_epoch_unsupported`); `zilja-quorum` del me 1 jashtë tyre.
+- **Kuorumi s'varet nga radha (A15):** një identitet numërohet vetëm pas firmës së tij të parë të vlefshme.
 - `zilja-check` është një thirrje e vetme: mbrojtja nga rollback-u midis thirrjeve bëhet me `--min-slot`. SDK-ja dhe faqja e mbajnë vetë slotin më të lartë të parë.
 
 ## Kufijtë e konfigurimit (L-08)

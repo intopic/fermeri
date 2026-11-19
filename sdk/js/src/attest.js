@@ -2,7 +2,7 @@
 // Një çelës i veçantë mund të firmosë, kur identiteti e ka autorizuar me
 // "zilja/authorize/v1" ‖ genesis_hash ‖ signer.
 // Përdor Ed25519 të WebCrypto (Node ≥ 22, Chrome/Edge ≥ 137, Firefox ≥ 129, Safari ≥ 17).
-import { b58decode, hexToBytes } from "./verifier.js";
+import { b58decode, hexToBytes, toU64 } from "./verifier.js";
 
 const enc = new TextEncoder();
 const ATTEST_DOMAIN = enc.encode("zilja/attest/v2");
@@ -20,7 +20,8 @@ export function attestMessage(genesisHex, slot, rootHex) {
   const m = new Uint8Array(d + 32 + 8 + 32);
   m.set(ATTEST_DOMAIN, 0);
   m.set(hex32(genesisHex), d);
-  new DataView(m.buffer).setBigUint64(d + 32, BigInt(slot), true);
+  // A16: vetëm u64 (BigInt, tekst dhjetor ose Number i sigurt); asgjë s'mbështillet në 64 bit.
+  new DataView(m.buffer).setBigUint64(d + 32, toU64(slot), true);
   m.set(hex32(rootHex), d + 40);
   return m;
 }
@@ -48,14 +49,24 @@ async function ed25519Verify(pubkey, sig, msg) {
 
 /**
  * Tabela e stake-ut nga `getVoteAccounts`: Map<nodePubkey base58, stake bigint>.
- * KUJDES: kjo tabelë i beson RPC-së që e jep.
+ *
+ * KUJDES (A10): kjo është pamja e RPC-së (`bank.vote_accounts()` i bankës së saj), jo tabela e
+ * konsensusit e epokës; i besohet RPC-së që e jep. Merren vetëm llogaritë me `epochVoteAccount`.
+ * A11: kërkohen të dy grupet; çelësat duhet të jenë 32 bajt; `activatedStake` duhet të jetë u64 i
+ * saktë (BigInt / tekst dhjetor / Number i sigurt). Çdo vlerë e pasigurt hedh gabim.
  */
 export function stakeTableFromVoteAccounts(result) {
   const t = new Map();
   for (const group of ["current", "delinquent"]) {
-    for (const v of result?.[group] ?? []) {
-      const s = BigInt(v.activatedStake ?? 0);
-      if (s > 0n) t.set(v.nodePubkey, (t.get(v.nodePubkey) ?? 0n) + s);
+    const list = result?.[group];
+    if (!Array.isArray(list)) throw new Error(`getVoteAccounts pa grupin "${group}"`);
+    for (const v of list) {
+      if (b58decode(String(v?.votePubkey ?? "")).length !== 32 || b58decode(String(v?.nodePubkey ?? "")).length !== 32) throw new Error("getVoteAccounts: çelës i pavlefshëm");
+      const s = toU64(v.activatedStake);
+      if (v.epochVoteAccount !== true || s === 0n) continue;
+      const sum = (t.get(v.nodePubkey) ?? 0n) + s;
+      if (sum > 0xffffffffffffffffn) throw new Error("getVoteAccounts: stake jashtë u64");
+      t.set(v.nodePubkey, sum);
     }
   }
   return t;
@@ -95,17 +106,18 @@ export async function verifyQuorum(genesisHex, slot, rootHex, atts, table) {
   let valid = 0;
   let rejected = 0;
   for (const a of atts) {
+    // A15: identiteti shënohet vetëm pas një firme të vlefshme: rezultati s'varet nga radha.
     if (seen.has(a.validator)) {
       rejected++;
       continue;
     }
-    seen.add(a.validator);
     const stake = table.get(a.validator);
     if (!stake) {
       rejected++;
       continue;
     }
     if (await verifyAttestation(genesisHex, slot, rootHex, a)) {
+      seen.add(a.validator);
       valid++;
       attested += stake;
     } else {

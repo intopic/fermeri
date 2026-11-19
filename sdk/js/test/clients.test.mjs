@@ -92,7 +92,7 @@ const vals = [0, 1, 2].map(() => {
   return { b58: b58(pub), privateKey };
 });
 // Stake 2 + 2 + 1: dy firmat e para = 80% (> 2/3).
-const voteAccounts = { current: vals.map((x, i) => ({ nodePubkey: x.b58, activatedStake: i < 2 ? 2_000_000_000 : 1_000_000_000 })), delinquent: [] };
+const voteAccounts = { current: vals.map((x, i) => ({ nodePubkey: x.b58, votePubkey: x.b58, epochVoteAccount: true, activatedStake: i < 2 ? 2_000_000_000 : 1_000_000_000 })), delinquent: [] };
 const att = (x, slot, root) => ({ slot, root, validator: x.b58, signer: null, authorization: null, genesis: null, signature: bytesToHex(sign(null, attestMessage(GEN, slot, root), x.privateKey)) });
 
 // 4. Një zile në konflikt s'e bllokon një kuorum të vlefshëm (> 2/3) për root-in e dëftesës.
