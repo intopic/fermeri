@@ -15,7 +15,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::Instant;
 use zilja_tree::{MemTree, StateTree};
@@ -232,6 +232,33 @@ pub struct Service {
     pub resumed: bool,
     tx: Option<Sender<Event>>,
     worker: Option<JoinHandle<()>>,
+    /// A08: pool-i Rayon i kësaj instance. Puna paralele e pemës (`rayon::join`, `par_iter`) kryhet
+    /// vetëm këtu, kurrë në regjistrin global (që s'mbyllet kurrë). `shutdown` pret daljen e thread-eve.
+    pool: Option<Arc<rayon::ThreadPool>>,
+    pool_threads: PoolThreads,
+}
+
+/// A08: thread-et e pool-it krijohen nga zilja (`spawn_handler`), që `shutdown` t'i bëjë `join`:
+/// dalja e vërtetë e thread-it, jo vetëm thirrja e `exit_handler`, pas së cilës ekzekutohet ende kod
+/// i Rayon brenda bibliotekës.
+type PoolThreads = Arc<Mutex<Vec<JoinHandle<()>>>>;
+
+fn build_pool(threads: &PoolThreads) -> std::io::Result<rayon::ThreadPool> {
+    let n = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let th = threads.clone();
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(n)
+        .spawn_handler(move |t| {
+            let h = std::thread::Builder::new()
+                .name(format!("zilja-rayon-{}", t.index()))
+                // Punëtori ekzekutohet në një thread të pool-it: i njëjti stack si thread-i i tij.
+                .stack_size(WORKER_STACK)
+                .spawn(move || t.run())?;
+            th.lock().unwrap().push(h);
+            Ok(())
+        })
+        .build()
+        .map_err(std::io::Error::other)
 }
 
 impl Service {
@@ -281,9 +308,16 @@ impl Service {
         let s2 = shared.clone();
         let s3 = shared.clone();
         let signer = attester;
+        let pool_threads: PoolThreads = Arc::default();
+        let pool = Arc::new(build_pool(&pool_threads)?);
+        let p2 = pool.clone();
         let worker = std::thread::Builder::new().name("zilja-worker".into()).stack_size(WORKER_STACK).spawn(move || {
             // P-10: një rënie e punëtorit (panic) ose një fund i papritur ndalon shërbimin.
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker_loop(rx, s2, log, signer, tracker)));
+            // A08: çdo `rayon::join` / `par_iter` brenda punëtorit përdor pool-in e instancës.
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                p2.install(|| worker_loop(rx, s2, log, signer, tracker))
+            }));
+            drop(p2);
             let m = &s3.metrics;
             let why = match r {
                 Err(e) => {
@@ -299,7 +333,7 @@ impl Service {
             m.ready.store(0, Ordering::Relaxed);
             m.worker_alive.store(false, Ordering::Relaxed);
         })?;
-        Ok(Service { shared, resumed: resume.is_some(), tx: Some(tx), worker: Some(worker) })
+        Ok(Service { shared, resumed: resume.is_some(), tx: Some(tx), worker: Some(worker), pool: Some(pool), pool_threads })
     }
 
     /// Thirret nga callback-et e validatorit. Pas ndalimit nuk bën asgjë (F-05). Gjatë nisjes
@@ -352,6 +386,20 @@ impl Service {
         if let Some(w) = self.worker.take() {
             let _ = w.join();
         }
+        // A08: Agave kërkon që asnjë thread s'ekzekuton më kod të bibliotekës pas `on_unload`.
+        // Lëshohet pool-i (thread-et marrin sinjalin e mbylljes) dhe bëhet `join` i secilit.
+        self.pool.take();
+        let handles = std::mem::take(&mut *self.pool_threads.lock().unwrap());
+        for h in handles {
+            if h.join().is_err() {
+                log::error!("zilja: një thread i pool-it Rayon mbaroi me panic");
+            }
+        }
+    }
+
+    /// A08: thread-et e pool-it Rayon të kësaj instance që s'kanë dalë ende.
+    pub fn pool_threads(&self) -> usize {
+        self.pool_threads.lock().unwrap().iter().filter(|h| !h.is_finished()).count()
     }
 
     pub fn current(&self) -> (Slot, Hash) {
