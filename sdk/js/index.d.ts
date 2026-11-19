@@ -34,10 +34,17 @@ export interface Attestation {
   validator: string;
   /** Çelësi që firmosi, kur s'është vetë identiteti (base58). */
   signer?: string | null;
-  /** Firma e identitetit mbi authorizeMessage(genesis, signer), hex. */
-  authorization?: string | null;
+  /** Autorizimi v2 i `signer`-it nga identiteti, i vlefshëm për epokat [fromEpoch, untilEpoch) (maksimumi 15). */
+  authorization?: Authorization | null;
   signature: string;
 }
+export interface Authorization {
+  fromEpoch: number | bigint;
+  untilEpoch: number | bigint;
+  /** Firma e identitetit mbi authorizeMessage(genesis, signer, fromEpoch, untilEpoch), hex. */
+  signature: string;
+}
+export const MAX_AUTH_EPOCHS: 15n;
 export interface QuorumReport {
   attestedStake: bigint;
   totalStake: bigint;
@@ -46,9 +53,10 @@ export interface QuorumReport {
   reached: boolean;
 }
 export function attestMessage(genesisHex: string, slot: number | bigint, rootHex: string): Uint8Array;
-export function authorizeMessage(genesisHex: string, signerB58: string): Uint8Array;
-export function verifyAttestation(genesisHex: string, slot: number | bigint, rootHex: string, a: Attestation): Promise<boolean>;
-export function verifyQuorum(genesisHex: string, slot: number | bigint, rootHex: string, atts: Attestation[], table: Map<string, bigint>): Promise<QuorumReport>;
+export function authorizeMessage(genesisHex: string, signerB58: string, fromEpoch: number | bigint, untilEpoch: number | bigint): Uint8Array;
+/** `epoch` = epoka e `slot`-it (ajo e tabelës së stake-ut). */
+export function verifyAttestation(genesisHex: string, epoch: number | bigint, slot: number | bigint, rootHex: string, a: Attestation): Promise<boolean>;
+export function verifyQuorum(genesisHex: string, epoch: number | bigint, slot: number | bigint, rootHex: string, atts: Attestation[], table: Map<string, bigint>): Promise<QuorumReport>;
 /** Vendi i llogarisë në pemë: SHA256("zilja/key/v2" ‖ pubkey). */
 export function treeKey(pubkeyB58: string): Promise<Uint8Array>;
 export const PROOF_VERSION: 2;

@@ -61,7 +61,7 @@ fn run() -> Result<bool, String> {
         println!("❌ sloti {slot} s'është në epokën e tabelës së stake-ut ({}–{}): kuorumi s'numërohet", view.first_slot, view.last_slot);
         return Ok(false);
     }
-    let q = quorum_by_root(ziljas, slot, &g, table);
+    let q = quorum_by_root(ziljas, view.epoch, slot, &g, table);
     for (z, e) in &q.skipped {
         println!("  {z}: s'numërohet ({e})");
     }

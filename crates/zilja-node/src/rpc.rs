@@ -9,7 +9,8 @@
 //!   slotin aktual; mbi majë `-32008`.
 //!
 //! `lamports` dhe `dataLen` dalin si tekst dhjetor (F-08): JSON-i s'mund t'i mbajë saktë mbi 2^53.
-//! - `getZiljaAttestation [slot?]` → `{slot, root, validator, signer, authorization, genesis, signature}`
+//! - `getZiljaAttestation [slot?]` → `{slot, root, validator, signer, authorization, genesis, signature}`;
+//!   `authorization` = `{fromEpoch, untilEpoch, signature}` (v2) ose `null` kur firmos vetë identiteti
 //!   (kur zilja firmos; vetëm për pemë të plota, F-10).
 //!
 //! Rrugë GET: `/health` (200 vetëm kur jep dëftesa, përndryshe 503), `/metrics` (Prometheus,
@@ -200,7 +201,9 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
                     "root": hex::encode(a.root),
                     "validator": bs58::encode(attester.identity).into_string(),
                     "signer": (attester.signer != attester.identity).then(|| bs58::encode(attester.signer).into_string()),
-                    "authorization": attester.authorization.map(hex::encode),
+                    "authorization": attester.authorization.map(|a| json!({
+                        "fromEpoch": a.from_epoch, "untilEpoch": a.until_epoch, "signature": hex::encode(a.signature),
+                    })),
                     "genesis": bs58::encode(attester.genesis).into_string(),
                     "signature": hex::encode(a.signature),
                 }}),
@@ -551,7 +554,7 @@ mod attest_tests {
         let keys: Vec<SigningKey> = (1u8..=4).map(|i| SigningKey::from_bytes(&[i; 32])).collect();
         let mut shareds = Vec::new();
         for k in &keys {
-            let attest = crate::AttestOptions { key: k.clone(), identity: None, authorization: None, genesis: [0x33; 32], log: None, adopt_legacy: false };
+            let attest = crate::AttestOptions { key: k.clone(), identity: None, authorization: None, authorization_file: None, genesis: [0x33; 32], log: None, adopt_legacy: false };
             let mut svc = Service::start_opts(crate::Options { attest: Some(attest), ..Default::default() }).unwrap();
             // Të gjitha zilet shohin të njëjtin zinxhir: duhet të dalë i njëjti root.
             svc.send(Event::Snapshot { slot: 1, pubkey: [7; 32], meta: Some(AccountMeta { lamports: 5, ..Default::default() }) });
@@ -579,7 +582,7 @@ mod attest_tests {
         }
         let table = StakeTable { entries: keys.iter().map(|k| (k.verifying_key().to_bytes(), 10)).collect() };
         let root = root.unwrap();
-        assert!(verify_quorum(&[0x33; 32], 2, &root, &atts, &table).reached);
-        assert!(!verify_quorum(&[0x33; 32], 2, &root, &atts[..2], &table).reached);
+        assert!(verify_quorum(&[0x33; 32], 0, 2, &root, &atts, &table).reached);
+        assert!(!verify_quorum(&[0x33; 32], 0, 2, &root, &atts[..2], &table).reached);
     }
 }

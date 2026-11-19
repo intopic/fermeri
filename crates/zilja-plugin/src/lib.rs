@@ -47,7 +47,8 @@ pub struct Config {
     /// identiteti me `zilja-authorize` (F-10); pa `attest_authorization`, ky duhet të jetë vetë identiteti.
     #[serde(default)]
     pub attest_keypair: Option<PathBuf>,
-    /// Skedari që del nga `zilja-authorize` (identiteti + autorizimi).
+    /// Skedari që del nga `zilja-authorize` (identiteti + autorizimi v2 me afat, maksimumi 15 epoka).
+    /// Rilexohet kur ndryshon: rinovimi s'kërkon rinisje të validatorit.
     #[serde(default)]
     pub attest_authorization: Option<PathBuf>,
     /// Hash-i i genesis-it (base58) që hyn në çdo firmë. Ose `genesis_path`.
@@ -126,18 +127,8 @@ fn attest_options(cfg: &Config, keypair: &std::path::Path) -> Result<zilja_node:
     let (identity, authorization) = match &cfg.attest_authorization {
         None => (None, None),
         Some(p) => {
-            let v: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?).map_err(|e| e.to_string())?;
-            let id: [u8; 32] = bs58::decode(v["identity"].as_str().ok_or("identity")?)
-                .into_vec()
-                .map_err(|e| e.to_string())?
-                .try_into()
-                .map_err(|_| "identity duhet 32 bajt")?;
-            let auth: [u8; 64] = hex::decode(v["authorization"].as_str().ok_or("authorization")?)
-                .map_err(|e| e.to_string())?
-                .try_into()
-                .map_err(|_| "authorization duhet 64 bajt")?;
-            (Some(id), Some(auth))
+            let (id, a) = zilja_node::attester::read_authorization_file(p)?;
+            (Some(id), Some(a))
         }
     };
     let log = match (&cfg.attest_state, &cfg.db_path, &cfg.roots_log) {
@@ -146,7 +137,15 @@ fn attest_options(cfg: &Config, keypair: &std::path::Path) -> Result<zilja_node:
         (None, None, Some(r)) => r.with_extension("attest.log"),
         _ => return Err("attest_keypair kërkon attest_state (ose db_path / roots_log)".into()),
     };
-    Ok(zilja_node::AttestOptions { key, identity, authorization, genesis, log: Some(log), adopt_legacy: cfg.attest_adopt_legacy })
+    Ok(zilja_node::AttestOptions {
+        key,
+        identity,
+        authorization,
+        authorization_file: cfg.attest_authorization.clone(),
+        genesis,
+        log: Some(log),
+        adopt_legacy: cfg.attest_adopt_legacy,
+    })
 }
 
 /// P-05: genesis-i nga konfigurimi. Kur jepen të dyja, `genesis_hash` duhet të përputhet me

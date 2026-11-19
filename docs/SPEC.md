@@ -161,7 +161,8 @@ Kur zilja ndalon (boshllëk, zinxhir tjetër, disk i dëmtuar), çdo metodë kth
 
 ```json
 {"slot": 68, "root": "<hex>", "validator": "<identiteti base58>", "signer": "<base58>|null",
- "authorization": "<hex>|null", "genesis": "<base58>", "signature": "<hex>"}
+ "authorization": {"fromEpoch": 800, "untilEpoch": 815, "signature": "<hex>"} | null,
+ "genesis": "<base58>", "signature": "<hex>"}
 ```
 
 ### `GET /health`, `GET /metrics`
@@ -173,11 +174,18 @@ Kur zilja ndalon (boshllëk, zinxhir tjetër, disk i dëmtuar), çdo metodë kth
 
 ```
 message       = "zilja/attest/v2"    ‖ genesis_hash[32] ‖ slot u64 LE ‖ root[32]
-authorization = "zilja/authorize/v1" ‖ genesis_hash[32] ‖ signer[32]     (firmosur nga identiteti)
+authorization = "zilja/authorize/v2" ‖ genesis_hash[32] ‖ signer[32] ‖ from_epoch u64 LE ‖ until_epoch u64 LE
+                                                                  (firmosur nga identiteti)
 ```
 
 - Firmos `signer`, me Ed25519. Kur `signer` mungon, firmos vetë identiteti. Përndryshe
   identiteti duhet ta ketë autorizuar `signer`-in për të njëjtin genesis (`zilja-authorize`).
+- Autorizimi vlen për epokat `from_epoch ≤ E < until_epoch`, ku `E` është epoka e slotit të
+  firmës, dhe `1 ≤ until_epoch − from_epoch ≤ 15` (15 ≈ 30 ditë në mainnet). Jashtë periudhës
+  firma s'numërohet. Kështu një çelës firmosjeje i vjedhur vlen vetëm deri në fund të periudhës.
+  Autorizimi v1 (`"zilja/authorize/v1" ‖ genesis ‖ signer`, pa afat) **s'pranohet**.
+- Rinovimi: identiteti firmos një periudhë të re (zakonisht nga epoka aktuale). Plugin-i e
+  rilexon skedarin kur ndryshon, pa rinisje.
 - Root-i pranohet kur validatorët unikë me firmë të vlefshme kanë stake **> 2/3** e totalit
   të epokës. Stake-u numërohet sipas identitetit.
 - Zilja firmos vetëm kur pema është e plotë dhe, pas rinisjes, vetëm pasi zinxhiri u konfirmua.

@@ -188,6 +188,8 @@ F01_SLOT=$(curl -s --noproxy '*' -X POST -H 'content-type: application/json' \
 # Prit që rrënja e ledger-it të kalojë qartë slotin e transferimit (që të ripërsëritet gjatë nisjes).
 wait_rooted_past "$((F01_SLOT + 40))"
 BEFORE=$(zroot)
+# v2: epoka aktuale për autorizimin e çelësit të veçantë (validatori ndalet më poshtë).
+EPOCH=$(solana -u "$RPC" epoch-info --output json | python3 -c 'import json,sys; print(json.load(sys.stdin)["epoch"])')
 echo "$(date +%s%3N) MARK stop" >> "$ZILJA_PROBE"
 stop
 S1=$(snap_slot)
@@ -200,7 +202,8 @@ d=hashlib.sha256(open(sys.argv[1],"rb").read()).digest();A="123456789ABCDEFGHJKL
 while n: n,r=divmod(n,58); s=A[r]+s
 print(s)' "$LEDGER/genesis.bin")
 solana-keygen new --force --no-bip39-passphrase -s -o "$WORK/attest-signer.json" >/dev/null
-"$ROOT/target/release/zilja-authorize" "$LEDGER/validator-keypair.json" "$WORK/attest-signer.json" "$GENESIS" > "$WORK/zilja-authorization.json"
+# v2: autorizimi vlen për 15 epoka nga epoka aktuale (marrë para ndalimit).
+"$ROOT/target/release/zilja-authorize" "$LEDGER/validator-keypair.json" "$WORK/attest-signer.json" "$GENESIS" "$EPOCH" > "$WORK/zilja-authorization.json"
 python3 - "$WORK/zilja.json" "$WORK" <<'PY'
 import json, sys
 p, w = sys.argv[1], sys.argv[2]
@@ -300,6 +303,25 @@ print("   firma v2: genesis", g[:8]+"…, çelës i veçantë", r["signer"][:8]+
     echo "GABIM: kuorumi u pranua për një genesis tjetër"; exit 1
   fi
   echo "   ✅ firmat s'vlejnë për një zinxhir tjetër (F-10)"
+  # Autorizimi v2 me afat: një autorizim që s'e mbulon epokën aktuale s'numërohet, dhe plugin-i e
+  # rilexon skedarin pa rinisje (kthehet sërish te i vlefshmi).
+  EPOCH=$(solana -u "$RPC" epoch-info --output json | python3 -c 'import json,sys; print(json.load(sys.stdin)["epoch"])')
+  cp "$WORK/zilja-authorization.json" "$WORK/zilja-authorization.ok.json"
+  "$ROOT/target/release/zilja-authorize" "$LEDGER/validator-keypair.json" "$WORK/attest-signer.json" "$GENESIS" "$(( EPOCH + 20 ))" 2>/dev/null > "$WORK/auth.tmp"
+  mv "$WORK/auth.tmp" "$WORK/zilja-authorization.json"
+  auth_from() { curl -s --noproxy '*' -X POST -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getZiljaAttestation"}' "$ZILJA" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["authorization"]["fromEpoch"])'; }
+  for _ in $(seq 1 30); do [ "$(auth_from)" = "$(( EPOCH + 20 ))" ] && break; sleep 1; done
+  [ "$(auth_from)" = "$(( EPOCH + 20 ))" ] || { echo "GABIM: autorizimi i ri s'u rilexua pa rinisje"; exit 1; }
+  if "$ROOT/target/release/zilja-quorum" "$RPC" "$ZILJA" --genesis "$GENESIS" >/dev/null; then
+    echo "GABIM: kuorumi u pranua me autorizim që s'e mbulon epokën aktuale"; exit 1
+  fi
+  OK_FROM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["fromEpoch"])' "$WORK/zilja-authorization.ok.json")
+  mv "$WORK/zilja-authorization.ok.json" "$WORK/zilja-authorization.json"
+  for _ in $(seq 1 30); do [ "$(auth_from)" = "$OK_FROM" ] && break; sleep 1; done
+  echo "   autorizimi pas kthimit: fromEpoch $(auth_from) (pritej $OK_FROM)"
+  "$ROOT/target/release/zilja-quorum" "$RPC" "$ZILJA" --genesis "$GENESIS" > "$WORK/quorum-after.txt" || { cat "$WORK/quorum-after.txt"; echo "GABIM: kuorumi s'u kthye pas rinovimit"; exit 1; }
+  echo "   ✅ autorizimi jashtë periudhës s'numërohet; rinovimi lexohet pa rinisje (v2)"
   echo "-- SDK me kuorum (minTrust=quorum):"
   node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --rpc "$RPC" --quorum --min-trust quorum
   [ "$(metric attest_refused_total)" = "0" ] || { echo "GABIM: firma të refuzuara pas rinisjes (root tjetër për të njëjtin slot?)"; exit 1; }

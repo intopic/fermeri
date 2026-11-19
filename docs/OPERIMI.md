@@ -257,7 +257,7 @@ skedar i përket vetë rrjetit ku punon validatori. Kur jepen edhe `genesis_hash
 
 **Procedurat:**
 - **Ndryshimi i çelësit të firmosjes:**
-  1. Krijo autorizimin e ri me `zilja-authorize`.
+  1. Krijo autorizimin e ri me `zilja-authorize` (v2, me epokën aktuale).
   2. Vendos një `attest_state` **të ri**.
   3. **Ruaje** log-un e vjetër: nëse çelësi i vjetër përdoret ndonjëherë sërish, duhet të
      përdoret me log-un e tij, që të mbetet mbrojtja kundër firmosjes së dyfishtë.
@@ -370,9 +370,9 @@ vëzhgua e plotë pas një ngarkimi në mes të punës. Prandaj:
 ## Firmosja (F-10)
 
 1. Krijo një çelës të veçantë: `solana-keygen new -o attest-signer.json`.
-2. Autorizoje një herë me identitetin:
-   `zilja-authorize validator-keypair.json attest-signer.json $(solana genesis-hash) > zilja-authorization.json`.
-   Kjo është e vetmja herë që përdoret çelësi i identitetit.
+2. Autorizoje me identitetin, për 15 epoka (~30 ditë) nga epoka aktuale:
+   `zilja-authorize validator-keypair.json attest-signer.json $(solana genesis-hash) $(solana epoch) > zilja-authorization.json`.
+   Argumenti i pestë (opsional) jep më pak epoka (1..=15).
 3. Në konfigurim:
    ```json
    "attest_keypair": "attest-signer.json",
@@ -382,6 +382,27 @@ vëzhgua e plotë pas një ngarkimi në mes të punës. Prandaj:
 
 Autorizimi vlen vetëm për atë genesis. Në një zinxhir tjetër (`--reset`, klaster tjetër)
 plugin-i refuzon të ngarkohet derisa të bësh një autorizim të ri.
+
+**Rinovimi (çdo ~25 ditë):** autorizimi skadon në `untilEpoch` (shih `zilja-authorization.json`
+ose `getZiljaAttestation`). Pas asaj epoke firmat e kësaj zileje s'numërohen më nga klientët.
+Rinovoje kur mbeten 1–2 epoka, në makinën ku mban identitetin:
+
+```bash
+zilja-authorize validator-keypair.json attest-signer.json $(solana genesis-hash) $(solana epoch) > auth.tmp
+mv auth.tmp zilja-authorization.json   # në serverin e validatorit, në vendin e `attest_authorization`
+```
+
+Plugin-i e rilexon skedarin brenda një sekonde, **pa rinisje**, dhe e shkruan në log
+("autorizimi i çelësit u rinovua"). Një skedar i pavlefshëm (i prishur, identitet tjetër,
+periudhë > 15 epoka, v1) injorohet dhe mbetet autorizimi i mëparshëm. Kontrolli:
+`getZiljaAttestation` → `authorization.untilEpoch`.
+
+**Nëse çelësi i firmosjes vidhet:** krijo një çelës të ri (procedura më lart) dhe **mos e rinovo**
+të vjetrin. Ai vlen deri në `untilEpoch` të autorizimit të fundit, jo më. (Revokim i menjëhershëm
+do të kërkonte diçka mbi zinxhir; afati e kufizon dëmin.)
+
+**Nga v1:** një skedar autorizimi pa `version: 2` refuzohet në ngarkim me udhëzimin për ta
+rikrijuar. Klientët e rinj s'numërojnë firma me autorizim v1.
 
 Zilja firmos vetëm pemë të plota (nisur nga snapshot) dhe kurrë dy root-e për të njëjtin slot.
 Firmat ruhen te `attest_state`, parazgjedhja `<db_path>.attest.log`. **Mos e fshi këtë skedar:**

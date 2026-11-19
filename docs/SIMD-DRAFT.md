@@ -60,7 +60,9 @@ accounts. The client fetches the data from any source and checks the hash.
 Phase A (no consensus change; implemented in this repo): validators run the
 tree as a Geyser plugin and sign `"zilja/attest/v2" ‖ genesis_hash ‖ slot ‖ root`.
 The genesis hash binds a signature to one cluster. Signing uses a dedicated key, which the
-identity key authorizes once (`"zilja/authorize/v1" ‖ genesis_hash ‖ signer`). The plugin
+identity key authorizes for at most 15 epochs
+(`"zilja/authorize/v2" ‖ genesis_hash ‖ signer ‖ from_epoch ‖ until_epoch`), so a stolen
+signing key expires with its authorization. The plugin
 signs only complete trees, only after the chain is re-confirmed on restart, and never two
 roots for one slot (persisted). Clients check that the signers hold >2/3 of epoch stake.
 

@@ -428,6 +428,10 @@ fn sign_root(st: &mut State, signer: &mut Option<Attester>, m: &Metrics, slot: S
         st.roots.pop_first();
     }
     let Some(a) = signer else { return };
+    // Rinovimi i autorizimit pa rinisje (skedari kontrollohet më së shumti një herë në sekondë).
+    if a.refresh_authorization() {
+        st.attester = Some(a.info());
+    }
     if !st.complete {
         return;
     }

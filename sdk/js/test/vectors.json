@@ -46,6 +46,7 @@
             "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
           }
         ],
+        "epoch": 805,
         "expectAttested": "49000000000",
         "expectReached": true,
         "name": "quorum_reached",
@@ -85,6 +86,7 @@
             "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
           }
         ],
+        "epoch": 805,
         "expectAttested": "40000000000",
         "expectReached": true,
         "name": "quorum_reached_by_stake_not_count",
@@ -118,6 +120,7 @@
             "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
           }
         ],
+        "epoch": 805,
         "expectAttested": "34000000000",
         "expectReached": false,
         "name": "not_enough_stake",
@@ -169,6 +172,7 @@
             "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
           }
         ],
+        "epoch": 805,
         "expectAttested": "0",
         "expectReached": false,
         "name": "wrong_root",
@@ -220,6 +224,7 @@
             "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
           }
         ],
+        "epoch": 805,
         "expectAttested": "0",
         "expectReached": false,
         "name": "wrong_slot",
@@ -289,6 +294,7 @@
             "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
           }
         ],
+        "epoch": 805,
         "expectAttested": "10000000000",
         "expectReached": false,
         "name": "duplicates",
@@ -358,6 +364,7 @@
             "validator": "EwTU11AzAHigi3CWjMFSuKokmkDCqpHcJwqR44CAdseW"
           }
         ],
+        "epoch": 805,
         "expectAttested": "0",
         "expectReached": false,
         "name": "strangers",
@@ -409,6 +416,7 @@
             "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
           }
         ],
+        "epoch": 805,
         "expectAttested": "34000000000",
         "expectReached": false,
         "name": "corrupted_signatures",
@@ -418,48 +426,77 @@
       {
         "atts": [
           {
-            "authorization": "3577b264770135841b6645020060e4427180c145212afffc694f2ef426d6d01dabf4483889b27cf6c6fe218b2783f00142537bf736a5744acab3b1e42e49c80c",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "2e4e3cb90664f90dd41b73a705bb672b171d52d0957c37dc619068df5e81009f2d8d37cabddec145e882f52fbef0fa153de9eb979d62f1f4df7e040ddd9ae009",
+              "untilEpoch": 815
+            },
             "signature": "012f8cea7bc2a96c49c6b66882594828dd9cd864f08c79a176163696e58231ab03ade051091eedfb998c37a8ddfeb7ea80d27134cecce312e7b4b458d02e7606",
             "signer": "89FPduAwhhBw5zUGw5jzVMYNkx7wExXW1m3WMoyurdYy",
             "validator": "EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1"
           },
           {
-            "authorization": "c3993c74a4c8ca2da19adfb6db96323f0d64e10e00a3c110b0685cce512a0020fdd01ac0df99a4f8b00305979e2136859e631c023b7542d9676390b7b8c44c08",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "ef16a5e7e949e4441f8049c1c70948a533f3a23af3537a79130808e6902c8eb65fb3f7429511980b8cf6304543cacc817802ea0a58a6981b926134abe27e070c",
+              "untilEpoch": 815
+            },
             "signature": "55495b80bdde4a1ee72bd02278d3d6cd05267f19433790160ae501da85591a72f871e3edf9e635622192f88cc27f033a4b1127a576c0fbc2994db09b192ab106",
             "signer": "7cXAHAjwko4GnXtrKmYQ6W3R3eJTzh1FZmqMQHG39YYf",
             "validator": "8SFqwqnq4whPhs8icwHA2hQg3hUoN1qrCLK1SBx3WKwe"
           },
           {
-            "authorization": "22c762404972c9615b12fd684141b532539a3ff3cc2fccc2c45fb4453290b5ad11de9d5ba6d6f0732fba1bf1429795fc6fd2fdb6ea19fa7c6b43874f79d5750e",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "f8e0a81e3332a3c55c6fef67aea7b32a6e6a18eee998ec375972a98a9556d0d48951192bf9013db35ed36cb0610e1b52da45d2b5de107b07dc5bf0aa00b70d01",
+              "untilEpoch": 815
+            },
             "signature": "8cf59855dc863868c594cd00b6eb164c95e45ad3941d3cda235558da9c59b3f4cd514c46f190952c93673e158a0a358eb0173b513076326d71b075f7f714270b",
             "signer": "A6WN8HwmS1M5eb8mpL1NjsvBM1X3VmwfQmrVKPQLYz6a",
             "validator": "AKkzLhjhyFtM9j7WAhbaqYpFe49cXeJBg2kzLRC2PnNa"
           },
           {
-            "authorization": "37b28ff2db8df5de1b5fd257989b8c7794e10213cb4c135da3134d977f94949a15889dea81f27f7a809e5051b64333950281c74a6d106d3b29ed6866a945680b",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "94d1ccfea1db75dec81ad321bcc84f8810ce557cc71f6571a0972ba3a1949468e4f09f86b1c8bff7528a760a28d8339c988c098cb8fff839f05582f6ce47bb09",
+              "untilEpoch": 815
+            },
             "signature": "a54bd2b151800d6ba7e82aa587dc7a2f4895879ebd1619b642d958b926e151d0db3e8d7ae1ecfdb1e4fcdbf98c8bebdf88aff9b8cc550cab18c33875e19c2e06",
             "signer": "D2yBYUCWa4rxKoAEsEkM48raASrXTD2gHHb5cnTwKvWJ",
             "validator": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
           },
           {
-            "authorization": "13bc2ebd78e9c3b73ae857b65c27a23227562a51a43430c19585f2ed591e1f0fc9704c84da4fdd2f12d6d0e965daeacb49fd647ee1ba08ae00239aa713ec1b03",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "bb50f8f80986af92b120c7f07aa2f100b5d3500ec5ae8cadd64a351e53f7043a0cdaca71b5b62b3639c90c664dfe74006eaf4a5387be4323532848e800b48c00",
+              "untilEpoch": 815
+            },
             "signature": "42d6f51ece2cdb1023d9a65609f3298ab9f006b22be6692df4341c851989c0d46693d16f2d06c268dc23de20bae326996a95351b79f4f218bc2384132e48750a",
             "signer": "GaCj1QB2o2JiA635MJWthAzhUbeK6Srh4ER3nxoX5hZu",
             "validator": "2KW2XRd9kwqet15Aha2oK3tYvd3nWbTFH1MBiRAv1BE1"
           },
           {
-            "authorization": "b4c1cb72f90937832921de2df6741126aa45f177f9ae98fac0525a6cc8314df8ba2854cc0e048449805c0dbbb6e7fe348e9222366f2f9862489bd83a813f0502",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4a6d30367e27d04357bbc88a0e757e7f044ec8f86efa44b71786144fa439df0ed9fac9f0ec012837724a970b752126b755ae2aae1826eb7905a0565fd4a8c40e",
+              "untilEpoch": 815
+            },
             "signature": "36832577b58c185994a08693df717f796d21b445508d79ca6183c0aa4ff2a6c92b9bb4fb6ed52ec9d16efa70434a3c799b91d2056030c49fa0141e21982f3408",
             "signer": "AaFZ9QustrXGn9yvjozX7CNb8uToH5M5DpedDzLdh5Ji",
             "validator": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
           },
           {
-            "authorization": "083bb49b7860057b88ffc8bfeb93fd2dde83eadee4eb1e626966f332055e00a5e07af7d0fbdfb0e27e9951c21f70a87c6ce458ca4027b42e05624482fa9e180e",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4ba36edaf48213dfa0dd23c209f80bbaa0d8af2a2f7d605605c6158220d2e0a9d3d4c826626cd4426a549e09097c5e0b5c7bebdfae746f8d5956268e6764db05",
+              "untilEpoch": 815
+            },
             "signature": "3cd8f5ed91962cfa40a7da58a569c6883aa25c2c3a298c1998ad6c72a37e5091760fd7e9fcef9b41c681ad3004170497fbcc23b24ca24649f126c02521d58d08",
             "signer": "3PL1ig5gMwLB7EJVEenG9j19NYMMiF4RkzL6QeZcgTDj",
             "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
           }
         ],
+        "epoch": 805,
         "expectAttested": "49000000000",
         "expectReached": true,
         "name": "dedicated_signers",
@@ -469,51 +506,480 @@
       {
         "atts": [
           {
-            "authorization": "fa9540c394260ecd4d32e5de6cd0895952f27019e8e748662c853a26ac680b8221a75dd9572533e32754b6ad16a0df7ba5feca1fbd0226a5889d354e4fe0e906",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "e70d1c6eada9e1434059f9f34a3f3424ac5069b281d69f8b7d20f28ea7c2bd1dd80dbdb0c792ad9832dc4c0b321f804771294aef1fe8f8a3c7de22ae68f4ad0b",
+              "untilEpoch": 815
+            },
             "signature": "012f8cea7bc2a96c49c6b66882594828dd9cd864f08c79a176163696e58231ab03ade051091eedfb998c37a8ddfeb7ea80d27134cecce312e7b4b458d02e7606",
             "signer": "89FPduAwhhBw5zUGw5jzVMYNkx7wExXW1m3WMoyurdYy",
             "validator": "EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1"
           },
           {
-            "authorization": "ab6facaf49ef6ba2e5f5f2e67ea0d4ea8ee8494615273b2d71010db47900e00954c2491e5ad3db37384b08d57c8e423de3ea88b1cddc54aca22b09668285960e",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "38c90198cdff5380394d722d202c428a4532753ce4cd1fa0750c51bf85efb3eb47a3ae284bcd4b9237fa61d8a971e37fe9f00a1e68fbae5713cf67f79a798f0c",
+              "untilEpoch": 815
+            },
             "signature": "55495b80bdde4a1ee72bd02278d3d6cd05267f19433790160ae501da85591a72f871e3edf9e635622192f88cc27f033a4b1127a576c0fbc2994db09b192ab106",
             "signer": "7cXAHAjwko4GnXtrKmYQ6W3R3eJTzh1FZmqMQHG39YYf",
             "validator": "8SFqwqnq4whPhs8icwHA2hQg3hUoN1qrCLK1SBx3WKwe"
           },
           {
-            "authorization": "d5047519f3a7837c0db6394c815b49e70e9b4a87d915f639f774164d6673456cd22d3de3fc9758ca2643c99f3a6196ecce015c2fe260a7277a7ce3cb35c9000e",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "f538c0dd447d4eeb1f75074697e9ed3d2144486b23848cbd4d57105b46143566e570a4ad847788b795f986bb304e18319de1b7244abc90b73643f5711ad82e03",
+              "untilEpoch": 815
+            },
             "signature": "8cf59855dc863868c594cd00b6eb164c95e45ad3941d3cda235558da9c59b3f4cd514c46f190952c93673e158a0a358eb0173b513076326d71b075f7f714270b",
             "signer": "A6WN8HwmS1M5eb8mpL1NjsvBM1X3VmwfQmrVKPQLYz6a",
             "validator": "AKkzLhjhyFtM9j7WAhbaqYpFe49cXeJBg2kzLRC2PnNa"
           },
           {
-            "authorization": "0b4fb6a4b447f6e0fcf1d675fa3fb2d982a9acd290cd75fac7cb87c9092f44aa22c2048a5bb06d347c384f93dab84e5075e2c0ca2e1ee5cefc7fe075c0d73707",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "215fae990f8543bd1936ea063cf18112bb9c264ad3dd3ea29c80f2d70910a9f9ec8e64906c3a82e77fb5d93f8704c4b3e06bb0202fde546eb49082c2c239c80f",
+              "untilEpoch": 815
+            },
             "signature": "a54bd2b151800d6ba7e82aa587dc7a2f4895879ebd1619b642d958b926e151d0db3e8d7ae1ecfdb1e4fcdbf98c8bebdf88aff9b8cc550cab18c33875e19c2e06",
             "signer": "D2yBYUCWa4rxKoAEsEkM48raASrXTD2gHHb5cnTwKvWJ",
             "validator": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
           },
           {
-            "authorization": "4d2d94204a10cd86bf0bf777b8045f9efc76f5a6a6abc372a26d242b69559253413493a7e63d843ab7c60fc7f23c03e8e0ee220063e2cc4e3cd2ee30558b5301",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "9822932e6d8379919503197d15bb995c047ece6c0714d9d8883e42cc2267caf3f1a624739f7a5bdb23cef4e219011e16b9f53472954c8babc99f805593289705",
+              "untilEpoch": 815
+            },
             "signature": "42d6f51ece2cdb1023d9a65609f3298ab9f006b22be6692df4341c851989c0d46693d16f2d06c268dc23de20bae326996a95351b79f4f218bc2384132e48750a",
             "signer": "GaCj1QB2o2JiA635MJWthAzhUbeK6Srh4ER3nxoX5hZu",
             "validator": "2KW2XRd9kwqet15Aha2oK3tYvd3nWbTFH1MBiRAv1BE1"
           },
           {
-            "authorization": "c3cf54b83dd1224f372eebbcc16c076f8ed36745a7e42cdadf8b803e1e4fd0600fb1ce0583754f279ee9ed9dae4c361942907e19679dde6d48bb6c0f93cd000d",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "a122b0162ab0cf0301ce5b94cfebfc1e42e81b37adbf5e0a298c21d6707ce6cef313fc615c06ec972a1274e42477120bc93e1e96fe3a34368d2437cb252fb207",
+              "untilEpoch": 815
+            },
             "signature": "36832577b58c185994a08693df717f796d21b445508d79ca6183c0aa4ff2a6c92b9bb4fb6ed52ec9d16efa70434a3c799b91d2056030c49fa0141e21982f3408",
             "signer": "AaFZ9QustrXGn9yvjozX7CNb8uToH5M5DpedDzLdh5Ji",
             "validator": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
           },
           {
-            "authorization": "415e7272b2a8c19ae95414091ece91364b40ff8ee300abe21eb4d94a5012e58a74145e62b8b5d44362f10d6fdfaab35123441561b5a9e8b60265027946a61003",
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "2bf7134968b43b66500f6edbf22b2f768924f76e08ad8f26c2a167d3e59b7f0a085a431dc9f07674b9a806c85aecef23ae51a4e3eda5d06efe9e013cd9b22208",
+              "untilEpoch": 815
+            },
             "signature": "3cd8f5ed91962cfa40a7da58a569c6883aa25c2c3a298c1998ad6c72a37e5091760fd7e9fcef9b41c681ad3004170497fbcc23b24ca24649f126c02521d58d08",
             "signer": "3PL1ig5gMwLB7EJVEenG9j19NYMMiF4RkzL6QeZcgTDj",
             "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
           }
         ],
+        "epoch": 805,
         "expectAttested": "0",
         "expectReached": false,
         "name": "dedicated_signers_other_chain_auth",
+        "root": "0707070707070707070707070707070707070707070707070707070707070707",
+        "slot": 123456
+      },
+      {
+        "atts": [
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "2e4e3cb90664f90dd41b73a705bb672b171d52d0957c37dc619068df5e81009f2d8d37cabddec145e882f52fbef0fa153de9eb979d62f1f4df7e040ddd9ae009",
+              "untilEpoch": 815
+            },
+            "signature": "012f8cea7bc2a96c49c6b66882594828dd9cd864f08c79a176163696e58231ab03ade051091eedfb998c37a8ddfeb7ea80d27134cecce312e7b4b458d02e7606",
+            "signer": "89FPduAwhhBw5zUGw5jzVMYNkx7wExXW1m3WMoyurdYy",
+            "validator": "EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "ef16a5e7e949e4441f8049c1c70948a533f3a23af3537a79130808e6902c8eb65fb3f7429511980b8cf6304543cacc817802ea0a58a6981b926134abe27e070c",
+              "untilEpoch": 815
+            },
+            "signature": "55495b80bdde4a1ee72bd02278d3d6cd05267f19433790160ae501da85591a72f871e3edf9e635622192f88cc27f033a4b1127a576c0fbc2994db09b192ab106",
+            "signer": "7cXAHAjwko4GnXtrKmYQ6W3R3eJTzh1FZmqMQHG39YYf",
+            "validator": "8SFqwqnq4whPhs8icwHA2hQg3hUoN1qrCLK1SBx3WKwe"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "f8e0a81e3332a3c55c6fef67aea7b32a6e6a18eee998ec375972a98a9556d0d48951192bf9013db35ed36cb0610e1b52da45d2b5de107b07dc5bf0aa00b70d01",
+              "untilEpoch": 815
+            },
+            "signature": "8cf59855dc863868c594cd00b6eb164c95e45ad3941d3cda235558da9c59b3f4cd514c46f190952c93673e158a0a358eb0173b513076326d71b075f7f714270b",
+            "signer": "A6WN8HwmS1M5eb8mpL1NjsvBM1X3VmwfQmrVKPQLYz6a",
+            "validator": "AKkzLhjhyFtM9j7WAhbaqYpFe49cXeJBg2kzLRC2PnNa"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "94d1ccfea1db75dec81ad321bcc84f8810ce557cc71f6571a0972ba3a1949468e4f09f86b1c8bff7528a760a28d8339c988c098cb8fff839f05582f6ce47bb09",
+              "untilEpoch": 815
+            },
+            "signature": "a54bd2b151800d6ba7e82aa587dc7a2f4895879ebd1619b642d958b926e151d0db3e8d7ae1ecfdb1e4fcdbf98c8bebdf88aff9b8cc550cab18c33875e19c2e06",
+            "signer": "D2yBYUCWa4rxKoAEsEkM48raASrXTD2gHHb5cnTwKvWJ",
+            "validator": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "bb50f8f80986af92b120c7f07aa2f100b5d3500ec5ae8cadd64a351e53f7043a0cdaca71b5b62b3639c90c664dfe74006eaf4a5387be4323532848e800b48c00",
+              "untilEpoch": 815
+            },
+            "signature": "42d6f51ece2cdb1023d9a65609f3298ab9f006b22be6692df4341c851989c0d46693d16f2d06c268dc23de20bae326996a95351b79f4f218bc2384132e48750a",
+            "signer": "GaCj1QB2o2JiA635MJWthAzhUbeK6Srh4ER3nxoX5hZu",
+            "validator": "2KW2XRd9kwqet15Aha2oK3tYvd3nWbTFH1MBiRAv1BE1"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4a6d30367e27d04357bbc88a0e757e7f044ec8f86efa44b71786144fa439df0ed9fac9f0ec012837724a970b752126b755ae2aae1826eb7905a0565fd4a8c40e",
+              "untilEpoch": 815
+            },
+            "signature": "36832577b58c185994a08693df717f796d21b445508d79ca6183c0aa4ff2a6c92b9bb4fb6ed52ec9d16efa70434a3c799b91d2056030c49fa0141e21982f3408",
+            "signer": "AaFZ9QustrXGn9yvjozX7CNb8uToH5M5DpedDzLdh5Ji",
+            "validator": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4ba36edaf48213dfa0dd23c209f80bbaa0d8af2a2f7d605605c6158220d2e0a9d3d4c826626cd4426a549e09097c5e0b5c7bebdfae746f8d5956268e6764db05",
+              "untilEpoch": 815
+            },
+            "signature": "3cd8f5ed91962cfa40a7da58a569c6883aa25c2c3a298c1998ad6c72a37e5091760fd7e9fcef9b41c681ad3004170497fbcc23b24ca24649f126c02521d58d08",
+            "signer": "3PL1ig5gMwLB7EJVEenG9j19NYMMiF4RkzL6QeZcgTDj",
+            "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
+          }
+        ],
+        "epoch": 800,
+        "expectAttested": "49000000000",
+        "expectReached": true,
+        "name": "dedicated_signers_first_epoch",
+        "root": "0707070707070707070707070707070707070707070707070707070707070707",
+        "slot": 123456
+      },
+      {
+        "atts": [
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "2e4e3cb90664f90dd41b73a705bb672b171d52d0957c37dc619068df5e81009f2d8d37cabddec145e882f52fbef0fa153de9eb979d62f1f4df7e040ddd9ae009",
+              "untilEpoch": 815
+            },
+            "signature": "012f8cea7bc2a96c49c6b66882594828dd9cd864f08c79a176163696e58231ab03ade051091eedfb998c37a8ddfeb7ea80d27134cecce312e7b4b458d02e7606",
+            "signer": "89FPduAwhhBw5zUGw5jzVMYNkx7wExXW1m3WMoyurdYy",
+            "validator": "EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "ef16a5e7e949e4441f8049c1c70948a533f3a23af3537a79130808e6902c8eb65fb3f7429511980b8cf6304543cacc817802ea0a58a6981b926134abe27e070c",
+              "untilEpoch": 815
+            },
+            "signature": "55495b80bdde4a1ee72bd02278d3d6cd05267f19433790160ae501da85591a72f871e3edf9e635622192f88cc27f033a4b1127a576c0fbc2994db09b192ab106",
+            "signer": "7cXAHAjwko4GnXtrKmYQ6W3R3eJTzh1FZmqMQHG39YYf",
+            "validator": "8SFqwqnq4whPhs8icwHA2hQg3hUoN1qrCLK1SBx3WKwe"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "f8e0a81e3332a3c55c6fef67aea7b32a6e6a18eee998ec375972a98a9556d0d48951192bf9013db35ed36cb0610e1b52da45d2b5de107b07dc5bf0aa00b70d01",
+              "untilEpoch": 815
+            },
+            "signature": "8cf59855dc863868c594cd00b6eb164c95e45ad3941d3cda235558da9c59b3f4cd514c46f190952c93673e158a0a358eb0173b513076326d71b075f7f714270b",
+            "signer": "A6WN8HwmS1M5eb8mpL1NjsvBM1X3VmwfQmrVKPQLYz6a",
+            "validator": "AKkzLhjhyFtM9j7WAhbaqYpFe49cXeJBg2kzLRC2PnNa"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "94d1ccfea1db75dec81ad321bcc84f8810ce557cc71f6571a0972ba3a1949468e4f09f86b1c8bff7528a760a28d8339c988c098cb8fff839f05582f6ce47bb09",
+              "untilEpoch": 815
+            },
+            "signature": "a54bd2b151800d6ba7e82aa587dc7a2f4895879ebd1619b642d958b926e151d0db3e8d7ae1ecfdb1e4fcdbf98c8bebdf88aff9b8cc550cab18c33875e19c2e06",
+            "signer": "D2yBYUCWa4rxKoAEsEkM48raASrXTD2gHHb5cnTwKvWJ",
+            "validator": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "bb50f8f80986af92b120c7f07aa2f100b5d3500ec5ae8cadd64a351e53f7043a0cdaca71b5b62b3639c90c664dfe74006eaf4a5387be4323532848e800b48c00",
+              "untilEpoch": 815
+            },
+            "signature": "42d6f51ece2cdb1023d9a65609f3298ab9f006b22be6692df4341c851989c0d46693d16f2d06c268dc23de20bae326996a95351b79f4f218bc2384132e48750a",
+            "signer": "GaCj1QB2o2JiA635MJWthAzhUbeK6Srh4ER3nxoX5hZu",
+            "validator": "2KW2XRd9kwqet15Aha2oK3tYvd3nWbTFH1MBiRAv1BE1"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4a6d30367e27d04357bbc88a0e757e7f044ec8f86efa44b71786144fa439df0ed9fac9f0ec012837724a970b752126b755ae2aae1826eb7905a0565fd4a8c40e",
+              "untilEpoch": 815
+            },
+            "signature": "36832577b58c185994a08693df717f796d21b445508d79ca6183c0aa4ff2a6c92b9bb4fb6ed52ec9d16efa70434a3c799b91d2056030c49fa0141e21982f3408",
+            "signer": "AaFZ9QustrXGn9yvjozX7CNb8uToH5M5DpedDzLdh5Ji",
+            "validator": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4ba36edaf48213dfa0dd23c209f80bbaa0d8af2a2f7d605605c6158220d2e0a9d3d4c826626cd4426a549e09097c5e0b5c7bebdfae746f8d5956268e6764db05",
+              "untilEpoch": 815
+            },
+            "signature": "3cd8f5ed91962cfa40a7da58a569c6883aa25c2c3a298c1998ad6c72a37e5091760fd7e9fcef9b41c681ad3004170497fbcc23b24ca24649f126c02521d58d08",
+            "signer": "3PL1ig5gMwLB7EJVEenG9j19NYMMiF4RkzL6QeZcgTDj",
+            "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
+          }
+        ],
+        "epoch": 814,
+        "expectAttested": "49000000000",
+        "expectReached": true,
+        "name": "dedicated_signers_last_epoch",
+        "root": "0707070707070707070707070707070707070707070707070707070707070707",
+        "slot": 123456
+      },
+      {
+        "atts": [
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "2e4e3cb90664f90dd41b73a705bb672b171d52d0957c37dc619068df5e81009f2d8d37cabddec145e882f52fbef0fa153de9eb979d62f1f4df7e040ddd9ae009",
+              "untilEpoch": 815
+            },
+            "signature": "012f8cea7bc2a96c49c6b66882594828dd9cd864f08c79a176163696e58231ab03ade051091eedfb998c37a8ddfeb7ea80d27134cecce312e7b4b458d02e7606",
+            "signer": "89FPduAwhhBw5zUGw5jzVMYNkx7wExXW1m3WMoyurdYy",
+            "validator": "EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "ef16a5e7e949e4441f8049c1c70948a533f3a23af3537a79130808e6902c8eb65fb3f7429511980b8cf6304543cacc817802ea0a58a6981b926134abe27e070c",
+              "untilEpoch": 815
+            },
+            "signature": "55495b80bdde4a1ee72bd02278d3d6cd05267f19433790160ae501da85591a72f871e3edf9e635622192f88cc27f033a4b1127a576c0fbc2994db09b192ab106",
+            "signer": "7cXAHAjwko4GnXtrKmYQ6W3R3eJTzh1FZmqMQHG39YYf",
+            "validator": "8SFqwqnq4whPhs8icwHA2hQg3hUoN1qrCLK1SBx3WKwe"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "f8e0a81e3332a3c55c6fef67aea7b32a6e6a18eee998ec375972a98a9556d0d48951192bf9013db35ed36cb0610e1b52da45d2b5de107b07dc5bf0aa00b70d01",
+              "untilEpoch": 815
+            },
+            "signature": "8cf59855dc863868c594cd00b6eb164c95e45ad3941d3cda235558da9c59b3f4cd514c46f190952c93673e158a0a358eb0173b513076326d71b075f7f714270b",
+            "signer": "A6WN8HwmS1M5eb8mpL1NjsvBM1X3VmwfQmrVKPQLYz6a",
+            "validator": "AKkzLhjhyFtM9j7WAhbaqYpFe49cXeJBg2kzLRC2PnNa"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "94d1ccfea1db75dec81ad321bcc84f8810ce557cc71f6571a0972ba3a1949468e4f09f86b1c8bff7528a760a28d8339c988c098cb8fff839f05582f6ce47bb09",
+              "untilEpoch": 815
+            },
+            "signature": "a54bd2b151800d6ba7e82aa587dc7a2f4895879ebd1619b642d958b926e151d0db3e8d7ae1ecfdb1e4fcdbf98c8bebdf88aff9b8cc550cab18c33875e19c2e06",
+            "signer": "D2yBYUCWa4rxKoAEsEkM48raASrXTD2gHHb5cnTwKvWJ",
+            "validator": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "bb50f8f80986af92b120c7f07aa2f100b5d3500ec5ae8cadd64a351e53f7043a0cdaca71b5b62b3639c90c664dfe74006eaf4a5387be4323532848e800b48c00",
+              "untilEpoch": 815
+            },
+            "signature": "42d6f51ece2cdb1023d9a65609f3298ab9f006b22be6692df4341c851989c0d46693d16f2d06c268dc23de20bae326996a95351b79f4f218bc2384132e48750a",
+            "signer": "GaCj1QB2o2JiA635MJWthAzhUbeK6Srh4ER3nxoX5hZu",
+            "validator": "2KW2XRd9kwqet15Aha2oK3tYvd3nWbTFH1MBiRAv1BE1"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4a6d30367e27d04357bbc88a0e757e7f044ec8f86efa44b71786144fa439df0ed9fac9f0ec012837724a970b752126b755ae2aae1826eb7905a0565fd4a8c40e",
+              "untilEpoch": 815
+            },
+            "signature": "36832577b58c185994a08693df717f796d21b445508d79ca6183c0aa4ff2a6c92b9bb4fb6ed52ec9d16efa70434a3c799b91d2056030c49fa0141e21982f3408",
+            "signer": "AaFZ9QustrXGn9yvjozX7CNb8uToH5M5DpedDzLdh5Ji",
+            "validator": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4ba36edaf48213dfa0dd23c209f80bbaa0d8af2a2f7d605605c6158220d2e0a9d3d4c826626cd4426a549e09097c5e0b5c7bebdfae746f8d5956268e6764db05",
+              "untilEpoch": 815
+            },
+            "signature": "3cd8f5ed91962cfa40a7da58a569c6883aa25c2c3a298c1998ad6c72a37e5091760fd7e9fcef9b41c681ad3004170497fbcc23b24ca24649f126c02521d58d08",
+            "signer": "3PL1ig5gMwLB7EJVEenG9j19NYMMiF4RkzL6QeZcgTDj",
+            "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
+          }
+        ],
+        "epoch": 799,
+        "expectAttested": "0",
+        "expectReached": false,
+        "name": "dedicated_signers_before_start",
+        "root": "0707070707070707070707070707070707070707070707070707070707070707",
+        "slot": 123456
+      },
+      {
+        "atts": [
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "2e4e3cb90664f90dd41b73a705bb672b171d52d0957c37dc619068df5e81009f2d8d37cabddec145e882f52fbef0fa153de9eb979d62f1f4df7e040ddd9ae009",
+              "untilEpoch": 815
+            },
+            "signature": "012f8cea7bc2a96c49c6b66882594828dd9cd864f08c79a176163696e58231ab03ade051091eedfb998c37a8ddfeb7ea80d27134cecce312e7b4b458d02e7606",
+            "signer": "89FPduAwhhBw5zUGw5jzVMYNkx7wExXW1m3WMoyurdYy",
+            "validator": "EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "ef16a5e7e949e4441f8049c1c70948a533f3a23af3537a79130808e6902c8eb65fb3f7429511980b8cf6304543cacc817802ea0a58a6981b926134abe27e070c",
+              "untilEpoch": 815
+            },
+            "signature": "55495b80bdde4a1ee72bd02278d3d6cd05267f19433790160ae501da85591a72f871e3edf9e635622192f88cc27f033a4b1127a576c0fbc2994db09b192ab106",
+            "signer": "7cXAHAjwko4GnXtrKmYQ6W3R3eJTzh1FZmqMQHG39YYf",
+            "validator": "8SFqwqnq4whPhs8icwHA2hQg3hUoN1qrCLK1SBx3WKwe"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "f8e0a81e3332a3c55c6fef67aea7b32a6e6a18eee998ec375972a98a9556d0d48951192bf9013db35ed36cb0610e1b52da45d2b5de107b07dc5bf0aa00b70d01",
+              "untilEpoch": 815
+            },
+            "signature": "8cf59855dc863868c594cd00b6eb164c95e45ad3941d3cda235558da9c59b3f4cd514c46f190952c93673e158a0a358eb0173b513076326d71b075f7f714270b",
+            "signer": "A6WN8HwmS1M5eb8mpL1NjsvBM1X3VmwfQmrVKPQLYz6a",
+            "validator": "AKkzLhjhyFtM9j7WAhbaqYpFe49cXeJBg2kzLRC2PnNa"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "94d1ccfea1db75dec81ad321bcc84f8810ce557cc71f6571a0972ba3a1949468e4f09f86b1c8bff7528a760a28d8339c988c098cb8fff839f05582f6ce47bb09",
+              "untilEpoch": 815
+            },
+            "signature": "a54bd2b151800d6ba7e82aa587dc7a2f4895879ebd1619b642d958b926e151d0db3e8d7ae1ecfdb1e4fcdbf98c8bebdf88aff9b8cc550cab18c33875e19c2e06",
+            "signer": "D2yBYUCWa4rxKoAEsEkM48raASrXTD2gHHb5cnTwKvWJ",
+            "validator": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "bb50f8f80986af92b120c7f07aa2f100b5d3500ec5ae8cadd64a351e53f7043a0cdaca71b5b62b3639c90c664dfe74006eaf4a5387be4323532848e800b48c00",
+              "untilEpoch": 815
+            },
+            "signature": "42d6f51ece2cdb1023d9a65609f3298ab9f006b22be6692df4341c851989c0d46693d16f2d06c268dc23de20bae326996a95351b79f4f218bc2384132e48750a",
+            "signer": "GaCj1QB2o2JiA635MJWthAzhUbeK6Srh4ER3nxoX5hZu",
+            "validator": "2KW2XRd9kwqet15Aha2oK3tYvd3nWbTFH1MBiRAv1BE1"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4a6d30367e27d04357bbc88a0e757e7f044ec8f86efa44b71786144fa439df0ed9fac9f0ec012837724a970b752126b755ae2aae1826eb7905a0565fd4a8c40e",
+              "untilEpoch": 815
+            },
+            "signature": "36832577b58c185994a08693df717f796d21b445508d79ca6183c0aa4ff2a6c92b9bb4fb6ed52ec9d16efa70434a3c799b91d2056030c49fa0141e21982f3408",
+            "signer": "AaFZ9QustrXGn9yvjozX7CNb8uToH5M5DpedDzLdh5Ji",
+            "validator": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4ba36edaf48213dfa0dd23c209f80bbaa0d8af2a2f7d605605c6158220d2e0a9d3d4c826626cd4426a549e09097c5e0b5c7bebdfae746f8d5956268e6764db05",
+              "untilEpoch": 815
+            },
+            "signature": "3cd8f5ed91962cfa40a7da58a569c6883aa25c2c3a298c1998ad6c72a37e5091760fd7e9fcef9b41c681ad3004170497fbcc23b24ca24649f126c02521d58d08",
+            "signer": "3PL1ig5gMwLB7EJVEenG9j19NYMMiF4RkzL6QeZcgTDj",
+            "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
+          }
+        ],
+        "epoch": 815,
+        "expectAttested": "0",
+        "expectReached": false,
+        "name": "dedicated_signers_expired",
+        "root": "0707070707070707070707070707070707070707070707070707070707070707",
+        "slot": 123456
+      },
+      {
+        "atts": [
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "2e4e3cb90664f90dd41b73a705bb672b171d52d0957c37dc619068df5e81009f2d8d37cabddec145e882f52fbef0fa153de9eb979d62f1f4df7e040ddd9ae009",
+              "untilEpoch": 816
+            },
+            "signature": "012f8cea7bc2a96c49c6b66882594828dd9cd864f08c79a176163696e58231ab03ade051091eedfb998c37a8ddfeb7ea80d27134cecce312e7b4b458d02e7606",
+            "signer": "89FPduAwhhBw5zUGw5jzVMYNkx7wExXW1m3WMoyurdYy",
+            "validator": "EdmxWPmx2WH6WgFfTdu9xfkYf3k1g5wD1zccTVySEEh1"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "ef16a5e7e949e4441f8049c1c70948a533f3a23af3537a79130808e6902c8eb65fb3f7429511980b8cf6304543cacc817802ea0a58a6981b926134abe27e070c",
+              "untilEpoch": 816
+            },
+            "signature": "55495b80bdde4a1ee72bd02278d3d6cd05267f19433790160ae501da85591a72f871e3edf9e635622192f88cc27f033a4b1127a576c0fbc2994db09b192ab106",
+            "signer": "7cXAHAjwko4GnXtrKmYQ6W3R3eJTzh1FZmqMQHG39YYf",
+            "validator": "8SFqwqnq4whPhs8icwHA2hQg3hUoN1qrCLK1SBx3WKwe"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "f8e0a81e3332a3c55c6fef67aea7b32a6e6a18eee998ec375972a98a9556d0d48951192bf9013db35ed36cb0610e1b52da45d2b5de107b07dc5bf0aa00b70d01",
+              "untilEpoch": 816
+            },
+            "signature": "8cf59855dc863868c594cd00b6eb164c95e45ad3941d3cda235558da9c59b3f4cd514c46f190952c93673e158a0a358eb0173b513076326d71b075f7f714270b",
+            "signer": "A6WN8HwmS1M5eb8mpL1NjsvBM1X3VmwfQmrVKPQLYz6a",
+            "validator": "AKkzLhjhyFtM9j7WAhbaqYpFe49cXeJBg2kzLRC2PnNa"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "94d1ccfea1db75dec81ad321bcc84f8810ce557cc71f6571a0972ba3a1949468e4f09f86b1c8bff7528a760a28d8339c988c098cb8fff839f05582f6ce47bb09",
+              "untilEpoch": 816
+            },
+            "signature": "a54bd2b151800d6ba7e82aa587dc7a2f4895879ebd1619b642d958b926e151d0db3e8d7ae1ecfdb1e4fcdbf98c8bebdf88aff9b8cc550cab18c33875e19c2e06",
+            "signer": "D2yBYUCWa4rxKoAEsEkM48raASrXTD2gHHb5cnTwKvWJ",
+            "validator": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "bb50f8f80986af92b120c7f07aa2f100b5d3500ec5ae8cadd64a351e53f7043a0cdaca71b5b62b3639c90c664dfe74006eaf4a5387be4323532848e800b48c00",
+              "untilEpoch": 816
+            },
+            "signature": "42d6f51ece2cdb1023d9a65609f3298ab9f006b22be6692df4341c851989c0d46693d16f2d06c268dc23de20bae326996a95351b79f4f218bc2384132e48750a",
+            "signer": "GaCj1QB2o2JiA635MJWthAzhUbeK6Srh4ER3nxoX5hZu",
+            "validator": "2KW2XRd9kwqet15Aha2oK3tYvd3nWbTFH1MBiRAv1BE1"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4a6d30367e27d04357bbc88a0e757e7f044ec8f86efa44b71786144fa439df0ed9fac9f0ec012837724a970b752126b755ae2aae1826eb7905a0565fd4a8c40e",
+              "untilEpoch": 816
+            },
+            "signature": "36832577b58c185994a08693df717f796d21b445508d79ca6183c0aa4ff2a6c92b9bb4fb6ed52ec9d16efa70434a3c799b91d2056030c49fa0141e21982f3408",
+            "signer": "AaFZ9QustrXGn9yvjozX7CNb8uToH5M5DpedDzLdh5Ji",
+            "validator": "J2xccRtuG43drESLYznHhLhQkLTdfepcKYbiQ9BsJVaf"
+          },
+          {
+            "authorization": {
+              "fromEpoch": 800,
+              "signature": "4ba36edaf48213dfa0dd23c209f80bbaa0d8af2a2f7d605605c6158220d2e0a9d3d4c826626cd4426a549e09097c5e0b5c7bebdfae746f8d5956268e6764db05",
+              "untilEpoch": 816
+            },
+            "signature": "3cd8f5ed91962cfa40a7da58a569c6883aa25c2c3a298c1998ad6c72a37e5091760fd7e9fcef9b41c681ad3004170497fbcc23b24ca24649f126c02521d58d08",
+            "signer": "3PL1ig5gMwLB7EJVEenG9j19NYMMiF4RkzL6QeZcgTDj",
+            "validator": "5Z6Ay5NEcbg3xhopc522sBCRXQujkTiuDRnHGfQdcnSf"
+          }
+        ],
+        "epoch": 815,
+        "expectAttested": "0",
+        "expectReached": false,
+        "name": "dedicated_signers_extended_period",
         "root": "0707070707070707070707070707070707070707070707070707070707070707",
         "slot": 123456
       }

@@ -1,15 +1,22 @@
-//! `zilja-authorize`: identiteti i validatorit autorizon një çelës të veçantë që firmos root-et (F-10).
+//! `zilja-authorize`: identiteti i validatorit autorizon një çelës të veçantë që firmos root-et, për
+//! një periudhë epokash (F-10, v2).
 //!
 //! ```text
-//! zilja-authorize <identity-keypair.json> <signing-keypair.json> <genesis_hash base58> > zilja-authorization.json
+//! zilja-authorize <identity-keypair.json> <signing-keypair.json> <genesis_hash base58> <from_epoch> [epoka=15] > zilja-authorization.json
 //! ```
 //!
-//! Çelësi i identitetit përdoret vetëm një herë, këtu; zilja firmos pastaj vetëm me çelësin e
-//! veçantë. Skedari që del vendoset te `attest_authorization` në konfigurimin e plugin-it.
+//! Autorizimi vlen për epokat `[from_epoch, from_epoch + epoka)`, me `epoka` 1..=15 (15 ≈ 30 ditë në
+//! mainnet). Epokën aktuale e jep `solana epoch`. Rinovoje para se të skadojë (p.sh. kur mbeten 2
+//! epoka), me `from_epoch` = epoka aktuale: plugin-i e rilexon skedarin vetë, pa rinisje. Shkruaje në
+//! një skedar të përkohshëm dhe zhvendose (`mv`) mbi të vjetrin, që plugin-i të mos lexojë gjysmë
+//! skedari (edhe atëherë, një skedar i pavlefshëm injorohet dhe mbetet autorizimi i mëparshëm).
+//!
+//! Çelësi i identitetit përdoret vetëm këtu; zilja firmos pastaj vetëm me çelësin e veçantë. Një
+//! çelës i vjedhur vlen kështu vetëm deri në fund të periudhës.
 
 use ed25519_dalek::{Signer, SigningKey};
 use serde_json::json;
-use zilja_verifier::attest::authorize_message;
+use zilja_verifier::attest::{authorize_message, MAX_AUTH_EPOCHS};
 
 fn keypair(path: &str) -> Result<SigningKey, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
@@ -25,23 +32,40 @@ fn keypair(path: &str) -> Result<SigningKey, String> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let run = || -> Result<(), String> {
-        let [id, signer, genesis] = args.as_slice() else {
-            return Err("përdorimi: zilja-authorize <identity-keypair.json> <signing-keypair.json> <genesis_hash>".into());
+        let usage = || format!("përdorimi: zilja-authorize <identity-keypair.json> <signing-keypair.json> <genesis_hash> <from_epoch> [epoka 1..={MAX_AUTH_EPOCHS}, parazgjedhje {MAX_AUTH_EPOCHS}]");
+        let (id, signer, genesis, from, n) = match args.as_slice() {
+            [a, b, c, d] => (a, b, c, d, None),
+            [a, b, c, d, e] => (a, b, c, d, Some(e)),
+            _ => return Err(usage()),
         };
+        let num = |s: &str, what: &str| s.parse::<u64>().ok().filter(|v| v.to_string() == s).ok_or(format!("{what} duhet numër i plotë: {s:?}"));
+        let from = num(from, "from_epoch")?;
+        let n = match n {
+            Some(n) => num(n, "epoka")?,
+            None => MAX_AUTH_EPOCHS,
+        };
+        if !(1..=MAX_AUTH_EPOCHS).contains(&n) {
+            return Err(format!("epoka duhet 1..={MAX_AUTH_EPOCHS}, jo {n}"));
+        }
+        let until = from.checked_add(n).ok_or("from_epoch shumë i madh")?;
         let id = keypair(id)?;
         let signer = keypair(signer)?.verifying_key().to_bytes();
         let g: [u8; 32] = bs58::decode(genesis).into_vec().map_err(|e| e.to_string())?.try_into().map_err(|_| "genesis duhet 32 bajt")?;
-        let auth = id.sign(&authorize_message(&g, &signer)).to_bytes();
+        let auth = id.sign(&authorize_message(&g, &signer, from, until)).to_bytes();
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
+                "version": 2,
                 "identity": bs58::encode(id.verifying_key().to_bytes()).into_string(),
                 "signer": bs58::encode(signer).into_string(),
                 "genesis": genesis,
+                "fromEpoch": from,
+                "untilEpoch": until,
                 "authorization": hex::encode(auth),
             }))
             .unwrap()
         );
+        eprintln!("autorizimi vlen për epokat {from}..{} (përfshirë); rinovoje para epokës {until}", until - 1);
         Ok(())
     };
     if let Err(e) = run() {

@@ -202,7 +202,7 @@ export class ZiljaClient {
         }
         quorum = [];
         for (const [root, atts] of byRoot) {
-          const q = await verifyQuorum(genesisHex, slot, root, atts, table);
+          const q = await verifyQuorum(genesisHex, toU64(e1.epoch), slot, root, atts, table);
           quorum.push({ root, reached: q.reached });
           if (root === r.root) {
             const pct = q.totalStake > 0n ? Number((q.attestedStake * 10000n) / q.totalStake) / 100 : 0;

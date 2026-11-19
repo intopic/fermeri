@@ -127,9 +127,17 @@ pub fn parse_attestation(a: &Value, slot: u64) -> Result<(String, Attestation), 
         Some(s) => Some(b58_32(s)?),
         None => None,
     };
-    let authorization = match a["authorization"].as_str() {
-        Some(h) => Some(zilja_verifier::wire::hex_lower(h).ok_or("autorizimi duhet 64 bajt hex i vogël")?),
-        None => None,
+    // v2: `{fromEpoch, untilEpoch, signature}`. Një autorizim v1 (vetëm hex, pa afat) s'pranohet.
+    let authorization = match &a["authorization"] {
+        Value::Null => None,
+        Value::Object(o) => {
+            let e = |k: &str| o.get(k).and_then(Value::as_u64).ok_or(format!("autorizimi: {k} duhet numër i plotë"));
+            let signature = zilja_verifier::wire::hex_lower(o.get("signature").and_then(Value::as_str).ok_or("autorizimi: mungon signature")?)
+                .ok_or("autorizimi: signature duhet 64 bajt hex i vogël")?;
+            Some(zilja_verifier::attest::Authorization { from_epoch: e("fromEpoch")?, until_epoch: e("untilEpoch")?, signature })
+        }
+        Value::String(_) => return Err("autorizim v1 pa afat: s'pranohet më (zilja duhet përditësuar dhe autorizimi rikrijuar)".into()),
+        _ => return Err("autorizimi duhet objekt ose null".into()),
     };
     Ok((root.to_string(), Attestation { validator, signer, authorization, signature }))
 }
@@ -141,7 +149,8 @@ pub struct QuorumResult {
     pub skipped: Vec<(String, String)>,
 }
 
-pub fn quorum_by_root(ziljas: &[String], slot: u64, genesis: &[u8; 32], table: &StakeTable) -> QuorumResult {
+/// `epoch` = epoka e `slot`-it (ajo e tabelës së stake-ut, `StakeView::epoch`).
+pub fn quorum_by_root(ziljas: &[String], epoch: u64, slot: u64, genesis: &[u8; 32], table: &StakeTable) -> QuorumResult {
     let mut by_root: Vec<(String, Vec<Attestation>)> = Vec::new();
     let mut skipped = Vec::new();
     for z in ziljas {
@@ -157,7 +166,7 @@ pub fn quorum_by_root(ziljas: &[String], slot: u64, genesis: &[u8; 32], table: &
         .into_iter()
         .map(|(root_hex, atts)| {
             let root = h32(&root_hex).expect("i kontrolluar nga is_root_hex");
-            let rep = verify_quorum(genesis, slot, &root, &atts, table);
+            let rep = verify_quorum(genesis, epoch, slot, &root, &atts, table);
             (root_hex, rep)
         })
         .collect();
