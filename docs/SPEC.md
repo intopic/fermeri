@@ -174,6 +174,19 @@ Kur zilja ndalon (boshllëk, zinxhir tjetër, disk i dëmtuar), çdo metodë kth
 Revokimet e verifikuara që njeh zilja (të çdo validatori, nga `attest_revocations`). Klienti i
 verifikon vetë; zila s'besohet.
 
+### `getZiljaQuorumBundle [slot]` (aggregator, R5-3)
+
+Shërbimi `zilja-aggregator` (i pabesuar) pyet zilet që njeh dhe kthen:
+
+```json
+{"slot": 68, "attestations": [<si getZiljaAttestation>, ...], "revocations": [...],
+ "ziljas": 500, "answered": 487}
+```
+
+Klienti i verifikon të gjitha njësoj si firmat që vijnë direkt nga zilet. Aggregator-i mund të
+fshehë firma (s'arrihet kuorumi), por s'mund të krijojë kuorum. Slote larg majës → `-32007`;
+shumë slote të reja në sekondë → `-32005`.
+
 ### `GET /health`, `GET /metrics`
 
 - `/health`: `200 ok` vetëm kur jep dëftesa, përndryshe `503`.

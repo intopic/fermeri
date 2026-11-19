@@ -47,6 +47,7 @@ function mock({ ziles, sol = {} }) {
       else if (method === "getZiljaRoot") result = { slot: params[0] ?? z.proof.slot, root: z.root ?? z.proof.root };
       else if (method === "getZiljaAttestation") result = z.attest ?? null;
       else if (method === "getZiljaRevocations") result = z.revocations;
+      else if (method === "getZiljaQuorumBundle") result = z.bundle;
     } else result = typeof sol[method] === "function" ? sol[method](params) : sol[method];
     if (result === undefined) return { json: async () => ({ error: { message: `s'ka ${method}` } }) };
     return { json: async () => ({ result }) };
@@ -121,6 +122,24 @@ const att = (x, slot, root) => ({ slot, root, validator: x.b58, signer: null, au
   expect("R5-1: pa revokim → kuorum", ok.ok === true && ok.trust === "quorum", JSON.stringify({ ok: ok.ok, trust: ok.trust, errors: ok.errors }));
   expect("R5-1: revokim nga një zile tjetër → s'ka kuorum", revoked.trust !== "quorum", JSON.stringify({ ok: revoked.ok, trust: revoked.trust }));
   expect("R5-1: revokim i falsifikuar → kuorum", forged.ok === true && forged.trust === "quorum", JSON.stringify({ ok: forged.ok, trust: forged.trust }));
+}
+
+// R5-3: aggregator-i i pabesuar: firmat e shumë zileve me një thirrje. Firmat e vërteta numërohen;
+// një firmë e falsifikuar s'kalon; një aggregator që s'përgjigjet s'e prish verifikimin.
+{
+  const run = async (bundle) => {
+    const [z, ag] = [uniq(), uniq()];
+    const ziles = { [z]: { proof: proofAt(100) }, [ag]: { bundle } };
+    const f = mock({ ziles, sol: { getVoteAccounts: voteAccounts, getSlot: 100, getEpochInfo: { absoluteSlot: 100, slotIndex: 100, slotsInEpoch: 432000, epoch: 0 } } });
+    return new ZiljaClient({ endpoints: [z], aggregators: [ag], solanaRpc: "http://sol", quorum: true, minTrust: "quorum", genesisHash: GEN, compareData: false, fetch: f }).verifyAccount(inc.pubkey);
+  };
+  const real = [att(vals[0], 100, inc.root), att(vals[1], 100, inc.root)];
+  const good = await run({ slot: 100, attestations: real, revocations: [] });
+  expect("R5-3: kuorum nga bundle-i i aggregator-it", good.ok === true && good.trust === "quorum", JSON.stringify({ ok: good.ok, trust: good.trust, errors: good.errors }));
+  const forged = await run({ slot: 100, attestations: [real[0], { ...real[0], validator: vals[1].b58 }], revocations: [] });
+  expect("R5-3: firmë e falsifikuar nga aggregator-i → s'ka kuorum", forged.trust !== "quorum", JSON.stringify({ ok: forged.ok, trust: forged.trust }));
+  const down = await run(undefined);
+  expect("R5-3: aggregator që s'përgjigjet → s'ka kuorum, pa rrëzim", down.trust !== "quorum" && down.warnings.some((w) => w.includes("aggregator")), JSON.stringify(down.warnings));
 }
 
 // 4. Një zile në konflikt s'e bllokon një kuorum të vlefshëm (> 2/3) për root-in e dëftesës.
