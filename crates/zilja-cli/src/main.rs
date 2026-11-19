@@ -4,13 +4,15 @@
 //! zilja-check <ZILJA_URL> <pubkey> [SOLANA_RPC_URL]
 //!             [--also <ZILJA_URL>]... [--min-trust single|agreement|quorum] [--min-agree <n>]
 //!             [--quorum] [--genesis <hash>] [--max-lag <n>|none] [--min-slot <n>]
-//!             [--root <hex>] [--slot <n>]
+//!             [--root <hex> [--root-slot <n>] [--root-complete]] [--slot <n>]
 //! ```
 //!
 //! Vendimi merret nga e njëjta politikë si SDK-ja dhe faqja (P-11, `policy.rs`):
 //! 1. dëftesa nga zilja e parë, e verifikuar kundër root-it (i serverit, ose `--root` yti);
 //! 2. besimi te root-i: `single` (një zile), `agreement` (≥ min-agree zile me të njëjtin root,
-//!    parazgjedhja), `quorum` (> 2/3 e stake-ut firmosi), `user` (`--root`);
+//!    parazgjedhja), `quorum` (> 2/3 e stake-ut firmosi), `user` (`--root`). A14: `--root` vetëm
+//!    vërteton përfshirjen te ai root; me `--root-slot` vërtetohet edhe sloti (dhe freskia), me
+//!    `--root-complete` edhe mungesa;
 //! 3. freskia: me `SOLANA_RPC_URL`, sloti nuk duhet të jetë më shumë se `--max-lag` (150) pas të
 //!    finalizuarit; `--slot` është kërkesë historike;
 //! 4. të dhënat: me `SOLANA_RPC_URL`, bajtet e RPC-së duhet të përputhen me vulën.
@@ -20,19 +22,20 @@
 use base64::Engine;
 use serde_json::{json, Value};
 use std::process::exit;
-use zilja_cli::policy::{self, decide, explain, Input, Other, Policy, Primary, QuorumGroup};
+use zilja_cli::policy::{self, decide, explain, Anchor, DataStatus, Input, Other, Policy, Primary, QuorumGroup};
 use zilja_cli::{b58_32, genesis, h32, is_root_hex, quorum_by_root, rpc, stake_view, u64_field};
 use zilja_verifier::{data_matches, verify_account, AccountMeta, Proof, Verdict};
 
 const USAGE: &str = "përdorimi: zilja-check <ZILJA_URL> <pubkey> [SOLANA_RPC_URL] [--also <ZILJA_URL>]... \
 [--min-trust single|agreement|quorum] [--min-agree <n>] [--quorum] [--genesis <hash>] [--max-lag <n>|none] \
-[--min-slot <n>] [--root <hex>] [--slot <n>]";
+[--min-slot <n>] [--root <hex> [--root-slot <n>] [--root-complete]] [--slot <n>]";
 
 struct Args {
     endpoints: Vec<String>,
     pubkey: String,
     sol: Option<String>,
     root_override: Option<String>,
+    anchor: Option<Anchor>,
     at_slot: Option<u64>,
     policy: Policy,
     quorum: bool,
@@ -47,6 +50,7 @@ fn parse_args() -> Result<Args, String> {
     let mut min_trust = policy::DEFAULT_MIN_TRUST.to_string();
     let mut min_agree = policy::DEFAULT_MIN_AGREE as i64;
     let (mut max_lag, mut max_lag_set, mut min_slot, mut quorum) = (None, false, None, false);
+    let (mut root_slot, mut root_complete) = (None, false);
     let mut i = 0;
     let num =
         |v: Option<&String>, f: &str| -> Result<u64, String> { v.and_then(|v| v.parse().ok()).ok_or(format!("{f} kërkon një numër")) };
@@ -60,6 +64,11 @@ fn parse_args() -> Result<Args, String> {
             "--min-trust" => min_trust = v.ok_or("--min-trust kërkon një vlerë")?.clone(),
             "--min-agree" => min_agree = num(v, "--min-agree")? as i64,
             "--min-slot" => min_slot = Some(num(v, "--min-slot")?),
+            "--root-slot" => root_slot = Some(num(v, "--root-slot")?),
+            "--root-complete" => {
+                root_complete = true;
+                step = 1;
+            }
             "--genesis" => genesis = Some(v.ok_or("--genesis kërkon një vlerë")?.clone()),
             "--max-lag" => {
                 max_lag_set = true;
@@ -102,12 +111,16 @@ fn parse_args() -> Result<Args, String> {
         if !is_root_hex(r) {
             return Err("--root duhet 64 shifra hex të vogla".into());
         }
+    } else if root_slot.is_some() || root_complete {
+        return Err("--root-slot / --root-complete kërkojnë --root".into());
     }
+    let anchor = root_override.as_ref().map(|_| Anchor { slot: root_slot, complete: root_complete.then_some(true) });
     Ok(Args {
         endpoints,
         pubkey: pos[1].clone(),
         sol,
         root_override,
+        anchor,
         at_slot,
         policy: Policy { min_trust, min_agree, max_slot_lag: max_lag, min_slot },
         quorum,
@@ -178,11 +191,11 @@ fn run() -> Result<bool, String> {
                     if root.as_deref() != Some(server_root.as_str()) {
                         notes.push(format!("{ep} jep root tjetër për slotin {slot}"));
                     }
-                    others.push(Other { ok: true, slot: v["slot"].as_u64(), root });
+                    others.push(Other { ok: true, slot: v["slot"].as_u64(), root, complete: v["complete"].as_bool() == Some(true) });
                 }
                 Err(e) => {
                     notes.push(e);
-                    others.push(Other { ok: false, slot: None, root: None });
+                    others.push(Other { ok: false, slot: None, root: None, complete: false });
                 }
             }
         }
@@ -222,24 +235,32 @@ fn run() -> Result<bool, String> {
         }
     }
 
-    // Të dhënat nga RPC-ja.
+    // Të dhënat nga RPC-ja (A13): kur kërkohen, vetëm përputhja jep sukses. Krahasohen lamports,
+    // owner, executable dhe bajtet (dataLen + hash).
     let mut data = None;
     if let (Some(sol), Some(m), None) = (&a.sol, &meta, a.at_slot) {
         match rpc(sol, "getAccountInfo", json!([a.pubkey, {"encoding": "base64", "commitment": "finalized"}])) {
             Ok(info) => {
                 let ctx = info["context"]["slot"].as_u64().unwrap_or(0);
-                let same = match info["value"]["data"][0].as_str() {
-                    Some(b64) => base64::engine::general_purpose::STANDARD
-                        .decode(b64)
-                        .is_ok_and(|d| data_matches(m, &d) && info["value"]["lamports"].as_u64() == Some(m.lamports)),
+                let v = &info["value"];
+                let same = match v["data"][0].as_str() {
+                    Some(b64) => base64::engine::general_purpose::STANDARD.decode(b64).is_ok_and(|d| {
+                        data_matches(m, &d)
+                            && u64_field(&v["lamports"]) == Some(m.lamports)
+                            && v["owner"].as_str().and_then(|o| b58_32(o).ok()) == Some(m.owner)
+                            && v["executable"].as_bool() == Some(m.executable)
+                    }),
                     None => false,
                 };
                 if !same {
                     notes.push(format!("RPC-ja (slot {ctx}) jep të dhëna të tjera: ose llogaria ndryshoi pas slotit, ose RPC-ja gënjen"));
                 }
-                data = Some(same);
+                data = Some(if same { DataStatus::Match } else { DataStatus::Mismatch });
             }
-            Err(e) => notes.push(format!("të dhënat s'u krahasuan: {e}")),
+            Err(e) => {
+                notes.push(format!("të dhënat s'u krahasuan: {e}"));
+                data = Some(DataStatus::Unavailable);
+            }
         }
     }
 
@@ -249,7 +270,7 @@ fn run() -> Result<bool, String> {
         request_slot: a.at_slot,
         endpoints: a.endpoints.len(),
         quorum_enabled: a.quorum,
-        root_override: a.root_override.is_some(),
+        anchor: a.anchor.clone(),
         primary: r.is_object().then(|| Primary {
             pubkey: r["pubkey"].as_str().unwrap_or_default().to_string(),
             slot,

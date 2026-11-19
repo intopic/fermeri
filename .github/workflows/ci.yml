@@ -37,6 +37,8 @@ jobs:
           git diff --exit-code sdk/js/test/vectors.json
           cargo run -q -p zilja-bench --bin zilja-wire-vectors > sdk/js/test/wire-vectors.json
           git diff --exit-code sdk/js/test/wire-vectors.json
+          node sdk/js/test/gen-policy-vectors.mjs > sdk/js/test/policy-vectors.json
+          git diff --exit-code sdk/js/test/policy-vectors.json
       - name: testet e auditimit që janë rregulluar (pa --ignored)
         run: cargo test -p zilja-node -p zilja-store --test audit_poc
       - name: SDK zilja-verify (npm test + pack)

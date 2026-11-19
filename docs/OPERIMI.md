@@ -303,8 +303,8 @@ nuk mjafton: `ok` / kodi 0 kërkon që të kalojnë katër kontrolle të ndara.
 |---|---|---|
 | dëftesa | përputhet me root-in, për llogarinë dhe slotin e kërkuar; "nuk ekziston" vetëm nga pemë e plotë | gjithmonë |
 | root-i | besimi ≥ `min-trust`: `single` < `agreement` < `quorum` < `user` (`--root`) | `agreement`, `min-agree` 2 |
-| freskia | sloti ≤ `max-lag` slote pas të finalizuarit të RPC-së; jo më i vjetër se `min-slot` ose se i pari | 150 kur ka RPC Solana |
-| të dhënat | bajtet dhe lamports nga RPC-ja përputhen me vulën | kur ka RPC Solana |
+| freskia | sloti ≤ `max-lag` slote pas të finalizuarit të RPC-së, **dhe jo mbi të** (A12: `ahead_of_reference`); jo më i vjetër se `min-slot` ose se i pari | 150 kur ka RPC Solana |
+| të dhënat | lamports, owner, executable dhe bajtet nga RPC-ja përputhen me vulën; kur kërkohet por RPC-ja s'përgjigjet → `data_unavailable` (A13) | kur ka RPC Solana |
 
 - Një konfigurim që s'mund ta arrijë kurrë `min-trust` refuzohet që në fillim: një zile me `agreement` jep `config_min_agree`. `min-agree` s'ulet vetë sipas numrit të zileve.
 - Dy zile me root-e të ndryshme për të njëjtin slot japin `conflict`, jo `invalid`. Kuorumi për root-in e dëftesës e mposht konfliktin, por me paralajmërim. Kuorumi për një root tjetër, ose për dy root-e, është `conflict`.
@@ -315,6 +315,8 @@ nuk mjafton: `ok` / kodi 0 kërkon që të kalojnë katër kontrolle të ndara.
   - `getEpochInfo` lexohet para dhe pas `getVoteAccounts`: epoka duhet të jetë e njëjtë;
   - tabela vlen vetëm për slotet e epokës së saj, **të dy kufijtë** (`quorum_epoch_unsupported`); `zilja-quorum` del me 1 jashtë tyre.
 - **Kuorumi s'varet nga radha (A15):** një identitet numërohet vetëm pas firmës së tij të parë të vlefshme.
+- **Referenca e përdoruesit (A14).** `--root <hex>` (SDK: `root: "<hex>"`) vërteton vetëm përfshirjen te ai root: sloti i serverit s'vërtetohet, freskia del `unverifiable` (gabim kur kërkohet freski), dhe mungesa s'pranohet. Me `--root-slot <n>` (`root: {root, slot}`) dëftesa duhet të jetë për atë slot; me `--root-complete` (`complete: true`) pranohet edhe mungesa. Në `agreement`, për mungesë numërohen vetëm zilet që pohojnë edhe ato pemë të plotë.
+- Kufiri i rollback-ut rritet vetëm me një slot të vërtetuar, aktual dhe jo përpara referencës (`raiseFloor`).
 - `zilja-check` është një thirrje e vetme: mbrojtja nga rollback-u midis thirrjeve bëhet me `--min-slot`. SDK-ja dhe faqja e mbajnë vetë slotin më të lartë të parë.
 
 ## Kufijtë e konfigurimit (L-08)

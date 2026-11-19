@@ -7,6 +7,14 @@ import { parseJsonExact } from "./json.js";
 
 export { TRUST };
 
+/** A11: u64 i saktë nga JSON-i (shih `rpc`): BigInt, tekst dhjetor ose Number i sigurt; ndryshe gabim. */
+function exactU64(v) {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "string" && /^(0|[1-9][0-9]{0,19})$/.test(v)) return BigInt(v);
+  if (typeof v === "number" && Number.isSafeInteger(v) && v >= 0) return BigInt(v);
+  throw new Error(`numër i pasaktë ose jashtë u64: ${v}`);
+}
+
 function b64(s) {
   const bin = atob(s);
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
@@ -25,7 +33,9 @@ export class ZiljaClient {
    * @param {number|null} [o.maxSlotLag] sa slote pas slotit të finalizuar të solanaRpc pranohet
    *   gjendja si "aktuale" (parazgjedhja 150 kur ka solanaRpc; null = pa kontroll)
    * @param {number} [o.minSlot] slot minimal i pranuar
-   * @param {string} [o.root] root-i (hex) që përdoruesi e njeh vetë: besimi "user"
+   * @param {string|{root: string, slot?: number, complete?: boolean}} [o.root] A14: referenca që përdoruesi e
+   *   njeh vetë (besimi "user"). Vetëm hash: vërteton përfshirjen te ai root, por jo slotin, freskinë apo
+   *   mungesën. Me `slot` (dhe `complete: true` për mungesë): dëftesa duhet të jetë për atë slot.
    * @param {boolean} [o.compareData] krahaso të dhënat me solanaRpc (parazgjedhja: po, kur ka solanaRpc)
    * @param {number} [o.timeoutMs] parazgjedhja: 10000
    * @param {typeof fetch} [o.fetch]
@@ -41,7 +51,10 @@ export class ZiljaClient {
     this.minTrust = o.minTrust ?? DEFAULTS.minTrust;
     this.maxSlotLag = o.maxSlotLag !== undefined ? o.maxSlotLag : this.solanaRpc ? DEFAULTS.maxSlotLagWithRpc : null;
     this.minSlot = o.minSlot ?? null;
-    this.rootOverride = o.root != null ? String(o.root).trim().toLowerCase() : null;
+    const ref = o.root == null ? null : typeof o.root === "object" ? o.root : { root: o.root };
+    this.rootOverride = ref ? String(ref.root ?? "").trim().toLowerCase() : null;
+    this.anchor = ref ? { slot: ref.slot ?? null, complete: ref.complete ?? null } : null;
+    if (this.anchor?.slot != null && !Number.isSafeInteger(this.anchor.slot)) throw new Error("root.slot duhet numër i plotë");
     this.compareData = o.compareData ?? true;
     this.timeoutMs = o.timeoutMs ?? 10_000;
     this.fetch = o.fetch ?? globalThis.fetch.bind(globalThis);
@@ -107,7 +120,7 @@ export class ZiljaClient {
           return { ok: false };
         }
         if (a.value?.root !== r.root) warnings.push(`${others[i]} jep root tjetër për slotin ${slot}`);
-        return { ok: true, slot: a.value?.slot, root: a.value?.root };
+        return { ok: true, slot: a.value?.slot, root: a.value?.root, complete: a.value?.complete === true };
       });
     }
 
@@ -170,7 +183,9 @@ export class ZiljaClient {
       }
     }
 
-    // 5. Të dhënat nga RPC-ja (L-07). Kthehen bajtet e verifikuara.
+    // 5. Të dhënat nga RPC-ja (L-07, A13). Kur kërkohen, vetëm përputhja jep sukses: një RPC që s'përgjigjet
+    // jep "unavailable", jo "unchecked". Krahasohen lamports, owner, executable dhe bajtet (dataLen + hash).
+    // Kthehen bajtet e verifikuara.
     let data = null;
     let dataReport = null;
     if (this.solanaRpc && this.compareData && verdict === "exists" && reqSlot == null) {
@@ -181,12 +196,18 @@ export class ZiljaClient {
         let bytes = null;
         if (info?.value) {
           bytes = b64(info.value.data[0]);
-          same = (await dataMatches(account, bytes)) && BigInt(info.value.lamports) === account.lamports;
+          same =
+            (await dataMatches(account, bytes)) &&
+            exactU64(info.value.lamports) === account.lamports &&
+            info.value.owner === account.owner &&
+            info.value.executable === account.executable;
         }
-        data = { matches: same };
+        data = { status: same ? "match" : "mismatch" };
         dataReport = { checked: true, matches: same, rpcSlot, bytes: same ? bytes : null };
         if (!same) warnings.push(`RPC-ja (slot ${rpcSlot}) jep të dhëna të tjera: ose llogaria ndryshoi pas slotit ${slot}, ose RPC-ja gënjen`);
       } catch (e) {
+        data = { status: "unavailable" };
+        dataReport = { checked: false, matches: false, rpcSlot: null, bytes: null };
         warnings.push(`të dhënat s'u krahasuan: ${e.message}`);
       }
     }
@@ -196,7 +217,7 @@ export class ZiljaClient {
       request: { pubkey, slot: reqSlot },
       endpoints: this.endpoints.length,
       quorumEnabled: this.quorum,
-      rootOverride: this.rootOverride != null,
+      anchor: this.anchor,
       primary: r && typeof r === "object" ? { pubkey: r.pubkey, slot: r.slot, root: rootHex, complete: r.complete === true, verdict } : null,
       others: otherAnswers,
       quorum,
@@ -205,7 +226,7 @@ export class ZiljaClient {
       highestSeen: this.highestSeen,
       data,
     });
-    if (d.ok && reqSlot == null) this.highestSeen = Math.max(this.highestSeen ?? 0, r.slot);
+    if (d.raiseFloor != null) this.highestSeen = Math.max(this.highestSeen ?? 0, d.raiseFloor);
     if (d.trust === "single" && this.endpoints.length === 1 && this.rootOverride == null) {
       warnings.push("vetëm një zile: root-i i besohet asaj; shto zile të tjera ose quorum për më shumë besim");
     }
