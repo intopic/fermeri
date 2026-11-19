@@ -155,3 +155,14 @@ nga cilado zile (`getZiljaRevocations`), dhe klientët (Rust, JS, `zilja-quorum`
 atë çelës. Prova: `revocation_removes_signer_immediately_and_cannot_be_forged`,
 `revocation_stops_signing_and_cannot_be_forged_or_undone`, vektorët `dedicated_signers_revoked`,
 `*_forged_revocation`, `*_revocation_other_chain`, `clients.test.mjs` R5-1, e2e hapi 6.
+
+## R6: përgatitja për testin real të Mainnet-it
+
+| Pika | Çfarë u bë | Prova |
+|---|---|---|
+| Packer gjatë `finish_snapshot` | Blloqet e mbyllura shkruheshin tashmë çdo 4 096 blloqe brenda `write_mtree`. Shtuar: shkrim pas çdo kove, maja e matur (`snapshot_peak_blocks`), dhe zbrazja e listës `taken`, që për Mainnet do të rritej ~0.5 GB | `snapshot_build_keeps_a_bounded_number_of_blocks_in_ram` (maja ≤ 4 097 nga 14 751 blloqe, root = RAM) |
+| `zilja-snapshot-bench` | Lexim streaming i `.tar.zst` (AppendVec i Agave 4.3.2), ndërtim, slote 5k/15k/30k, dëftesa të verifikuara, CSV + grafikë (`scripts/plot-bench.py`) | testet sintetike (root = RAM, rekorde të prishura → gabim); e2e: root-i i bench-it = root-i i plugin-it për të njëjtin snapshot |
+| RocksDB | U hoq krejt (`rocks.rs`, feature, varësitë, testet, CI, e2e `disk=1`). `db_path` hap gjithmonë pages; `"rocksdb"` dhe `block_cache_mb` refuzohen; dosja e vjetër RocksDB s'hapet dhe s'preket | `rocksdb_directory_is_not_opened_as_a_new_pages_install`, `tree_engine_is_validated`, e2e hapi 0 |
+| Aggregator | Maja s'zvarritet nga slote pa firma; `saturating_add`; `fetched: Option<Instant>`; revokimet verifikohen me `--genesis`, pa dyfishe, ≤ 10 000 | `tip_does_not_creep_overflow_is_safe_and_revocations_are_verified` |
+| SDK | `getMultipleAccounts` në copa ≤ 100; `bytesToBase64` pa spread; `getBalance` me kufi 2^53; `[]` → `[]`; > 256 llogari ndahen | `connection.test.mjs` |
+| RPC | `getMultipleAccountProofs` refuzon > 256 para dekodimit | `multiple_account_proofs_match_single_proofs_and_contract` |

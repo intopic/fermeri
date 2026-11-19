@@ -15,7 +15,7 @@
 |---|---|---|
 | Shkruesi pranë plakut | Geyser plugin | `crates/zilja-plugin` |
 | Vula e fshatit (zilja) | Root-i i pemës Merkle | `crates/zilja-tree` |
-| Tavolina dhe rafti | Pema në disk (RocksDB) | `crates/zilja-store` |
+| Tavolina dhe rafti | Pema në disk (skedar faqesh 4 KB, pa bazë të dhënash) | `crates/zilja-store` |
 | Regjistri i radhës së sloteve | Ndjekja e bankave, fork-eve, Rooted | `crates/zilja-node` (`tracker`) |
 | Dëftesa e hambarit | `getAccountProof` | `crates/zilja-node` (`rpc`) |
 | Banori me telefon | Verifikuesi i lehtë | `crates/zilja-verifier`, `crates/zilja-wasm`, `web/` |
@@ -47,7 +47,7 @@ node web/check.mjs http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899 --min-tr
 
 # Pema në disk në vend të RAM-it: shto te zilja.json
 #   "db_path": "/var/lib/zilja/db", "tree_engine": "pages", "genesis_path": "<ledger>/genesis.bin",
-#   "history_slots": 32, "cache_depth": 20       (release-i: vetëm "pages", pa RocksDB/libclang)
+#   "history_slots": 32, "cache_depth": 20       (motori i vetëm: pages; RocksDB u hoq)
 ./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> --min-trust single --slot <SLOT>   # dëftesë historike
 
 # 4. A e kanë firmosur pleqtë? Shto te zilja.json:
@@ -79,7 +79,7 @@ scripts/e2e-test-validator.sh /rruga/te/solana-release/bin
 | 6. Korrja | ✅ raporti dhe drafti SIMD |
 | SDK për kuletat | ✅ `zilja-verify` (npm, pa varësi): dëftesa + krahasim zilesh + kuorum + krahasim të dhënash · ⏳ e pa publikuar në npm |
 | Light client me checkpoint | ⏳ e shtyrë (dega lokale `pika-3-light-client`) |
-| Pema në disk | ✅ RocksDB me faqe 4-nivelëshe, atomike, rinisje pa snapshot, 32 slote histori, mbrojtje nga zinxhiri i gabuar · ⚠️ ~315 ms/slot me 10M llogari në 2 bërthama |
+| Pema në disk | ✅ skedar faqesh 4 KB (pages), atomik, rinisje pa snapshot, 32 slote histori, mbrojtje nga zinxhiri i gabuar · ⚠️ ~275 ms/slot me 5M llogari në 2 bërthama; numrat e Mainnet-it: `zilja-snapshot-bench` |
 
 | Auditimi (15 nëntor 2026) | ✅ v0.2.0: të gjitha gjetjet (2 kritike, 3 të larta, 8 mesatare, 9 të ulëta, 6 info) të rregulluara dhe të testuara: [`docs/AUDIT-FIXES.md`](docs/AUDIT-FIXES.md) · ⏳ ri-auditimi |
 

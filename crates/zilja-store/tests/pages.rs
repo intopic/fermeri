@@ -107,34 +107,6 @@ fn pages_equal_memory_with_history() {
 }
 
 #[test]
-#[cfg(feature = "rocksdb")]
-fn pages_match_rocksdb_tree_exactly() {
-    // I njëjti varg slotesh në të dy motorët: root-e dhe dëftesa identike.
-    let dir_a = tempfile::tempdir().unwrap();
-    let dir_b = tempfile::tempdir().unwrap();
-    let mut a = PageTree::open(dir_a.path(), opts(4, 8)).unwrap();
-    let mut b =
-        zilja_store::DiskTree::open_opts(dir_b.path(), zilja_store::StoreOptions { history: 4, cache_depth: 8, ..Default::default() })
-            .unwrap();
-    let mut rng = StdRng::seed_from_u64(5);
-    let mut keys = Vec::new();
-    let snap: Vec<Update> = random_batch(&mut rng, &mut keys, 5000).into_iter().filter(|(_, m)| m.is_some()).collect();
-    for t in [&mut a as &mut dyn StateTree, &mut b] {
-        t.stage_snapshot(1, snap.clone()).unwrap();
-        t.finish_snapshot(1, true).unwrap();
-    }
-    for slot in 2..40 {
-        let batch = random_batch(&mut rng, &mut keys, 400);
-        let ra = a.apply_slot(slot, batch.clone(), None).unwrap();
-        let rb = b.apply_slot(slot, batch, None).unwrap();
-        assert_eq!(ra, rb);
-        for k in keys.iter().step_by(97) {
-            assert_eq!(a.prove_at(k, None).unwrap(), b.prove_at(k, None).unwrap());
-        }
-    }
-}
-
-#[test]
 fn reopen_replays_log_and_checkpoint() {
     for ckpt in [1u64, 5, 1000] {
         let dir = tempfile::tempdir().unwrap();
@@ -594,13 +566,13 @@ fn clustered_body() {
     t.verify_integrity().unwrap();
 }
 
-/// 12 farë të ndryshme: PageTree, DiskTree dhe pema në RAM japin të njëjtat root-e, dëftesa
-/// (edhe historike) dhe numra, me snapshot-e të rinj në mes dhe fshirje të gjithçkaje.
+/// 12 farë të ndryshme: PageTree dhe pema në RAM japin të njëjtat root-e, dëftesa (edhe historike,
+/// të verifikuara) dhe numra, me snapshot-e të rinj në mes dhe fshirje të gjithçkaje. (Deri te R6
+/// krahasohej edhe me motorin RocksDB, që u hoq.)
 #[test]
-#[cfg(feature = "rocksdb")]
-fn three_way_differential_many_seeds() {
+fn differential_many_seeds() {
     for seed in 0..12u64 {
-        let (da, db) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let da = tempfile::tempdir().unwrap();
         let mut rng = StdRng::seed_from_u64(500 + seed);
         let h = [0u64, 2, 8][seed as usize % 3];
         let cd = [0u16, 4, 8, 12][seed as usize % 4];
@@ -608,9 +580,6 @@ fn three_way_differential_many_seeds() {
         o.ckpt_every = rng.gen_range(1..30);
         o.reuse_slack = seed % 3;
         let mut a = PageTree::open(da.path(), o).unwrap();
-        let mut b =
-            zilja_store::DiskTree::open_opts(db.path(), zilja_store::StoreOptions { history: h, cache_depth: cd, ..Default::default() })
-                .unwrap();
         let mut keys = Vec::new();
         let mut mem = Tree::new();
         let mut past = BTreeMap::new();
@@ -621,39 +590,31 @@ fn three_way_differential_many_seeds() {
                 // Snapshot i ri: gjendja e vjetër hidhet.
                 let n = rng.gen_range(0..2000);
                 let snap: Vec<Update> = random_batch(&mut rng, &mut keys, n).into_iter().filter(|(_, m)| m.is_some()).collect();
-                for t in [&mut a as &mut dyn StateTree, &mut b] {
-                    t.stage_snapshot(slot, snap.clone()).unwrap();
-                    t.finish_snapshot(slot, true).unwrap();
-                }
+                a.stage_snapshot(slot, snap.clone()).unwrap();
+                a.finish_snapshot(slot, true).unwrap();
                 mem = Tree::from_accounts(snap);
                 past.clear();
             } else if round % 23 == 0 {
                 // Fshi gjithçka.
                 let all: Vec<Update> = keys.iter().map(|k| (*k, None)).collect();
                 a.apply_slot(slot, all.clone(), None).unwrap();
-                b.apply_slot(slot, all.clone(), None).unwrap();
                 mem.apply_batch(all);
                 assert_eq!(a.root(), EMPTY);
             } else {
                 let n = if rng.gen_bool(0.1) { rng.gen_range(600..3000) } else { rng.gen_range(0..200) };
                 let batch = random_batch(&mut rng, &mut keys, n);
                 a.apply_slot(slot, batch.clone(), None).unwrap();
-                b.apply_slot(slot, batch.clone(), None).unwrap();
                 mem.apply_batch(batch);
             }
             past.insert(slot, mem.clone());
             assert_eq!(a.root(), mem.root(), "seed {seed} round {round}");
-            assert_eq!(b.root(), mem.root(), "seed {seed} round {round}");
             assert_eq!(a.len(), mem.len());
             let (lo, hi) = a.provable_range().unwrap();
-            assert_eq!(Some((lo, hi)), b.provable_range(), "seed {seed}: kujtesa ndryshon");
             for _ in 0..10 {
                 let k = if keys.is_empty() || rng.gen_bool(0.2) { rng.gen() } else { keys[rng.gen_range(0..keys.len())] };
                 let v = rng.gen_range(lo..=hi);
-                let pa = a.prove_at(&k, Some(v)).unwrap();
-                assert_eq!(pa, b.prove_at(&k, Some(v)).unwrap(), "seed {seed}: dëftesa ndryshon");
                 let (_, want) = past.range(..=v).next_back().unwrap();
-                assert_eq!(pa.1, want.root());
+                check_proof(&a, want, &k, Some(v));
             }
         }
         a.verify_integrity().unwrap();
@@ -811,4 +772,33 @@ fn parallel_page_build_is_byte_identical() {
     let many = run(4);
     assert!(one.0 == many.0, "pages.dat ndryshon sipas numrit të fijeve");
     assert!(one.1 == many.1, "meta.log ndryshon sipas numrit të fijeve");
+}
+
+/// Ndërtimi nga snapshot-i mban në RAM një numër të kufizuar blloqesh, pavarësisht madhësisë së
+/// pemës (Mainnet: ~70M blloqe), dhe pema del e njëjtë me atë në RAM.
+#[test]
+fn snapshot_build_keeps_a_bounded_number_of_blocks_in_ram() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rng = StdRng::seed_from_u64(1717);
+    let n = 250_000;
+    let accounts: Vec<Update> = (0..n).map(|_| (rng.gen(), Some(meta(&mut rng)))).collect();
+    let mut t = PageTree::open(dir.path(), opts(4, 20)).unwrap();
+    for chunk in accounts.chunks(50_000) {
+        t.stage_snapshot(1, chunk.to_vec()).unwrap();
+    }
+    let root = t.finish_snapshot(1, true).unwrap();
+    assert_eq!(root, Tree::from_accounts(accounts.clone()).root());
+    let blocks = t.page_stats().blocks as usize;
+    let peak = t.snapshot_peak_blocks();
+    assert!(blocks > 3 * zilja_store::SNAPSHOT_FLUSH_BLOCKS, "pema duhet të jetë shumë më e madhe se kufiri ({blocks} blloqe)");
+    assert!(peak <= zilja_store::SNAPSHOT_FLUSH_BLOCKS + 1, "{peak} blloqe në RAM njëherësh (nga {blocks})");
+    t.verify_integrity().unwrap();
+    // Pas rihapjes: e njëjta pemë, dëftesat e sakta.
+    drop(t);
+    let t = PageTree::open(dir.path(), opts(4, 20)).unwrap();
+    assert_eq!(t.root(), root);
+    let mem = Tree::from_accounts(accounts.clone());
+    for (k, _) in accounts.iter().step_by(997) {
+        check_proof(&t, &mem, k, None);
+    }
 }

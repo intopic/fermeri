@@ -40,6 +40,8 @@ const KIDS: usize = 1 << PAGE_H;
 const GC_LIVE_MAX: u16 = (BLOCK * 6 / 10) as u16;
 /// Kovat e snapshot-it: 2^8, sipas bajtit të parë të çelësit (thellësia 8 = kufi faqeje).
 const BUCKET_BITS: u16 = 8;
+/// Ndërtimi nga snapshot-i mban në RAM më së shumti kaq blloqe 4 KB (~16 MB) para se t'i shkruajë.
+pub const SNAPSHOT_FLUSH_BLOCKS: usize = 4096;
 /// Rekordi i staging-ut: çelësi ‖ sloti ‖ radha ‖ flamuri ‖ meta.
 const STAGE_REC: usize = 32 + 8 + 8 + 1 + META_LEN;
 const LOG_MAGIC: &[u8; 4] = b"ZLR3";
@@ -65,7 +67,7 @@ fn pid_len(id: PageId) -> usize {
 
 // ---------------------------------------------------------------- faqja në skedar
 
-/// Faqja: rruga e rrënjës, nyjet (si te `DiskTree`) dhe numrat e faqeve fëmijë në thellësinë
+/// Faqja: rruga e rrënjës, nyjet dhe numrat e faqeve fëmijë në thellësinë
 /// `rrënja + 4`. Fëmija `j` është nënpema me bit-ët `rrënja..rrënja+4` = `j`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct FPage {
@@ -632,11 +634,13 @@ struct Packer {
     /// Blloqet e marra nga alokuesi, sipas radhës (për rekordin dhe për kthimin pas një gabimi).
     taken: Vec<u64>,
     next0: u64,
+    /// Sa blloqe u mbajtën njëherësh në RAM (matje: ndërtimi nga snapshot-i duhet të mbetet i kufizuar).
+    peak: usize,
 }
 
 impl Packer {
     fn new(a: &Alloc) -> Self {
-        Packer { blocks: Vec::new(), taken: Vec::new(), next0: a.next }
+        Packer { blocks: Vec::new(), taken: Vec::new(), next0: a.next, peak: 0 }
     }
 
     fn place(&mut self, a: &Mutex<Alloc>, bytes: &[u8]) -> PageId {
@@ -646,6 +650,7 @@ impl Packer {
             self.taken.push(b);
             self.blocks.push((b, Vec::with_capacity(BLOCK)));
         }
+        self.peak = self.peak.max(self.blocks.len());
         let (b, buf) = self.blocks.last_mut().unwrap();
         let off = buf.len();
         buf.extend_from_slice(bytes);
@@ -807,6 +812,8 @@ pub struct PageTree {
     alloc: Mutex<Alloc>,
     /// Faqet e sipërme të versionit të fundit, sipas numrit.
     pinned: HashMap<PageId, Arc<FPage>>,
+    /// Maja e blloqeve në RAM gjatë ndërtimit të fundit nga snapshot-i (matje, `snapshot_peak_blocks`).
+    snapshot_peak_blocks: usize,
     /// Faqet e lexuara për slotin që po zbatohet, sipas rrugës së rrënjës.
     work: RwLock<HashMap<PKey, WorkPage>>,
     records_since_ckpt: u64,
@@ -887,6 +894,7 @@ impl PageTree {
             cache_since: 0,
             alloc: Mutex::new(Alloc::default()),
             pinned: HashMap::default(),
+            snapshot_peak_blocks: 0,
             work: RwLock::new(HashMap::default()),
             records_since_ckpt: 0,
             rec_seq: 0,
@@ -921,7 +929,7 @@ impl PageTree {
                 t.clear()?;
             }
             Some(st) => {
-                // Thellësia e cache-së është e diskut, jo e opsioneve (si te `DiskTree`).
+                // Thellësia e cache-së është e diskut, jo e opsioneve.
                 t.o.cache_depth = st.cache_depth;
                 // P-02: faqe që s'përputhen me checkpoint-in/log-un = dëmtim. Asgjë s'fshihet.
                 t.load_pinned().map_err(|e| corrupt(&t.dir, &format!("faqet nuk përputhen me gjendjen e ruajtur: {e}")))?;
@@ -1062,6 +1070,12 @@ impl PageTree {
     }
     pub fn cached_pages(&self) -> usize {
         self.pinned.len()
+    }
+
+    /// Sa blloqe 4 KB u mbajtën njëherësh në RAM gjatë ndërtimit të fundit nga snapshot-i
+    /// (≤ `SNAPSHOT_FLUSH_BLOCKS` + 1, pavarësisht madhësisë së pemës).
+    pub fn snapshot_peak_blocks(&self) -> usize {
+        self.snapshot_peak_blocks
     }
 
     pub fn page_stats(&self) -> PageStats {
@@ -1407,20 +1421,36 @@ impl PageTree {
         let mut p = pk.lock().unwrap();
         let id = p.place(&self.alloc, &bytes);
         // Blloqet e mbushura shkruhen herë pas here, që RAM-i të mos rritet me snapshot-in.
-        if p.blocks.len() > 4096 {
-            let keep = p.blocks.pop().unwrap();
-            let full = std::mem::take(&mut p.blocks);
-            {
-                let mut a = self.alloc.lock().unwrap();
-                for (b, buf) in &full {
-                    a.set_live(*b, buf.len() as u16);
-                }
-            }
-            p.blocks.push(keep);
+        if p.blocks.len() > SNAPSHOT_FLUSH_BLOCKS {
             drop(p);
-            self.write_blocks(&full)?;
+            self.flush_full_blocks(pk)?;
         }
         Ok(id)
+    }
+
+    /// Ndërtimi nga snapshot-i: shkruan në disk të gjitha blloqet e mbyllura të `pk` (mbetet vetëm i
+    /// fundit, që mund të mos jetë plot), shënon bajtet e gjalla te alokuesi dhe i liron nga RAM-i.
+    /// Edhe lista `taken` zbrazet: në këtë rrugë s'ka kthim mbrapsht blloqesh (një gabim e rindërton
+    /// gjithë skedarin), dhe për Mainnet ajo do të rritej me ~8 B për çdo bllok (~0.5 GB).
+    fn flush_full_blocks(&self, pk: &Mutex<Packer>) -> Result<(), String> {
+        let full = {
+            let mut p = pk.lock().unwrap();
+            if p.blocks.len() <= 1 {
+                return Ok(());
+            }
+            let keep = p.blocks.pop().unwrap();
+            let full = std::mem::take(&mut p.blocks);
+            p.blocks.push(keep);
+            p.taken.clear();
+            full
+        };
+        {
+            let mut a = self.alloc.lock().unwrap();
+            for (b, buf) in &full {
+                a.set_live(*b, buf.len() as u16);
+            }
+        }
+        self.write_blocks(&full)
     }
 
     /// A05: shënon që po ndërtohet nga snapshot-i (para çdo hapi shkatërrues).
@@ -1790,6 +1820,8 @@ impl StateTree for PageTree {
             let (sub, n) = self.build_bucket(b, &pk).map_err(|e| format!("ndërtimi nga snapshot-i dështoi: {e}"))?;
             buckets.push(sub);
             len += n;
+            // Pas çdo kove: blloqet e mbyllura në disk, që RAM-i i Packer-it të mos varet nga madhësia e pemës.
+            self.flush_full_blocks(&pk)?;
         }
         fn top(depth: u16, v: &mut [Option<Box<MNode>>]) -> Option<Box<MNode>> {
             if depth == BUCKET_BITS {
@@ -1811,6 +1843,7 @@ impl StateTree for PageTree {
             pk.live_list(a);
         }
         self.write_blocks(&pk.blocks)?;
+        self.snapshot_peak_blocks = pk.peak;
         let st = State { version: slot, root: mref(&root), len, complete, base: slot, cache_depth: self.o.cache_depth, fingerprint: None };
         self.ring.clear();
         let delay = self.o.history;

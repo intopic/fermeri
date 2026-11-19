@@ -181,6 +181,10 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
                 Ok(a) => a,
                 Err(e) => return err(id, -32602, &e),
             };
+            // Kufiri para çdo pune (dekodimi i 10k pubkey-ve s'bëhet për t'u refuzuar pastaj).
+            if list.is_empty() || list.len() > zilja_verifier::multi::MAX_MULTI_KEYS {
+                return err(id, -32602, &format!("duhen 1..={} pubkey", zilja_verifier::multi::MAX_MULTI_KEYS));
+            }
             let mut pks = Vec::with_capacity(list.len());
             for p in list {
                 match p.as_str().ok_or_else(|| "pubkey duhet tekst base58".to_string()).and_then(parse_pubkey) {

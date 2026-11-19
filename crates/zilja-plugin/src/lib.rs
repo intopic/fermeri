@@ -72,7 +72,8 @@ pub struct Config {
     /// Pema në disk. Pa këtë, pema mbahet në RAM.
     #[serde(default)]
     pub db_path: Option<PathBuf>,
-    /// Motori i diskut: `"rocksdb"` (parazgjedhja) ose `"pages"` (skedar blloqesh, pa bazë të dhënash).
+    /// Motori i diskut: vetëm `"pages"` (skedar blloqesh 4 KB). Opsional: me `db_path` motori është
+    /// gjithmonë pages. RocksDB u hoq; `"rocksdb"` refuzohet me udhëzim.
     #[serde(default)]
     pub tree_engine: Option<String>,
     /// Sa slote pas jepen dëftesa (vetëm me `db_path`). Parazgjedhja: 32.
@@ -82,7 +83,8 @@ pub struct Config {
     /// Më shumë = më shpejt dhe më shumë RAM: ~2^thellësia nyje. Parazgjedhja: 20.
     #[serde(default)]
     pub cache_depth: Option<u16>,
-    /// Cache-ja e blloqeve të RocksDB në MB. Parazgjedhja: 512.
+    /// Opsion i motorit RocksDB që u hoq. Mbahet vetëm që një konfigurim i vjetër të refuzohet me
+    /// mesazh të qartë, jo të injorohet në heshtje.
     #[serde(default)]
     pub block_cache_mb: Option<usize>,
     /// I-01: fsync i diskut çdo N slote (0 = kurrë; WAL-i mbetet). Parazgjedhja: 0.
@@ -194,37 +196,27 @@ impl Config {
         if self.history_slots.is_some_and(|h| h > 100_000) {
             return Err("history_slots shumë i madh (> 100000)".into());
         }
-        if self.block_cache_mb.is_some_and(|m| m == 0 || m > 1 << 20) {
-            return Err("block_cache_mb duhet në (0, 1048576]".into());
+        // R6: RocksDB u hoq. `db_path` hap gjithmonë PageTree; një dosje e vjetër RocksDB refuzohet nga
+        // vetë PageTree (skedarët `CURRENT`, `*.sst`), pa u prekur.
+        if self.block_cache_mb.is_some() {
+            return Err("block_cache_mb ishte opsion i RocksDB, që u hoq: hiqe nga konfigurimi (motori është pages)".into());
         }
-        // A21: release-i mbështet vetëm "pages". Një konfigurim i vjetër me `db_path` pa `tree_engine`
-        // (parazgjedhja e dikurshme ishte RocksDB) refuzohet, që motori të mos ndërrohet në heshtje.
         match self.tree_engine.as_deref() {
-            Some("pages") => {}
-            Some("rocksdb") if cfg!(feature = "legacy-rocksdb") => {}
+            None | Some("pages") => {}
             Some("rocksdb") => {
-                return Err("tree_engine \"rocksdb\" s'është në këtë build (A21: release-i përdor vetëm \"pages\"); shih docs/OPERIMI.md për kalimin".into())
+                return Err("tree_engine \"rocksdb\" s'ekziston më: motori i vetëm është \"pages\" (shih docs/OPERIMI.md për kalimin)".into())
             }
             Some(e) => return Err(format!("tree_engine i panjohur: {e} (vetëm \"pages\")")),
-            None if self.db_path.is_some() => {
-                return Err("db_path pa tree_engine: release-i mbështet vetëm tree_engine = \"pages\" (parazgjedhja e vjetër RocksDB s'ekziston më; A21)".into())
-            }
-            None => {}
         }
         if self.tree_engine.is_some() && self.db_path.is_none() {
             return Err("tree_engine kërkon db_path".into());
         }
-        if self.tree_engine.as_deref() == Some("pages") && self.block_cache_mb.is_some() {
-            return Err("block_cache_mb është opsion i motorit të vjetër RocksDB; s'vlen për \"pages\" (A21)".into());
-        }
         // P-03: motori me faqe mbështet vetëm fsync në çdo slot në këtë release.
-        if self.tree_engine.as_deref() == Some("pages") && self.sync_every_slots.is_some_and(|n| n != 1) {
-            return Err("tree_engine \"pages\" kërkon sync_every_slots = 1 (ose lëre pa vendosur)".into());
+        if self.db_path.is_some() && self.sync_every_slots.is_some_and(|n| n != 1) {
+            return Err("pema në disk (pages) kërkon sync_every_slots = 1 (ose lëre pa vendosur)".into());
         }
-        if self.history_slots.is_some() || self.cache_depth.is_some() || self.block_cache_mb.is_some() {
-            if self.db_path.is_none() {
-                return Err("history_slots/cache_depth/block_cache_mb kërkojnë db_path".into());
-            }
+        if (self.history_slots.is_some() || self.cache_depth.is_some() || self.sync_every_slots.is_some()) && self.db_path.is_none() {
+            return Err("history_slots/cache_depth/sync_every_slots kërkojnë db_path".into());
         }
         Ok(())
     }
@@ -360,10 +352,10 @@ impl GeyserPlugin for ZiljaPlugin {
             None => None,
         };
         let tree: Option<Box<dyn zilja_tree::StateTree>> = match &cfg.db_path {
-            Some(p) if cfg.tree_engine.as_deref() == Some("pages") => {
+            Some(p) => {
                 let d = zilja_store::PageOptions::default();
                 // P-05: pema lidhet me genesis-in e rrjetit (MANIFEST).
-                let genesis = config_genesis(&cfg).map_err(custom)?.ok_or_else(|| custom("tree_engine \"pages\" kërkon genesis_path (ose genesis_hash)"))?;
+                let genesis = config_genesis(&cfg).map_err(custom)?.ok_or_else(|| custom("db_path kërkon genesis_path (ose genesis_hash)"))?;
                 let o = zilja_store::PageOptions {
                     genesis: Some(genesis),
                     history: cfg.history_slots.unwrap_or(d.history),
@@ -374,20 +366,6 @@ impl GeyserPlugin for ZiljaPlugin {
                 };
                 Some(Box::new(zilja_store::PageTree::open(p, o).map_err(custom)?))
             }
-            #[cfg(feature = "legacy-rocksdb")]
-            Some(p) => {
-                let d = zilja_store::StoreOptions::default();
-                let o = zilja_store::StoreOptions {
-                    history: cfg.history_slots.unwrap_or(d.history),
-                    cache_depth: cfg.cache_depth.unwrap_or(d.cache_depth),
-                    block_cache_mb: cfg.block_cache_mb.unwrap_or(d.block_cache_mb),
-                    durable: true,
-                    sync_every: cfg.sync_every_slots.unwrap_or(0),
-                };
-                Some(Box::new(zilja_store::DiskTree::open_opts(p, o).map_err(custom)?))
-            }
-            #[cfg(not(feature = "legacy-rocksdb"))]
-            Some(_) => unreachable!("validate() pranon db_path vetëm me tree_engine \"pages\""),
             None => None,
         };
         let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree, mid_run_load: is_reload, max_root_age_secs: Some(cfg.max_root_age_secs), limits: Some(zilja_node::tracker::Limits { max_pending_banks: cfg.max_pending_banks, max_pending_updates: cfg.max_pending_updates }) }).map_err(custom)?;
@@ -591,15 +569,16 @@ mod tests {
     fn tree_engine_is_validated() {
         let cfg = |extra: &str| serde_json::from_str::<Config>(&format!(r#"{{"libpath": "x"{extra}}}"#)).unwrap();
         assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages""#).validate().is_ok());
-        // A21: RocksDB vetëm me feature-in legacy-rocksdb; db_path pa tree_engine (parazgjedhja e
-        // vjetër) refuzohet gjithmonë; opsionet e RocksDB s'pranohen me pages.
-        assert_eq!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "rocksdb""#).validate().is_ok(), cfg!(feature = "legacy-rocksdb"));
-        assert!(cfg(r#", "db_path": "/tmp/z""#).validate().is_err(), "db_path pa tree_engine");
-        assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages", "block_cache_mb": 64"#).validate().is_err(), "block_cache_mb me pages");
+        // R6: RocksDB u hoq: db_path pa tree_engine = pages; "rocksdb" dhe block_cache_mb refuzohen me mesazh.
+        assert!(cfg(r#", "db_path": "/tmp/z""#).validate().is_ok(), "db_path pa tree_engine = pages");
+        let e = cfg(r#", "db_path": "/tmp/z", "tree_engine": "rocksdb""#).validate().unwrap_err();
+        assert!(e.contains("pages"), "{e}");
+        assert!(cfg(r#", "db_path": "/tmp/z", "block_cache_mb": 64"#).validate().is_err(), "block_cache_mb");
         assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "lmdb""#).validate().is_err());
         assert!(cfg(r#", "tree_engine": "pages""#).validate().is_err(), "pa db_path");
-        assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages", "sync_every_slots": 1"#).validate().is_ok());
-        assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages", "sync_every_slots": 0"#).validate().is_err(), "P-03");
+        assert!(cfg(r#", "cache_depth": 20"#).validate().is_err(), "cache_depth pa db_path");
+        assert!(cfg(r#", "db_path": "/tmp/z", "sync_every_slots": 1"#).validate().is_ok());
+        assert!(cfg(r#", "db_path": "/tmp/z", "sync_every_slots": 0"#).validate().is_err(), "P-03");
         assert!(cfg(r#", "db_path": "/tmp/z", "tree_engine": "pages", "sync_every_slots": 4"#).validate().is_err(), "P-03");
     }
 }

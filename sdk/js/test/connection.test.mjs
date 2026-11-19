@@ -1,7 +1,7 @@
 // R5-4: VerifiableConnection (web3.js) dhe createVerifiedRpc (kit) kthejnë vetëm llogari të
 // verifikuara: dëftesa + root-i (2 zile dakord) + bajtet e RPC-së = dataHash i vulosur.
 import { readFileSync } from "node:fs";
-import { VerifiableConnection, createVerifiedRpc, VerificationError, parseTokenAccount } from "../src/index.js";
+import { VerifiableConnection, createVerifiedRpc, VerificationError, parseTokenAccount, bytesToBase64 } from "../src/index.js";
 
 const fx = JSON.parse(readFileSync(new URL("./vectors.json", import.meta.url), "utf8")).connection;
 let fail = 0;
@@ -13,6 +13,7 @@ const expect = (name, cond, extra = "") => {
 };
 
 /** Dy zile (dëftesa të vërteta nga fixture) + një RPC Solana me bajtet; `tamper` e prish RPC-në. */
+const calls = [];
 function world({ tamper = null, ziljaRoot = fx.root } = {}) {
   const ziles = ["http://z1", "http://z2"];
   const data = new Map(fx.data.map((d) => [d.pubkey, d]));
@@ -34,7 +35,10 @@ function world({ tamper = null, ziljaRoot = fx.root } = {}) {
         result = m ? { slot: 100, root: ziljaRoot, complete: true, accounts: m.accounts, proof: m.proof } : undefined;
       } else if (method === "getZiljaRoot") result = { slot: 100, root: fx.root, complete: true };
     } else if (method === "getAccountInfo") result = { context: { slot: 100 }, value: info(params[0]) };
-    else if (method === "getMultipleAccounts") result = { context: { slot: 100 }, value: params[0].map(info) };
+    else if (method === "getMultipleAccounts") {
+      calls.push(params[0].length);
+      result = params[0].length > 100 ? undefined : { context: { slot: 100 }, value: params[0].map(info) };
+    }
     else if (method === "getSlot") result = 100;
     if (result === undefined) return { json: async () => ({ error: { message: `s'ka ${method} ${JSON.stringify(params)}` } }) };
     return { json: async () => ({ result }) };
@@ -99,6 +103,25 @@ class FakePublicKey {
   expect("kit getMultipleAccounts", m.value.length === 2 && m.value[1].space === 82n);
   const b = await rpc.getBalance(fx.missing).send();
   expect("kit getBalance i llogarisë që s'ekziston → 0n", b.value === 0n);
+}
+
+// R5 (rishikimi): copa ≤ 100 te getMultipleAccounts; lista bosh; base64 pa Buffer dhe për të dhëna të mëdha.
+{
+  const conn = new VerifiableConnection({ zilja: world() });
+  calls.length = 0;
+  const list = Array.from({ length: 150 }, (_, i) => (i % 2 ? fx.ata : fx.wallet));
+  const many = await conn.getMultipleAccountsInfo(list);
+  expect("150 llogari → getMultipleAccounts në copa ≤ 100", many.length === 150 && many.every(Boolean) && calls.length === 2 && calls.every((n) => n <= 100), JSON.stringify(calls));
+  expect("getMultipleAccountsInfo([]) → []", Array.isArray(await conn.getMultipleAccountsInfo([])) && (await conn.getMultipleAccountsInfo([])).length === 0);
+  const kitEmpty = await createVerifiedRpc(world()).getMultipleAccounts([]).send();
+  expect("kit getMultipleAccounts([]) → []", kitEmpty.value.length === 0);
+  const big = new Uint8Array(3_000_000).map((_, i) => i * 7);
+  const withBuffer = bytesToBase64(big);
+  const saved = globalThis.Buffer;
+  globalThis.Buffer = undefined;
+  let noBuffer;
+  try { noBuffer = bytesToBase64(big); } finally { globalThis.Buffer = saved; }
+  expect("bytesToBase64 pa Buffer, 3 MB, pa spread", noBuffer === withBuffer);
 }
 
 if (fail) {

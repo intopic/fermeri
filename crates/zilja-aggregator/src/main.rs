@@ -1,8 +1,12 @@
 //! `zilja-aggregator`: shërbim i pabesuar që mbledh firmat e zileve (R5-3).
 //!
 //! ```text
-//! zilja-aggregator --bind 0.0.0.0:7800 [--metrics-bind 127.0.0.1:7801] --zilja http://z1:7799 --zilja http://z2:7799 ...
-//! zilja-aggregator --bind 0.0.0.0:7800 --ziljas-file zilet.txt     # një URL për rresht
+//! zilja-aggregator --genesis <hash base58> --bind 0.0.0.0:7800 [--metrics-bind 127.0.0.1:7801] --zilja http://z1:7799 --zilja http://z2:7799 ...
+//! zilja-aggregator --genesis <hash base58> --bind 0.0.0.0:7800 --ziljas-file zilet.txt     # një URL për rresht
+//! ```
+//!
+//! `--genesis` (p.sh. `$(solana genesis-hash)`): revokimet verifikohen para se të përcillen.
+//! ```text
 //! ```
 //!
 //! Klienti: `new ZiljaClient({ ..., quorum: true, aggregators: ["https://agg.example"] })`. Klienti
@@ -18,6 +22,7 @@ fn main() {
         let mut bind = "127.0.0.1:7800".to_string();
         let mut metrics_bind = None;
         let mut ziljas = Vec::new();
+        let mut genesis = None;
         let mut it = args.iter();
         while let Some(a) = it.next() {
             let mut val = || it.next().cloned().ok_or(format!("{a} kërkon një vlerë"));
@@ -25,6 +30,7 @@ fn main() {
                 "--bind" => bind = val()?,
                 "--metrics-bind" => metrics_bind = Some(val()?),
                 "--zilja" => ziljas.push(val()?),
+                "--genesis" => genesis = Some(zilja_cli::b58_32(&val()?).map_err(|e| format!("--genesis: {e}"))?),
                 "--ziljas-file" => {
                     let p = val()?;
                     let text = std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))?;
@@ -38,7 +44,8 @@ fn main() {
         if ziljas.is_empty() {
             return Err("duhet të paktën një --zilja ose --ziljas-file".into());
         }
-        let agg = Arc::new(Aggregator::new(ziljas, HttpFetch));
+        let genesis = genesis.ok_or("duhet --genesis <hash base58> (revokimet verifikohen me të)")?;
+        let agg = Arc::new(Aggregator::new(ziljas, genesis, HttpFetch));
         let a2 = agg.clone();
         std::thread::spawn(move || loop {
             a2.learn_tip();

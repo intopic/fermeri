@@ -17,20 +17,12 @@ jobs:
       - name: Rust (versioni nga rust-toolchain.toml)
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
-      - name: libclang (për RocksDB)
-        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
       - name: cargo test
         run: cargo test --workspace --all-features
-      - name: cargo test (vetëm faqe, si release-i; pa RocksDB)
-        run: cargo test -p zilja-store -p zilja-node -p zilja-plugin
-      - name: testi i rrymës që ikën (pema në disk)
+      - name: testi i rrymës që ikën (pema në disk, pages)
         run: cargo run -q --release -p zilja-bench --bin zilja-crash-test -- 6
       - name: vrasje gjatë ndërtimit nga snapshot-i (Safer-6)
         run: cargo run -q --release -p zilja-bench --bin zilja-crash-test -- --snapshot 6
-      - name: testi i rrymës që ikën (motori me faqe)
-        run: ZILJA_ENGINE=pages cargo run -q --release -p zilja-bench --bin zilja-crash-test -- 6
-      - name: vrasje gjatë ndërtimit nga snapshot-i (motori me faqe)
-        run: ZILJA_ENGINE=pages cargo run -q --release -p zilja-bench --bin zilja-crash-test -- --snapshot 6
       - name: fuzz diferencial i motorit me faqe (3 min)
         run: cargo run -q --release -p zilja-bench --bin zilja-fuzz -- 180
       - name: vektorët në repo = vektorët që gjeneron Rust
@@ -41,8 +33,6 @@ jobs:
           git diff --exit-code sdk/js/test/wire-vectors.json
           node sdk/js/test/gen-policy-vectors.mjs > sdk/js/test/policy-vectors.json
           git diff --exit-code sdk/js/test/policy-vectors.json
-      - name: testet e auditimit që janë rregulluar (pa --ignored)
-        run: cargo test -p zilja-node -p zilja-store --features zilja-store/rocksdb --test audit_poc
       - name: SDK zilja-verify (npm test + pack)
         working-directory: sdk/js
         run: |
@@ -73,19 +63,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        db: ["0", "1", "pages"]
+        db: ["0", "pages"]
     steps:
       - uses: actions/checkout@v4
       - name: Rust (versioni nga rust-toolchain.toml)
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
-      - name: libclang (vetëm për motorin e vjetër RocksDB, disk=1)
-        if: matrix.db == '1'
-        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
-      - name: build plugin + cli
+      - name: build plugin + cli + aggregator + snapshot-bench
         run: |
-          if [ "${{ matrix.db }}" = "1" ]; then F="--features zilja-plugin/legacy-rocksdb"; fi
-          cargo build --release -p zilja-plugin -p zilja-cli -p zilja-aggregator $F
+          cargo build --release -p zilja-plugin -p zilja-cli -p zilja-aggregator
+          cargo build --release -p zilja-bench --bin zilja-snapshot-bench
       - name: shkarko Agave
         run: |
           curl -sSL -o agave.tar.bz2 "https://github.com/anza-xyz/agave/releases/download/${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
@@ -94,7 +81,7 @@ jobs:
         run: ZILJA_DB=${{ matrix.db }} WORK=$RUNNER_TEMP/e2e scripts/e2e-test-validator.sh "$PWD/solana-release/bin"
 
   release:
-    name: Release pa RocksDB dhe pa libclang (A21, A09)
+    name: Release pa RocksDB dhe pa libclang (A21, A09, R6)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

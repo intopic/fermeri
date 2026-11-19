@@ -83,7 +83,7 @@ m = {
     "cargo": subprocess.run(["cargo", "-V"], capture_output=True, text=True).stdout.strip(),
     "cargo_lock_sha256": sha("Cargo.lock"),
     "agave": {"version": agave, "geyser_plugin_interface": iface},
-    "features": "parazgjedhja (pa legacy-rocksdb): vetëm tree_engine \"pages\"",
+    "features": "parazgjedhja: motori i vetëm pages (RocksDB u hoq, R6)",
     "formats": {
         "pages": {"name": grab("crates/zilja-store/src/pagefile.rs", r'FORMAT_NAME: &str = "([^"]+)"'),
                   "format_version": int(grab("crates/zilja-store/src/pagefile.rs", r"pub const FORMAT_VERSION: u64 = (\d+)"))},
