@@ -417,13 +417,17 @@ fn halt(shared: &Shared, tracker: &mut Tracker, why: String) {
 /// P-10: rruga qendrore e ndalimit kur korrektësia s'garantohet më: punëtori (zinxhir/boshllëk),
 /// RPC-ja (gabim ruajtjeje), rënia e punëtorit. E dukshme te /health, te metrikat dhe te logu.
 /// Pema në disk shënohet e pavlefshme (rindërtohet në nisjen e ardhshme), por nuk fshihet (F-13).
+///
+/// A07: vendimi merret nën kyçin e shkrimit të gjendjes, i njëjti kyç nën të cilin punëtori bën
+/// commit-in, publikimin dhe firmosjen. Kur kjo funksion kthehet, asnjë commit, root, firmë apo
+/// fazë "serving" s'del më, edhe me punë të pranuar në radhë.
 pub fn stop_serving(shared: &Shared, why: String) {
     let m = &shared.metrics;
-    m.halted.store(true, Ordering::Relaxed);
+    let mut st = shared.state.write().unwrap_or_else(|e| e.into_inner());
+    m.halted.store(true, Ordering::SeqCst);
     m.ready.store(0, Ordering::Relaxed);
     m.broken.store(1, Ordering::Relaxed);
-    m.phase.store(PHASE_HALTED, Ordering::Relaxed);
-    let mut st = shared.state.write().unwrap_or_else(|e| e.into_inner());
+    m.phase.store(PHASE_HALTED, Ordering::SeqCst);
     if st.broken.is_none() {
         log::error!("zilja: NDALOI: {why}. Pema u shënua e pavlefshme; rinis validatorin që zilja të rindërtohet nga snapshot-i.");
         st.ready = false;
@@ -442,8 +446,14 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
     let mut staged_total = 0u64;
     for ev in rx.iter() {
         m.events_received.fetch_add(1, Ordering::Relaxed);
+        m.queue_len.store(rx.len() as u64, Ordering::Relaxed);
         if tracker.is_broken() {
             continue; // F-05/Faster-4: asnjë punë pas ndalimit
+        }
+        // A07: ndalim nga jashtë punëtorit (RPC, rënie): edhe tracker-i lokal ndalon.
+        if m.halted.load(Ordering::SeqCst) && !m.queue_overflow.load(Ordering::Relaxed) {
+            tracker.halt();
+            continue;
         }
         if m.queue_overflow.load(Ordering::Relaxed) {
             halt(&shared, &mut tracker, "kanali i ngjarjeve u mbush: pema mbeti pas validatorit".into());
@@ -469,6 +479,11 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
                     let complete = tracker.complete();
                     let res = {
                         let mut st = shared.state.write().unwrap();
+                        if st.broken.is_some() {
+                            // A07: ndaloi ndërkohë; asgjë s'publikohet.
+                            tracker.halt();
+                            break;
+                        }
                         let r = stage_by_slot(&mut *st.tree, accounts).and_then(|_| st.tree.finish_snapshot(slot, complete));
                         r.map(|root| {
                             st.slot = slot;
@@ -476,25 +491,26 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
                             st.complete = complete;
                             sign_root(&mut st, &mut signer, m, slot, root);
                             update_range(&st, m);
-                            (root, st.tree.len())
+                            let len = st.tree.len();
+                            let ms = t0.elapsed().as_millis() as u64;
+                            m.startup_accounts.store(n, Ordering::Relaxed);
+                            m.startup_build_ms.store(ms, Ordering::Relaxed);
+                            m.complete.store(complete as u64, Ordering::Relaxed);
+                            m.accounts.store(len as u64, Ordering::Relaxed);
+                            m.last_rooted_slot.store(slot, Ordering::Relaxed);
+                            m.last_root_unix.store(now_unix(), Ordering::Relaxed);
+                            m.ready.store(1, Ordering::Relaxed);
+                            m.phase.store(PHASE_SERVING, Ordering::Relaxed);
+                            (root, ms)
                         })
                     };
-                    let (root, len) = match res {
+                    let (root, ms) = match res {
                         Ok(x) => x,
                         Err(e) => {
                             halt(&shared, &mut tracker, format!("ndërtimi nga snapshot-i dështoi: {e}"));
                             break;
                         }
                     };
-                    let ms = t0.elapsed().as_millis() as u64;
-                    m.startup_accounts.store(n, Ordering::Relaxed);
-                    m.startup_build_ms.store(ms, Ordering::Relaxed);
-                    m.complete.store(complete as u64, Ordering::Relaxed);
-                    m.accounts.store(len as u64, Ordering::Relaxed);
-                    m.last_rooted_slot.store(slot, Ordering::Relaxed);
-                    m.last_root_unix.store(now_unix(), Ordering::Relaxed);
-                    m.ready.store(1, Ordering::Relaxed);
-                    m.phase.store(PHASE_SERVING, Ordering::Relaxed);
                     m.startup_done.store(true, Ordering::Relaxed);
                     log::info!("zilja: pema fillestare me {n} llogari u ndërtua në {ms} ms, slot {slot}");
                     write_root(&mut log, slot, &root);
@@ -509,15 +525,26 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
                     let prepared = shared.state.read().unwrap().tree.prepare_slot(slot, updates, fingerprint);
                     let res = {
                         let mut st = shared.state.write().unwrap();
+                        if st.broken.is_some() {
+                            // A07: ndalimi u vendos mes përgatitjes dhe commit-it: s'bëhet commit.
+                            tracker.halt();
+                            break;
+                        }
                         prepared.and_then(|p| st.tree.commit_slot(slot, p)).map(|root| {
                             st.slot = slot;
                             st.ready = true;
                             sign_root(&mut st, &mut signer, m, slot, root);
                             update_range(&st, m);
-                            (root, st.tree.len())
+                            // Metrikat e gatishmërisë shkruhen nën të njëjtin kyç: ndalimi s'mbishkruhet.
+                            m.accounts.store(st.tree.len() as u64, Ordering::Relaxed);
+                            m.last_rooted_slot.store(slot, Ordering::Relaxed);
+                            m.last_root_unix.store(now_unix(), Ordering::Relaxed);
+                            m.ready.store(1, Ordering::Relaxed);
+                            m.phase.store(PHASE_SERVING, Ordering::Relaxed);
+                            root
                         })
                     };
-                    let (root, len) = match res {
+                    let root = match res {
                         Ok(x) => x,
                         Err(e) => {
                             halt(&shared, &mut tracker, e);
@@ -531,11 +558,6 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
                     m.last_apply_us.store(us, Ordering::Relaxed);
                     m.max_apply_us.fetch_max(us, Ordering::Relaxed);
                     m.total_apply_us.fetch_add(us, Ordering::Relaxed);
-                    m.accounts.store(len as u64, Ordering::Relaxed);
-                    m.last_rooted_slot.store(slot, Ordering::Relaxed);
-                    m.last_root_unix.store(now_unix(), Ordering::Relaxed);
-                    m.ready.store(1, Ordering::Relaxed);
-                    m.phase.store(PHASE_SERVING, Ordering::Relaxed);
                     write_root(&mut log, slot, &root);
                 }
                 Output::Broken(why) => {
@@ -551,11 +573,14 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
         m.resume_verified.store(tracker.resume_verified() as u64, Ordering::Relaxed);
         // P-08: gjendja nga disku shërbehet vetëm pasi zinxhiri ta konfirmojë.
         if tracker.resume_verified() && m.phase.load(Ordering::Relaxed) == PHASE_RECOVERED {
-            shared.state.write().unwrap().ready = true;
-            m.last_root_unix.store(now_unix(), Ordering::Relaxed);
-            m.ready.store(1, Ordering::Relaxed);
-            m.phase.store(PHASE_SERVING, Ordering::Relaxed);
-            log::info!("zilja: gjendja nga disku u konfirmua nga zinxhiri; po shërben");
+            let mut st = shared.state.write().unwrap();
+            if st.broken.is_none() {
+                st.ready = true;
+                m.last_root_unix.store(now_unix(), Ordering::Relaxed);
+                m.ready.store(1, Ordering::Relaxed);
+                m.phase.store(PHASE_SERVING, Ordering::Relaxed);
+                log::info!("zilja: gjendja nga disku u konfirmua nga zinxhiri; po shërben");
+            }
         }
         m.ambiguous_banks.store(tracker.stats.ambiguous_banks, Ordering::Relaxed);
         m.partial_banks_skipped.store(tracker.stats.partial_banks_skipped, Ordering::Relaxed);

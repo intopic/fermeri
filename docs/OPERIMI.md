@@ -111,6 +111,11 @@ që në nisjen e parë. Rindërtimi bëhet në nisjen tjetër.
 Nëse dosja `db_path` është krijuar nga një version tjetër i Ziles, plugin-i refuzon të
 ngarkohet dhe nuk e fshin. Fshije dosjen me dorë, ose përdor versionin e duhur.
 
+**Ndalimi është i serializuar me commit-in (A07).** `stop_serving`, nga cilido thread që thirret
+(RPC, punëtori, rënia), e merr vendimin nën kyçin e shkrimit të gjendjes. Nën të njëjtin kyç
+bëhen commit-i i slotit, publikimi i root-it, firmosja dhe kalimi në `serving`. Kur ndalimi
+kthehet, puna e pranuar në radhë s'bëhet më commit, s'firmoset dhe s'e rishkruan fazën.
+
 ## Motori i diskut: `tree_engine`
 
 `"tree_engine": "rocksdb"` (parazgjedhja) ose `"pages"`. Të dy japin të njëjtat root-e dhe
