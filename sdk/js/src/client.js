@@ -1,9 +1,10 @@
-// ZiljaClient: një thirrje e vetme për kuletat: verifyAccount(pubkey).
+// ZiljaClient: një thirrje e vetme për kuletat: verifyAccount(pubkey). Vendimi merret nga
+// politika e përbashkët (policy.js), e njëjta me web-in dhe CLI-në (P-11).
 import { verifyAccount, dataMatches, normalizeAccount, b58decode, bytesToHex } from "./verifier.js";
 import { verifyQuorum, stakeTableFromVoteAccounts } from "./attest.js";
+import { decide, configErrors, DEFAULTS, TRUST } from "./policy.js";
 
-/** Nivelet e besimit te root-i, nga më i dobëti te më i forti. */
-export const TRUST = Object.freeze({ single: 0, agreement: 1, quorum: 2 });
+export { TRUST };
 
 function b64(s) {
   const bin = atob(s);
@@ -14,12 +15,17 @@ export class ZiljaClient {
   /**
    * @param {object} o
    * @param {string[]} o.endpoints adresat e zileve (të paktën një; më shumë = më shumë besim)
-   * @param {string} [o.solanaRpc] RPC Solana për të krahasuar të dhënat dhe për tabelën e stake-ut
-   * @param {number} [o.minAgree] sa zile duhet të japin të njëjtin root për nivelin "agreement" (parazgjedhja: 2)
+   * @param {string} [o.solanaRpc] RPC Solana: freskia (sloti i finalizuar), të dhënat, stake-u
+   * @param {number} [o.minAgree] sa zile duhet të japin të njëjtin root për "agreement" (parazgjedhja 2).
+   *   S'ulet kurrë vetë: më pak zile se kaq me minTrust "agreement" = gabim konfigurimi.
    * @param {boolean} [o.quorum] kontrollo edhe firmat e validatorëve (kërkon solanaRpc)
-   * @param {string} [o.genesisHash] hash-i i genesis-it (base58 ose hex) i zinxhirit që pret kuleta;
-   *   pa të, merret nga solanaRpc (dhe i besohet asaj)
-   * @param {"single"|"agreement"|"quorum"} [o.minTrust] nën këtë nivel, `ok` del false (parazgjedhja: "agreement", L-01)
+   * @param {string} [o.genesisHash] genesis-i (base58 ose hex); pa të merret nga solanaRpc
+   * @param {"single"|"agreement"|"quorum"} [o.minTrust] parazgjedhja "agreement" (L-01)
+   * @param {number|null} [o.maxSlotLag] sa slote pas slotit të finalizuar të solanaRpc pranohet
+   *   gjendja si "aktuale" (parazgjedhja 150 kur ka solanaRpc; null = pa kontroll)
+   * @param {number} [o.minSlot] slot minimal i pranuar
+   * @param {string} [o.root] root-i (hex) që përdoruesi e njeh vetë: besimi "user"
+   * @param {boolean} [o.compareData] krahaso të dhënat me solanaRpc (parazgjedhja: po, kur ka solanaRpc)
    * @param {number} [o.timeoutMs] parazgjedhja: 10000
    * @param {typeof fetch} [o.fetch]
    */
@@ -28,14 +34,22 @@ export class ZiljaClient {
     // L-04: e njëjta adresë e dhënë dy herë nuk numërohet si dy zile.
     this.endpoints = [...new Set(o.endpoints.map((e) => String(e).trim().replace(/\/+$/, "")))];
     this.solanaRpc = o.solanaRpc;
-    this.minAgree = o.minAgree ?? 2;
+    this.minAgree = o.minAgree ?? DEFAULTS.minAgree;
     this.quorum = o.quorum ?? false;
     this.genesisHash = o.genesisHash;
-    this.minTrust = o.minTrust ?? "agreement";
+    this.minTrust = o.minTrust ?? DEFAULTS.minTrust;
+    this.maxSlotLag = o.maxSlotLag !== undefined ? o.maxSlotLag : this.solanaRpc ? DEFAULTS.maxSlotLagWithRpc : null;
+    this.minSlot = o.minSlot ?? null;
+    this.rootOverride = o.root != null ? String(o.root).trim().toLowerCase() : null;
+    this.compareData = o.compareData ?? true;
     this.timeoutMs = o.timeoutMs ?? 10_000;
     this.fetch = o.fetch ?? globalThis.fetch.bind(globalThis);
+    // P-11: mbrojtja nga kthimi te një gjendje më e vjetër (për këtë klient).
+    this.highestSeen = null;
     if (this.quorum && !this.solanaRpc) throw new Error("quorum kërkon solanaRpc (për tabelën e stake-ut)");
-    if (!(this.minTrust in TRUST)) throw new Error(`minTrust i panjohur: ${this.minTrust}`);
+    if (this.rootOverride != null && !/^[0-9a-f]{64}$/.test(this.rootOverride)) throw new Error("root duhet 64 shifra hex");
+    const ce = configErrors({ minTrust: this.minTrust, minAgree: this.minAgree, endpoints: this.endpoints.length, quorumEnabled: this.quorum, rootOverride: this.rootOverride != null });
+    if (ce.length) throw new Error(`konfigurim i pavlefshëm: ${ce.join(", ")} (minTrust ${this.minTrust}, minAgree ${this.minAgree}, ${this.endpoints.length} zile)`);
   }
 
   async rpc(url, method, params = []) {
@@ -57,89 +71,53 @@ export class ZiljaClient {
   }
 
   /**
-   * Verifikon një llogari.
+   * Verifikon një llogari. `ok` = dëftesa e vlefshme + besim te root-i ≥ minTrust + freski +
+   * (kur u kontrolluan) të dhëna që përputhen. `checks` i jep secilën veç.
    * @param {string} pubkey base58
    * @param {{slot?: number}} [opts] slot i kaluar (vetëm zile me pemë në disk)
    */
   async verifyAccount(pubkey, opts = {}) {
     const warnings = [];
     const [primary, ...others] = this.endpoints;
-    const params = opts.slot != null ? [pubkey, { slot: opts.slot }] : [pubkey];
-    const r = await this.rpc(primary, "getAccountProof", params);
-    const result = {
-      ok: false,
-      verdict: "invalid",
-      slot: r?.slot,
-      root: r?.root,
-      account: null,
-      trust: "single",
-      agreeing: 1,
-      endpoints: this.endpoints.length,
-      quorum: null,
-      data: null,
-      warnings,
-    };
-    const bad = (why) => {
-      warnings.push(why);
-      result.verdict = "invalid";
-      return result;
-    };
+    const reqSlot = opts.slot ?? null;
+    const r = await this.rpc(primary, "getAccountProof", reqSlot != null ? [pubkey, { slot: reqSlot }] : [pubkey]);
+    const slot = Number.isSafeInteger(r?.slot) ? r.slot : null;
+    const rootHex = this.rootOverride ?? r?.root;
 
-    // 0) Përgjigja duhet të jetë për llogarinë dhe slotin që kërkuam (L-04, L-05).
-    if (!r || typeof r !== "object" || !Number.isSafeInteger(r.slot) || r.slot < 0) return bad(`${primary}: përgjigje pa slot të vlefshëm`);
-    if (r.pubkey !== pubkey) return bad(`${primary}: dëftesa është për një llogari tjetër`);
-    if (opts.slot != null && r.slot > opts.slot) return bad(`${primary}: dëftesa është për slotin ${r.slot}, pas slotit të kërkuar ${opts.slot}`);
-    const slot = r.slot;
-
-    // 1) Dëftesa kundër root-it të zilës së parë. Vlerat kontrollohen rreptë (F-03) dhe
-    //    kthehen ato të kontrolluarat, jo përgjigja e papërpunuar.
+    // 1. Dëftesa. Vlerat kontrollohen rreptë (F-03) dhe kthehen ato të kontrolluarat.
     let account = null;
-    if (r.account != null) {
-      try {
-        account = normalizeAccount(r.account);
-      } catch (e) {
-        return bad(`${primary}: llogari e pavlefshme në përgjigje (${e.message})`);
-      }
+    let verdict = "invalid";
+    try {
+      if (r?.account != null) account = normalizeAccount(r.account);
+      verdict = await verifyAccount(rootHex, pubkey, account, r?.proof);
+    } catch (e) {
+      warnings.push(`${primary}: përgjigje e pavlefshme (${e.message})`);
     }
-    const verdict = await verifyAccount(r.root, pubkey, account, r.proof);
-    result.verdict = verdict;
-    result.account = verdict === "exists" ? account : null;
-    if (verdict === "invalid") return bad(`zilja ${primary} dha një dëftesë që nuk përputhet me root-in e vet`);
-    if (r.complete !== true) {
-      warnings.push("pema e kësaj zileje nuk mbulon ende çdo llogari (nisi pa snapshot)");
-      // L-02: "nuk ekziston" nga një pemë jo e plotë s'do të thotë asgjë.
-      if (verdict === "does_not_exist") {
-        warnings.push("dëftesa 'nuk ekziston' nga një pemë jo e plotë nuk pranohet");
-        return result;
-      }
+    if (verdict === "invalid") warnings.push(`zilja ${primary} dha një dëftesë që nuk përputhet me root-in`);
+
+    // 2. Zilet e tjera, paralelisht: root-i në të njëjtin slot.
+    let otherAnswers = [];
+    if (slot != null && this.rootOverride == null) {
+      const got = await Promise.allSettled(others.map((ep) => this.rpc(ep, "getZiljaRoot", [slot])));
+      otherAnswers = got.map((a, i) => {
+        if (a.status === "rejected") {
+          warnings.push(`${others[i]}: ${a.reason?.message ?? a.reason}`);
+          return { ok: false };
+        }
+        if (a.value?.root !== r.root) warnings.push(`${others[i]} jep root tjetër për slotin ${slot}`);
+        return { ok: true, slot: a.value?.slot, root: a.value?.root };
+      });
     }
 
-    // 2) Zilet e tjera, paralelisht (Faster-3): a japin të njëjtin root për të njëjtin slot (Simpler-5)?
-    const answers = await Promise.allSettled(others.map((ep) => this.rpc(ep, "getZiljaRoot", [slot])));
-    let disagree = 0;
-    answers.forEach((a, i) => {
-      const ep = others[i];
-      if (a.status === "rejected") warnings.push(`${ep}: ${a.reason?.message ?? a.reason}`);
-      else if (!a.value || a.value.slot !== slot) warnings.push(`${ep}: s'mund të krahasohet në slotin ${slot}`);
-      else if (a.value.root === r.root) result.agreeing++;
-      else {
-        disagree++;
-        warnings.push(`${ep} jep root TJETËR për slotin ${slot}`);
-      }
-    });
-    if (disagree > 0) {
-      result.verdict = "invalid";
-      result.account = null;
-      return result;
-    }
-    if (this.endpoints.length > 1 && result.agreeing >= Math.min(this.minAgree, this.endpoints.length)) {
-      result.trust = "agreement";
-    }
-
-    // 3) Firmat e validatorëve (> 2/3 e stake-ut).
-    if (this.quorum) {
+    // 3. Kuorumi: firmat grupohen sipas root-it; tabela e stake-ut duhet të jetë e epokës së slotit.
+    let quorum = null;
+    let quorumEpochOk = null;
+    let quorumReport = null;
+    if (this.quorum && slot != null && this.rootOverride == null) {
       try {
-        const va = await this.rpc(this.solanaRpc, "getVoteAccounts", [{ commitment: "finalized" }]);
+        const [va, ei] = await Promise.all([this.rpc(this.solanaRpc, "getVoteAccounts", [{ commitment: "finalized" }]), this.rpc(this.solanaRpc, "getEpochInfo", [{ commitment: "finalized" }])]);
+        quorumEpochOk = slot >= ei.absoluteSlot - ei.slotIndex;
+        if (!quorumEpochOk) warnings.push(`sloti ${slot} është në një epokë të kaluar: tabela e stake-ut e epokës aktuale s'vlen për të`);
         const table = stakeTableFromVoteAccounts(va);
         let g = this.genesisHash;
         if (g == null) {
@@ -148,41 +126,91 @@ export class ZiljaClient {
         }
         const genesisHex = /^[0-9a-fA-F]{64}$/.test(g) ? g.toLowerCase() : bytesToHex(b58decode(g));
         const got = await Promise.allSettled(this.endpoints.map((ep) => this.rpc(ep, "getZiljaAttestation", [slot])));
-        const atts = got
-          .filter((a) => a.status === "fulfilled" && a.value?.root === r.root && a.value?.slot === slot)
-          .map((a) => ({ validator: a.value.validator, signer: a.value.signer, authorization: a.value.authorization, signature: a.value.signature }));
-        const q = await verifyQuorum(genesisHex, slot, r.root, atts, table);
-        const pct = q.totalStake > 0n ? Number((q.attestedStake * 10000n) / q.totalStake) / 100 : 0;
-        result.quorum = { reached: q.reached, stakePercent: pct, validSignatures: q.validSignatures };
-        if (q.reached) result.trust = "quorum";
+        const byRoot = new Map();
+        for (const a of got) {
+          const x = a.status === "fulfilled" ? a.value : null;
+          if (!x || x.slot !== slot || typeof x.root !== "string" || !/^[0-9a-f]{64}$/.test(x.root)) continue;
+          if (!byRoot.has(x.root)) byRoot.set(x.root, []);
+          byRoot.get(x.root).push({ validator: x.validator, signer: x.signer, authorization: x.authorization, signature: x.signature });
+        }
+        quorum = [];
+        for (const [root, atts] of byRoot) {
+          const q = await verifyQuorum(genesisHex, slot, root, atts, table);
+          quorum.push({ root, reached: q.reached });
+          if (root === r.root) {
+            const pct = q.totalStake > 0n ? Number((q.attestedStake * 10000n) / q.totalStake) / 100 : 0;
+            quorumReport = { reached: q.reached, stakePercent: pct, validSignatures: q.validSignatures };
+          }
+        }
         warnings.push("tabela e stake-ut u mor nga solanaRpc dhe i besohet asaj");
       } catch (e) {
         warnings.push(`kuorumi s'u kontrollua: ${e.message}`);
       }
     }
 
-    // 4) Të dhënat nga RPC-ja e zakonshme: përputhen me vulën? (L-07) Kthehen bajtet e verifikuara.
-    if (this.solanaRpc && result.account && opts.slot == null) {
+    // 4. Freskia: sloti i finalizuar nga solanaRpc.
+    let finalizedSlot = null;
+    if (this.solanaRpc && reqSlot == null && this.maxSlotLag != null) {
+      try {
+        finalizedSlot = await this.rpc(this.solanaRpc, "getSlot", [{ commitment: "finalized" }]);
+      } catch (e) {
+        warnings.push(`sloti i finalizuar s'u mor: ${e.message}`);
+      }
+    }
+
+    // 5. Të dhënat nga RPC-ja (L-07). Kthehen bajtet e verifikuara.
+    let data = null;
+    let dataReport = null;
+    if (this.solanaRpc && this.compareData && verdict === "exists" && reqSlot == null) {
       try {
         const info = await this.rpc(this.solanaRpc, "getAccountInfo", [pubkey, { encoding: "base64", commitment: "finalized" }]);
         const rpcSlot = info?.context?.slot;
-        if (!info?.value) {
-          result.data = { checked: true, matches: false, rpcSlot, bytes: null };
-        } else {
-          const bytes = b64(info.value.data[0]);
-          const same = (await dataMatches(result.account, bytes)) && BigInt(info.value.lamports) === result.account.lamports;
-          result.data = { checked: true, matches: same, rpcSlot, bytes: same ? bytes : null };
-          if (!same) warnings.push(`RPC-ja (slot ${rpcSlot}) jep të dhëna të tjera: ose llogaria ndryshoi pas slotit ${slot}, ose RPC-ja gënjen`);
+        let same = false;
+        let bytes = null;
+        if (info?.value) {
+          bytes = b64(info.value.data[0]);
+          same = (await dataMatches(account, bytes)) && BigInt(info.value.lamports) === account.lamports;
         }
+        data = { matches: same };
+        dataReport = { checked: true, matches: same, rpcSlot, bytes: same ? bytes : null };
+        if (!same) warnings.push(`RPC-ja (slot ${rpcSlot}) jep të dhëna të tjera: ose llogaria ndryshoi pas slotit ${slot}, ose RPC-ja gënjen`);
       } catch (e) {
         warnings.push(`të dhënat s'u krahasuan: ${e.message}`);
       }
     }
 
-    if (result.trust === "single" && this.endpoints.length === 1) {
+    const d = decide({
+      policy: { minTrust: this.minTrust, minAgree: this.minAgree, maxSlotLag: this.maxSlotLag, minSlot: this.minSlot },
+      request: { pubkey, slot: reqSlot },
+      endpoints: this.endpoints.length,
+      quorumEnabled: this.quorum,
+      rootOverride: this.rootOverride != null,
+      primary: r && typeof r === "object" ? { pubkey: r.pubkey, slot: r.slot, root: rootHex, complete: r.complete === true, verdict } : null,
+      others: otherAnswers,
+      quorum,
+      quorumEpochOk,
+      finalizedSlot: Number.isSafeInteger(finalizedSlot) ? finalizedSlot : null,
+      highestSeen: this.highestSeen,
+      data,
+    });
+    if (d.ok && reqSlot == null) this.highestSeen = Math.max(this.highestSeen ?? 0, r.slot);
+    if (d.trust === "single" && this.endpoints.length === 1 && this.rootOverride == null) {
       warnings.push("vetëm një zile: root-i i besohet asaj; shto zile të tjera ose quorum për më shumë besim");
     }
-    result.ok = TRUST[result.trust] >= TRUST[this.minTrust];
-    return result;
+    return {
+      ok: d.ok,
+      verdict: d.verdict,
+      slot: r?.slot,
+      root: rootHex,
+      account: d.checks.proof === "valid" && verdict === "exists" ? account : null,
+      trust: d.trust,
+      agreeing: d.agreeing,
+      endpoints: this.endpoints.length,
+      quorum: quorumReport,
+      data: dataReport,
+      checks: d.checks,
+      errors: d.errors,
+      warnings: [...warnings, ...d.warnings],
+    };
   }
 }

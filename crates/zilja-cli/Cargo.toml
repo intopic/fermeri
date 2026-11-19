@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "zilja-check"
 path = "src/main.rs"
@@ -25,3 +28,6 @@ bs58 = { workspace = true }
 hex = { workspace = true }
 ureq = { version = "2", default-features = false, features = ["json"] }
 base64 = "0.22"
+
+[dev-dependencies]
+zilja-tree = { workspace = true }

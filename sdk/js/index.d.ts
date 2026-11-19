@@ -1,5 +1,9 @@
 export type Verdict = "exists" | "does_not_exist" | "invalid";
+/** Vendimi i klientit: `conflict` = zilet ose kuorumi s'pajtohen për root-in. */
+export type ClientVerdict = Verdict | "conflict";
 export type Trust = "single" | "agreement" | "quorum";
+/** Burimi i besimit te root-i; "user" = root-i i dhënë nga vetë përdoruesi me `root`. */
+export type RootTrust = Trust | "user";
 
 /** Llogaria siç e jep Zilja (`getAccountProof`). */
 export interface ZiljaAccount {
@@ -50,7 +54,21 @@ export function treeKey(pubkeyB58: string): Promise<Uint8Array>;
 export const PROOF_VERSION: 2;
 export function stakeTableFromVoteAccounts(result: unknown): Map<string, bigint>;
 
-export const TRUST: Readonly<Record<Trust, number>>;
+export const TRUST: Readonly<Record<RootTrust, number>>;
+export const DEFAULTS: Readonly<{ minTrust: "agreement"; minAgree: 2; maxSlotLagWithRpc: 150 }>;
+
+/** Kontrollet e ndara (P-11): një dëftesë e vlefshme s'do të thotë "gjendje aktuale e konsensusit". */
+export interface Checks {
+  proof: "valid" | "invalid";
+  completeness: "complete" | "partial";
+  root: RootTrust;
+  freshness: "fresh" | "stale" | "rollback" | "unknown" | "unchecked" | "historical";
+  data: "match" | "mismatch" | "unchecked";
+}
+
+/** Politika e përbashkët me web-in dhe CLI-në (crates/zilja-cli/src/policy.rs). */
+export function configErrors(o: { minTrust: string; minAgree: number; endpoints: number; quorumEnabled: boolean; rootOverride: boolean }): string[];
+export function decide(i: unknown): { ok: boolean; verdict: ClientVerdict; trust: RootTrust; agreeing: number; checks: Checks; errors: string[]; warnings: string[] };
 
 export interface ZiljaClientOptions {
   /** Adresat e zileve. E para jep dëftesën; të tjerat krahasojnë root-in. */
@@ -65,19 +83,27 @@ export interface ZiljaClientOptions {
   genesisHash?: string;
   /** Nën këtë nivel besimi, `ok` del `false`. Parazgjedhja: "agreement". */
   minTrust?: Trust;
+  /** Sa slote pas slotit të finalizuar të `solanaRpc` pranohen. Parazgjedhja: 150 kur ka `solanaRpc`; `null` = pa kontroll. */
+  maxSlotLag?: number | null;
+  /** Slot minimal i pranuar (p.sh. i fundit që pe në një seancë të kaluar). */
+  minSlot?: number;
+  /** Root-i (64 hex) që e njeh vetë: besimi "user", pa pyetur zile të tjera. */
+  root?: string;
+  /** Krahaso të dhënat me `solanaRpc`. Parazgjedhja: po. */
+  compareData?: boolean;
   timeoutMs?: number;
   fetch?: typeof fetch;
 }
 
 export interface VerifyResult {
-  /** `true` kur dëftesa është e vlefshme DHE besimi te root-i ≥ `minTrust`. */
+  /** `true` vetëm kur çdo kontroll kaloi: dëftesa, besimi ≥ `minTrust`, freskia dhe të dhënat (kur u kontrolluan). */
   ok: boolean;
-  verdict: Verdict;
+  verdict: ClientVerdict;
   slot: number;
   root: string;
   /** Vlerat e kontrolluara (jo përgjigja e papërpunuar); `null` kur verdikti s'është "exists". */
   account: { lamports: bigint; owner: string; executable: boolean; dataLen: bigint; dataHash: string } | null;
-  trust: Trust;
+  trust: RootTrust;
   /** Sa zile dhanë të njëjtin root. */
   agreeing: number;
   endpoints: number;
@@ -85,10 +111,16 @@ export interface VerifyResult {
   /** Krahasimi me të dhënat e `solanaRpc`, nëse u bë. */
   /** `bytes` jepet vetëm kur `matches === true`: vetëm atëherë të dhënat janë të verifikuara. */
   data: { checked: boolean; matches: boolean; rpcSlot: number; bytes: Uint8Array | null } | null;
+  checks: Checks;
+  /** Kodet e kontrolleve që dështuan (p.sh. "stale", "root_conflict", "absence_incomplete"). */
+  errors: string[];
   warnings: string[];
 }
 
 export class ZiljaClient {
+  /** Hedh gabim për konfigurim të pavlefshëm (p.sh. një zile me minTrust "agreement"). */
   constructor(options: ZiljaClientOptions);
+  /** Sloti më i lartë i pranuar në këtë instancë: një përgjigje më e vjetër jep "rollback". */
+  highestSeen: number | null;
   verifyAccount(pubkey: string, opts?: { slot?: number }): Promise<VerifyResult>;
 }

@@ -38,13 +38,16 @@ EOF
 solana-test-validator --geyser-plugin-config zilja.json
 
 # 3. Verifiko një llogari si banor
-./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899
-node web/check.mjs http://127.0.0.1:7799 <PUBKEY>       # i njëjti kontroll në JS
+# Parazgjedhja kërkon ≥ 2 zile që pajtohen (--also); me një zile të vetme: --min-trust single.
+./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899 --min-trust single
+node web/check.mjs http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899 --min-trust single   # i njëjti vendim në JS
+#   --also <ZILJA_URL>  zile e dytë · --quorum  firmat e validatorëve · --max-lag <n>|none · --min-slot <n>
+#   Kodi i daljes: 0 vetëm kur kalon çdo kontroll (dëftesa, besimi, freskia, të dhënat).
 # ose hap web/index.html në shfletues
 
 # Pema në disk në vend të RAM-it: shto te zilja.json
 #   "db_path": "/var/lib/zilja/db", "history_slots": 32, "cache_depth": 20
-./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> --slot <SLOT>   # dëftesë historike
+./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> --min-trust single --slot <SLOT>   # dëftesë historike
 
 # 4. A e kanë firmosur pleqtë? Shto te zilja.json:
 #   "attest_keypair": "<çelësi>", "attest_authorization": "<nga zilja-authorize>",

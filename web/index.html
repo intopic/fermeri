@@ -84,7 +84,7 @@
     };
     try {
       const ziljaUrl = $("zilja").value.trim();
-      const { ok, trust, steps } = await checkAccount({
+      const { ok, trust, checks, errors, steps } = await checkAccount({
         ziljaUrl,
         pubkey: $("pubkey").value.trim(),
         solanaRpc: $("rpc").value.trim() || undefined,
@@ -92,12 +92,14 @@
         rootOverride: $("root").value.trim() || undefined,
       });
       steps.forEach((s) => add(s.ok, s.text));
-      // L-01: "e verifikuar" vetëm kur root-i nuk vjen nga i njëjti server.
-      const whom = { self: `root-i vjen nga ${ziljaUrl} dhe i besohet asaj`, second: "dy zile dhanë të njëjtin root", user: "root-i që dhe ti" }[trust];
-      $("verdict").className = "verdict " + (ok && trust !== "self" ? "ok" : ok ? "" : "bad");
+      // P-11: "e verifikuar" vetëm kur kalojnë të gjitha kontrollet e politikës (si SDK-ja). Një
+      // dëftesë e vlefshme vetëm nuk paraqitet si gjendje aktuale e konsensusit.
+      $("verdict").className = "verdict " + (ok ? "ok" : "bad");
       $("verdict").textContent = ok
-        ? (trust === "self" ? "⚠️ Dëftesa përputhet, por " : "✅ E verifikuar: ") + whom
-        : `❌ Mos i beso: dëftesa nga ${ziljaUrl} nuk përputhet`;
+        ? checks.freshness === "fresh"
+          ? "✅ E verifikuar dhe e freskët"
+          : "✅ Dëftesa dhe root-i u verifikuan; freskia s'u kontrollua (jep një RPC Solana)"
+        : `❌ Mos i beso si gjendje e verifikuar: ${errors.join(", ")}`;
     } catch (err) {
       add(false, "Gabim: " + err.message);
     } finally {

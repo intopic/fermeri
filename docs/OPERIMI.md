@@ -249,6 +249,26 @@ janë testuar me ngjarje sintetike (`zilja-node/tests/forks.rs`) që ndjekin kon
 ndërfaqes. Ato s'mund të prodhohen me një validator të vetëm në e2e, dhe kërkojnë një
 cluster testues me fork-e.
 
+## Klientët: një politikë e vetme verifikimi (P-11)
+
+SDK-ja (`sdk/js/src/policy.js`), faqja (`web/check-core.js`, përmes SDK-së) dhe `zilja-check`
+(`crates/zilja-cli/src/policy.rs`) vendosin me të njëjtën politikë. Të dyja implementimet
+testohen me të njëjtët vektorë (`sdk/js/test/policy-vectors.json`). Një dëftesë e vlefshme
+nuk mjafton: `ok` / kodi 0 kërkon që të kalojnë katër kontrolle të ndara.
+
+| Kontrolli | Kalon kur | Parazgjedhja |
+|---|---|---|
+| dëftesa | përputhet me root-in, për llogarinë dhe slotin e kërkuar; "nuk ekziston" vetëm nga pemë e plotë | gjithmonë |
+| root-i | besimi ≥ `min-trust`: `single` < `agreement` < `quorum` < `user` (`--root`) | `agreement`, `min-agree` 2 |
+| freskia | sloti ≤ `max-lag` slote pas të finalizuarit të RPC-së; jo më i vjetër se `min-slot` ose se i pari | 150 kur ka RPC Solana |
+| të dhënat | bajtet dhe lamports nga RPC-ja përputhen me vulën | kur ka RPC Solana |
+
+- Një konfigurim që s'mund ta arrijë kurrë `min-trust` refuzohet që në fillim: një zile me `agreement` jep `config_min_agree`. `min-agree` s'ulet vetë sipas numrit të zileve.
+- Dy zile me root-e të ndryshme për të njëjtin slot japin `conflict`, jo `invalid`. Kuorumi për root-in e dëftesës e mposht konfliktin, por me paralajmërim. Kuorumi për një root tjetër, ose për dy root-e, është `conflict`.
+- `zilja-quorum` dhe `--quorum` grupojnë firmat sipas root-it dhe e kontrollojnë root-in (64 hex) para përdorimit. Një zile me përgjigje të keqformuar s'numërohet dhe s'e rrëzon veglën.
+- **Burimi i besimit për kuorumin:** tabela e stake-ut merret nga `getVoteAccounts` i RPC-së dhe i besohet asaj. Ajo vlen vetëm për epokën aktuale. Për një slot të një epoke të kaluar, kuorumi s'numërohet (`quorum_epoch_unsupported`).
+- `zilja-check` është një thirrje e vetme: mbrojtja nga rollback-u midis thirrjeve bëhet me `--min-slot`. SDK-ja dhe faqja e mbajnë vetë slotin më të lartë të parë.
+
 ## Kufijtë e konfigurimit (L-08)
 
 - `cache_depth`: 12–24. Me ~2^thellësi nyje në RAM, 20 do të thotë ~1M nyje (~150 MB).

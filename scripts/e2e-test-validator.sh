@@ -117,20 +117,28 @@ echo "   transferimi u finalizua në slotin ~$SLOT; pres që Zilja ta rrënjosë
 wait_rooted_past "$SLOT"
 
 echo "== Hapi 3: banori verifikon"
-"$CHECK" "$ZILJA" "$FERMER" "$RPC"
-"$CHECK" "$ZILJA" "$PAYER" "$RPC"
+"$CHECK" "$ZILJA" "$FERMER" "$RPC" --min-trust single
+"$CHECK" "$ZILJA" "$PAYER" "$RPC" --min-trust single
 # L-02: pema e nisur nga genesis s'mbulon çdo llogari, ndaj nuk jep dëftesa "nuk ekziston".
-if "$CHECK" "$ZILJA" "$NOBODY" 2>/dev/null; then echo "GABIM: dëftesë mospërfshirjeje nga pemë jo e plotë"; exit 1; fi
+if "$CHECK" "$ZILJA" "$NOBODY" --min-trust single 2>/dev/null; then echo "GABIM: dëftesë mospërfshirjeje nga pemë jo e plotë"; exit 1; fi
 echo "   ✅ pema jo e plotë refuzon dëftesat 'nuk ekziston' (L-02)"
 echo "-- i njëjti kontroll me verifikuesin JavaScript (kodi i faqes demo):"
-node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC"
-if node "$ROOT/web/check.mjs" "$ZILJA" "$NOBODY" 2>/dev/null; then echo "GABIM: JS pranoi mospërfshirje nga pemë jo e plotë"; exit 1; fi
+node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC" --min-trust single
+if node "$ROOT/web/check.mjs" "$ZILJA" "$NOBODY" --min-trust single 2>/dev/null; then echo "GABIM: JS pranoi mospërfshirje nga pemë jo e plotë"; exit 1; fi
 echo "-- SDK zilja-verify (paketa npm):"
 node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --rpc "$RPC" --min-trust single
 if node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" >/dev/null; then
   echo "GABIM: me një zile të vetme, parazgjedhja (minTrust=agreement) s'duhet të kalojë"; exit 1
 fi
 echo "   ✅ SDK: parazgjedhja minTrust=agreement me një zile refuzohet siç duhet (L-01)"
+# P-11: e njëjta parazgjedhje (agreement) në CLI dhe në faqe: një zile e vetme s'mjafton.
+if "$CHECK" "$ZILJA" "$FERMER" "$RPC" >/dev/null; then echo "GABIM: zilja-check pranoi një zile të vetme me parazgjedhjen"; exit 1; fi
+if node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC" >/dev/null; then echo "GABIM: faqja pranoi një zile të vetme me parazgjedhjen"; exit 1; fi
+# Dy zile (këtu e njëjta zile me dy adresa: 127.0.0.1 dhe localhost) me të njëjtin root → agreement.
+ZILJA2="${ZILJA/127.0.0.1/localhost}"
+"$CHECK" "$ZILJA" "$FERMER" "$RPC" --also "$ZILJA2"
+node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC" --also "$ZILJA2"
+echo "   ✅ CLI = faqja = SDK: një zile refuzohet, dy zile që pajtohen kalojnë"
 echo "-- root i rremë duhet të refuzohet:"
 if "$CHECK" "$ZILJA" "$FERMER" --root "$(printf 'ab%.0s' $(seq 1 32))"; then
   echo "GABIM: root i rremë u pranua"; exit 1
@@ -203,16 +211,16 @@ else
   echo "   pema fillestare: $STARTUP llogari nga snapshot-i, në $(metric startup_build_ms) ms"
   [ "${STARTUP:-0}" -gt 0 ] || { echo "GABIM: nuk erdhën llogari nga snapshot-i"; exit 1; }
   # Tani pema është e plotë: dëftesat "nuk ekziston" lejohen dhe verifikohen kudo.
-  "$CHECK" "$ZILJA" "$NOBODY"
-  node "$ROOT/web/check.mjs" "$ZILJA" "$NOBODY"
+  "$CHECK" "$ZILJA" "$NOBODY" --min-trust single
+  node "$ROOT/web/check.mjs" "$ZILJA" "$NOBODY" --min-trust single
   node "$ROOT/sdk/js/examples/verify.mjs" "$NOBODY" --zilja "$ZILJA" --min-trust single
   echo "   ✅ pema e plotë jep dëftesa 'nuk ekziston' të verifikuara"
 fi
 SLOT=$(solana -u "$RPC" slot --commitment finalized)
 wait_rooted_past "$((SLOT + 1))"
-"$CHECK" "$ZILJA" "$FERMER" "$RPC"
+"$CHECK" "$ZILJA" "$FERMER" "$RPC" --min-trust single
 # Llogari që nuk preket më: duhet të jetë aty pas rinisjes.
-"$CHECK" "$ZILJA" "11111111111111111111111111111111" "$RPC"
+"$CHECK" "$ZILJA" "11111111111111111111111111111111" "$RPC" --min-trust single
 curl -s --noproxy '*' "$METRICS/metrics" | grep -v '^#'
 echo "== Hapi 4b: a e pa zilja ndryshimin që u ripërsërit gjatë nisjes? (F-01)"
 FIN=$(solana -u "$RPC" slot --commitment finalized)
@@ -237,9 +245,9 @@ echo "== Hapi 5 (disk): dëftesë historike dhe asnjë ndalim"
   solana -u "$RPC" transfer --keypair "$WORK/payer.json" "$FERMER" 0.5 --commitment finalized >/dev/null
   SLOT=$(solana -u "$RPC" slot --commitment finalized)
   wait_rooted_past "$SLOT"
-  "$CHECK" "$ZILJA" "$FERMER" --slot "$OLD_SLOT" | tee "$WORK/hist.txt"
+  "$CHECK" "$ZILJA" "$FERMER" --min-trust single --slot "$OLD_SLOT" | tee "$WORK/hist.txt"
   grep -q "1750000000 lamports" "$WORK/hist.txt" || { echo "GABIM: dëftesa historike s'tregon 1.75 SOL"; exit 1; }
-  "$CHECK" "$ZILJA" "$FERMER" "$RPC" | tee "$WORK/now.txt"
+  "$CHECK" "$ZILJA" "$FERMER" "$RPC" --min-trust single | tee "$WORK/now.txt"
   grep -q "2250000000 lamports" "$WORK/now.txt" || { echo "GABIM: balanca e re duhet 2.25 SOL"; exit 1; }
   echo "   ✅ sloti $OLD_SLOT: 1.75 SOL · tani: 2.25 SOL, të dyja të verifikuara"
 else

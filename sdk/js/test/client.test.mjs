@@ -66,32 +66,40 @@ const byKey = (pk) => vec.cases.find((c) => c.pubkey === pk && (c.name === "incl
   check("agreement", r.ok && r.trust === "agreement" && r.agreeing === 2, r);
 }
 
-// 3) Zilja e dytë jep root tjetër → invalid.
+// 3) Zilja e dytë jep root tjetër → conflict (P-11: jo "invalid", por konflikt i dukshëm).
 {
   const z = new ZiljaClient({ endpoints: ["a", "b"], fetch: fakeFetch({ a: zilja(byKey), b: zilja(byKey, { root: "00".repeat(32) }) }) });
   const r = await z.verifyAccount(inc.pubkey);
-  check("disagreement → invalid", !r.ok && r.verdict === "invalid" && r.warnings.some((w) => w.includes("root TJETËR")), r);
+  check("disagreement → conflict", !r.ok && r.verdict === "conflict" && r.errors.includes("root_conflict"), r);
 }
 
 // 4) Zilja e parë gënjen (dëftesë e rreme për lamports) → invalid.
 {
-  const z = new ZiljaClient({ endpoints: ["a"], fetch: fakeFetch({ a: zilja(() => attack) }) });
+  const z = new ZiljaClient({ endpoints: ["a"], minTrust: "single", fetch: fakeFetch({ a: zilja(() => attack) }) });
   const r = await z.verifyAccount(attack.pubkey);
   check("lying zilja → invalid", !r.ok && r.verdict === "invalid", r);
 }
 
-// 5) Parazgjedhja (L-01) është "agreement": një zile e vetme → ok = false.
+// 5) Parazgjedhja (L-01) është "agreement": një zile e vetme refuzohet që në konfigurim (P-11).
 {
-  const z = new ZiljaClient({ endpoints: ["a"], fetch: fakeFetch({ a: zilja(byKey) }) });
-  const r = await z.verifyAccount(inc.pubkey);
-  check("minTrust not met", !r.ok && r.verdict === "exists" && r.trust === "single", r);
+  let msg = "";
+  try {
+    new ZiljaClient({ endpoints: ["a"], fetch: fakeFetch({ a: zilja(byKey) }) });
+  } catch (e) {
+    msg = String(e.message);
+  }
+  check("minTrust not met → config_min_agree", msg.includes("config_min_agree"), msg);
 }
 
-// 6) E njëjta adresë dy herë nuk jep "agreement" (L-04).
+// 6) E njëjta adresë dy herë nuk jep "agreement" (L-04): numërohet si një zile.
 {
-  const z = new ZiljaClient({ endpoints: ["a", "a/"], fetch: fakeFetch({ a: zilja(byKey) }) });
-  const r = await z.verifyAccount(inc.pubkey);
-  check("dyfishimi nuk numërohet", r.endpoints === 1 && r.trust === "single" && !r.ok, r);
+  let msg = "";
+  try {
+    new ZiljaClient({ endpoints: ["a", "a/"], fetch: fakeFetch({ a: zilja(byKey) }) });
+  } catch (e) {
+    msg = String(e.message);
+  }
+  check("dyfishimi nuk numërohet", msg.includes("1 zile"), msg);
 }
 
 // 6b) Dëftesë për një llogari tjetër ose slot tjetër → invalid (L-04).
