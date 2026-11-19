@@ -338,6 +338,16 @@ for (const [i, r] of rs.entries()) {
 }
 console.log("   ✅ verifyAccounts (multi-proof):", rs.map((r) => r.verdict).join(", "), "@ slot", rs[0].slot);
 ' "$ZILJA" "$RPC" "$FERMER" "$NOBODY" SysvarC1ock11111111111111111111111111111111 "$FERMER" || exit 1
+  # R5-4: lidhja "drop-in" (web3.js): balanca dhe disa llogari, të verifikuara bashkë me bajtet.
+  node --input-type=module -e '
+import { VerifiableConnection } from "'"$ROOT"'/sdk/js/src/index.js";
+const [z, rpc, fermer, nobody] = process.argv.slice(1);
+const conn = new VerifiableConnection({ zilja: { endpoints: [z], solanaRpc: rpc, minTrust: "single" } });
+const bal = await conn.getBalance(fermer);
+const [a, b] = await conn.getMultipleAccountsInfo([fermer, nobody]);
+if (bal !== 1750000000 || !a || a.lamports !== bal || b !== null) { console.error("GABIM: VerifiableConnection", bal, a, b); process.exit(1); }
+console.log("   ✅ VerifiableConnection: getBalance", bal, "+ getMultipleAccountsInfo, të verifikuara (R5-4)");
+' "$ZILJA" "$RPC" "$FERMER" "$NOBODY" || exit 1
   [ "$(metric attest_refused_total)" = "0" ] || { echo "GABIM: firma të refuzuara pas rinisjes (root tjetër për të njëjtin slot?)"; exit 1; }
   # R5-1: revokimi i firmosur nga identiteti: zilja e shërben menjëherë (pa rinisje), ndalon së
   # firmosuri me atë çelës, dhe kuorumi s'numërohet më, edhe brenda periudhës së autorizimit.

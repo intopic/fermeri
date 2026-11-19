@@ -88,7 +88,7 @@ fn main() {
         );
     }
     let multi = multi_vectors(&tree, &accs, &mut rng);
-    println!("{}", serde_json::to_string_pretty(&json!({"version": 2, "cases": cases, "attest": attest_vectors(), "multi": multi})).unwrap());
+    println!("{}", serde_json::to_string_pretty(&json!({"version": 2, "cases": cases, "attest": attest_vectors(), "multi": multi, "connection": connection_vectors()})).unwrap());
 }
 
 /// Vektorë për firmat e validatorëve: 10 validatorë me çelësa të njohur dhe stake të ndryshëm.
@@ -282,4 +282,69 @@ fn multi_vectors(tree: &Tree, accs: &[(Key, AccountMeta)], rng: &mut StdRng) -> 
         }
     }
     json!({"cases": cases})
+}
+
+/// R5-4: një pemë e vogël me llogari reale SPL (sistem, mint, llogari tokeni) dhe bajtet e tyre, që
+/// SDK-ja të testojë `VerifiableConnection` me të dhëna që përputhen me vulën.
+fn connection_vectors() -> Value {
+    use zilja_verifier::multi::MultiProof;
+    let b58 = |s: &str| -> Key { bs58::decode(s).into_vec().unwrap().try_into().unwrap() };
+    let token_program = b58("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+    let wallet: Key = [0x11; 32];
+    let mint: Key = [0x22; 32];
+    let ata: Key = [0x33; 32];
+    let other: Key = [0x44; 32];
+    let missing: Key = [0x55; 32];
+    // Mint: mint_authority COption(4+32) ‖ supply u64 ‖ decimals u8 ‖ is_initialized u8 ‖ freeze COption(4+32)
+    let mut mint_data = vec![0u8; 82];
+    mint_data[36..44].copy_from_slice(&5_000_000_000_000u64.to_le_bytes());
+    mint_data[44] = 6;
+    mint_data[45] = 1;
+    // Token account: mint ‖ owner ‖ amount ‖ delegate COption ‖ state ‖ is_native COption(4+8) ‖ delegated ‖ close COption
+    let mut ta = vec![0u8; 165];
+    ta[0..32].copy_from_slice(&mint);
+    ta[32..64].copy_from_slice(&wallet);
+    ta[64..72].copy_from_slice(&1_234_567_890u64.to_le_bytes());
+    ta[108] = 1;
+    let accounts: Vec<(Key, AccountMeta, Vec<u8>)> = vec![
+        (wallet, AccountMeta::from_account(2_500_000_000, &[0; 32], false, &[]), vec![]),
+        (mint, AccountMeta::from_account(1_461_600, &token_program, false, &mint_data), mint_data.clone()),
+        (ata, AccountMeta::from_account(2_039_280, &token_program, false, &ta), ta.clone()),
+        (other, AccountMeta::from_account(1, &[0; 32], false, &[]), vec![]),
+    ];
+    let tree = Tree::from_accounts(accounts.iter().map(|(k, m, _)| (tree_key(k), Some(m.clone()))).collect());
+    let root = tree.root();
+    let all: Vec<Key> = vec![wallet, mint, ata, other, missing];
+    let single: Vec<Value> = all
+        .iter()
+        .map(|k| {
+            let (p, m) = tree.prove(&tree_key(k));
+            json!({"pubkey": bs58::encode(k).into_string(), "account": m.map(acc_json), "proof": hex::encode(p.to_bytes())})
+        })
+        .collect();
+    let multi = |keys: &[Key]| -> Value {
+        let e: Vec<_> = keys.iter().map(|k| (tree_key(k), tree.prove(&tree_key(k)).0)).collect();
+        let (_, mp) = MultiProof::from_proofs(&e).unwrap();
+        json!({
+            "pubkeys": keys.iter().map(|k| bs58::encode(k).into_string()).collect::<Vec<_>>(),
+            "accounts": keys.iter().map(|k| json!({"pubkey": bs58::encode(k).into_string(), "account": tree.prove(&tree_key(k)).1.map(acc_json)})).collect::<Vec<_>>(),
+            "proof": hex::encode(mp.to_bytes()),
+        })
+    };
+    use base64::Engine;
+    json!({
+        "root": hex::encode(root),
+        "wallet": bs58::encode(wallet).into_string(),
+        "mint": bs58::encode(mint).into_string(),
+        "ata": bs58::encode(ata).into_string(),
+        "other": bs58::encode(other).into_string(),
+        "missing": bs58::encode(missing).into_string(),
+        "data": accounts.iter().map(|(k, m, d)| json!({
+            "pubkey": bs58::encode(k).into_string(),
+            "lamports": m.lamports, "owner": bs58::encode(m.owner).into_string(), "executable": false,
+            "base64": base64::engine::general_purpose::STANDARD.encode(d),
+        })).collect::<Vec<_>>(),
+        "single": single,
+        "multi": [multi(&[wallet, ata, missing]), multi(&[ata, mint]), multi(&[mint, ata])],
+    })
 }

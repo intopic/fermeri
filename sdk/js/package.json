@@ -24,7 +24,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node test/verifier.test.mjs && node test/attest.test.mjs && node test/multi.test.mjs && node test/client.test.mjs && node test/audit.test.mjs && node test/wire.test.mjs && node test/policy.test.mjs && node test/clients.test.mjs",
+    "test": "node test/verifier.test.mjs && node test/attest.test.mjs && node test/multi.test.mjs && node test/connection.test.mjs && node test/client.test.mjs && node test/audit.test.mjs && node test/wire.test.mjs && node test/policy.test.mjs && node test/clients.test.mjs",
     "test:audit": "node test/audit.test.mjs"
   },
   "keywords": [

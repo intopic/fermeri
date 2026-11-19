@@ -159,3 +159,56 @@ export class ZiljaClient {
   /** R5-2: shumë llogari me një multi-proof (`getMultipleAccountProofs`); një rezultat për çdo pubkey, në radhën e kërkesës. */
   verifyAccounts(pubkeys: string[], opts?: { slot?: number }): Promise<VerifyResult[]>;
 }
+
+// R5-4: lidhje "drop-in" me verifikim (web3.js / kit), pa varësi.
+export const TOKEN_PROGRAM: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+export const TOKEN_2022_PROGRAM: "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+export class VerificationError extends Error {
+  results: unknown[];
+}
+type PubkeyLike = string | { toBase58(): string };
+export interface VerifiedAccountInfo<O = string> {
+  lamports: number;
+  owner: O;
+  executable: boolean;
+  data: Uint8Array;
+  rentEpoch: 0;
+  space: number;
+}
+export interface TokenAccount {
+  mint: string;
+  owner: string;
+  amount: bigint;
+  delegate: string | null;
+  state: "initialized" | "frozen" | "unknown";
+  isNative: bigint | null;
+  delegatedAmount: bigint;
+  closeAuthority: string | null;
+}
+export function parseTokenAccount(data: Uint8Array): TokenAccount;
+export function parseMint(data: Uint8Array): { supply: bigint; decimals: number };
+export class VerifiableConnection {
+  /** `zilja`: ZiljaClient ose opsionet e tij (duhet `solanaRpc`). `PublicKey`: konstruktori i web3.js (opsional). */
+  constructor(o: { zilja: ZiljaClient | ZiljaClientOptions; PublicKey?: new (s: string) => any; onUnverified?: "throw" | "null" });
+  getAccountInfo(pubkey: PubkeyLike): Promise<VerifiedAccountInfo<any> | null>;
+  getMultipleAccountsInfo(pubkeys: PubkeyLike[]): Promise<(VerifiedAccountInfo<any> | null)[]>;
+  getBalance(pubkey: PubkeyLike): Promise<number | null>;
+  getTokenAccount(pubkey: PubkeyLike): Promise<(TokenAccount & { program: string }) | null>;
+  getTokenAccountBalance(pubkey: PubkeyLike): Promise<{ value: { amount: string; decimals: number; uiAmountString: string } }>;
+}
+interface KitAccount {
+  lamports: bigint;
+  owner: string;
+  executable: boolean;
+  data: [string, "base64"];
+  space: bigint;
+}
+/** Për @solana/kit: të njëjtat metoda si `rpc`, me `.send()`, vetëm me llogari të verifikuara. */
+export function createVerifiedRpc(
+  zilja: ZiljaClient | ZiljaClientOptions,
+  o?: { onUnverified?: "throw" | "null" },
+): {
+  getAccountInfo(address: string): { send(): Promise<{ context: { slot: bigint }; value: KitAccount | null }> };
+  getMultipleAccounts(addresses: string[]): { send(): Promise<{ context: { slot: bigint }; value: (KitAccount | null)[] }> };
+  getBalance(address: string): { send(): Promise<{ context: { slot: bigint }; value: bigint }> };
+};
