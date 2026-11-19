@@ -17,6 +17,7 @@ zilja-node = { workspace = true }
 zilja-store = { workspace = true, features = ["rocksdb"] }
 hex = { workspace = true }
 bs58 = { workspace = true }
+base64 = "0.22"
 
 [[bin]]
 name = "zilja-bench"
