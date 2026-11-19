@@ -85,6 +85,26 @@ Zilet me pemë në disk mbajnë ~32 slotet e fundit:
 const r = await zilja.verifyAccount(pubkey, { slot: 312345678 });
 ```
 
+## Drop-in për web3.js dhe kit (R5-4)
+
+```js
+import { Connection, PublicKey } from "@solana/web3.js";
+import { VerifiableConnection } from "zilja-verify";
+
+const zilja = { endpoints: ["https://zile-a.example", "https://zile-b.example"], solanaRpc: "https://api.mainnet-beta.solana.com" };
+const conn = new VerifiableConnection({ zilja, PublicKey });
+const info = await conn.getAccountInfo(new PublicKey(addr));          // AccountInfo | null, e verifikuar
+const [a, b] = await conn.getMultipleAccountsInfo([addrA, addrB]);   // një multi-proof
+const bal = await conn.getTokenAccountBalance(ata);                   // ATA + mint, të verifikuara
+```
+
+Me `@solana/kit`: `const rpc = createVerifiedRpc(zilja); await rpc.getAccountInfo(address).send()`.
+
+Çdo llogari kthehet vetëm kur dëftesa, besimi te root-i (`minTrust`), freskia dhe bajtet e RPC-së
+(krahasuar me `dataHash` e vulosur) janë në rregull. Përndryshe hidhet `VerificationError` (ose
+kthehet `null` me `onUnverified: "null"`). Llogaritë që ndryshojnë çdo slot (p.sh. `Clock`) mund të
+mos verifikohen, sepse RPC-ja është para slotit të vulosur.
+
 ## API e ulët
 
 ```js
