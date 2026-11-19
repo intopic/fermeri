@@ -141,7 +141,7 @@ Auditimi u bë mbi `46b7a60` kundër `anza-xyz/agave@a203300` (`v4.3.2`). Çdo g
 | R4-2 | Autorizimi i `signer`-it pa afat dhe pa revokim | **Rregulluar:** `zilja/authorize/v2` me `[from_epoch, until_epoch)`, maksimumi 15 epoka; v1 refuzohet; rinovim pa rinisje | `authorization_expires_and_cannot_be_extended`, `v1_authorization_is_rejected`, `authorization_file_is_reloaded_without_restart`, vektorët `dedicated_signers_*`, e2e hapi 6 |
 | R4-3 | Slowloris me 1 bajt / 4 s | Ishte rregulluar me A17 (#23): afat i plotë për kërkesë | `slow_drip_client_is_cut_at_the_request_deadline` |
 | R4-4 | Kufiri i sipërm i epokës | Ishte rregulluar me A10 (#17): të dy kufijtë + epoka para/pas | `StakeView::covers`, `client.js` |
-| R4-5 | `StakeTable` me dyfishe, `MemTree::prove_at`, `accounts` historik, numri i parametrave | `accounts` dhe parametrat: A19 (#26). Mbledhja: `checked_add` qysh në A11. `StakeTable` dhe `MemTree`: PR i veçantë | — |
+| R4-5 | `StakeTable` me dyfishe, `MemTree::prove_at`, `accounts` historik, numri i parametrave | `accounts` dhe parametrat: A19 (#26). Mbledhja: `checked_add` qysh në A11. **Rregulluar:** `stake_of` mbledh hyrjet e dyfishta si `total()`; `MemTree::prove_at` pa slot → `NotReady` | `duplicate_table_entries_are_summed_consistently`, `mem_tree_without_slot_is_not_ready` |
 
 **Ndryshim që thyen përputhshmërinë:** `authorization` në `getZiljaAttestation` është objekt
 `{fromEpoch, untilEpoch, signature}`; skedari i `zilja-authorize` ka `version: 2`; `zilja-authorize`
