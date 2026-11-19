@@ -22,7 +22,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use zilja_verifier::attest::{attest_message, authorize_message};
 use zilja_verifier::Hash;
 
@@ -31,7 +31,9 @@ use zilja_verifier::Hash;
 const KEEP: usize = 4096;
 #[cfg(test)]
 const KEEP: usize = 64;
-const HEADER: &str = "# zilja-attest-log v1";
+/// A03: ditari v2 ruan edhe firmën origjinale dhe kufirin e historisë (`floor`).
+const HEADER: &str = "# zilja-attest-log v2";
+const HEADER_V1: &str = "# zilja-attest-log v1";
 
 pub struct AttestOptions {
     /// Çelësi që firmos.
@@ -60,10 +62,39 @@ pub struct AttesterInfo {
 pub struct Attester {
     opts: AttestOptions,
     _lock: Option<File>,
-    signed: BTreeMap<u64, Hash>,
+    /// slot → (root, firma origjinale).
+    signed: BTreeMap<u64, (Hash, [u8; 64])>,
+    /// A03: asnjë slot nën këtë s'firmoset (historia e kompaktuar ose e migruar s'dihet plotësisht).
+    floor: u64,
     file: Option<File>,
     lines: usize,
     pub refused: u64,
+}
+
+/// Një rresht v2: `<slot> <root 64 hex> <firma 128 hex>`, kanonik (pa hapësira të tepërta, hex i vogël).
+fn parse_v2(line: &str) -> Option<(u64, Hash, [u8; 64])> {
+    let f: Vec<&str> = line.split(' ').collect();
+    let [s, r, g] = f.as_slice() else { return None };
+    Some((canon_u64(s)?, lower_hex(r)?, lower_hex(g)?))
+}
+
+/// Një rresht v1 / pa kokë: `<slot> <root 64 hex>`, kanonik.
+fn parse_v1(line: &str) -> Option<(u64, Hash)> {
+    let f: Vec<&str> = line.split(' ').collect();
+    let [s, r] = f.as_slice() else { return None };
+    Some((canon_u64(s)?, lower_hex(r)?))
+}
+
+fn canon_u64(s: &str) -> Option<u64> {
+    let v: u64 = s.parse().ok()?;
+    (v.to_string() == s).then_some(v)
+}
+
+fn lower_hex<const N: usize>(s: &str) -> Option<[u8; N]> {
+    if s.len() != 2 * N || !s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return None;
+    }
+    hex::decode(s).ok()?.try_into().ok()
 }
 
 impl Attester {
@@ -84,69 +115,104 @@ impl Attester {
             Some(p) => Some(lock_exclusive(&lock_path(p))?),
             None => None,
         };
-        let header = header_line(&opts);
-        let mut signed: BTreeMap<u64, Hash> = BTreeMap::new();
-        let mut lines = 0;
-        let mut need_header = true;
-        if let Some(p) = &opts.log {
-            let text = match std::fs::read_to_string(p) {
-                Ok(t) => t,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-                Err(e) => return Err(format!("leximi i {}: {e}", p.display())),
-            };
-            let mut it = text.lines().peekable();
-            match it.peek() {
-                None => {}
-                Some(first) if first.starts_with('#') => {
-                    check_header(first, &header).map_err(|e| format!("{}: {e}; hapja refuzohet, skedari s'u prek", p.display()))?;
-                    it.next();
-                    need_header = false;
+        let Some(p) = opts.log.clone() else {
+            return Ok(Attester { opts, _lock: lock, signed: BTreeMap::new(), floor: 0, file: None, lines: 0, refused: 0 });
+        };
+        let ctx = context_line(&opts);
+        let text = match std::fs::read(&p) {
+            Ok(t) => String::from_utf8(t).map_err(|_| format!("{}: s'është tekst UTF-8; hapja refuzohet, skedari s'u prek", p.display()))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(format!("leximi i {}: {e}", p.display())),
+        };
+        let bad = |what: String| format!("{}: {what}; hapja refuzohet, skedari s'u prek", p.display());
+        let first = text.lines().next();
+        let (signed, floor, lines) = match first {
+            None => {
+                write_log(&p, &ctx, 0, &BTreeMap::new())?;
+                (BTreeMap::new(), 0, 0)
+            }
+            Some(h) if h.starts_with(HEADER) => {
+                check_header(h, &ctx).map_err(bad)?;
+                let floor = header_floor(h).ok_or_else(|| bad("koka s'ka floor të vlefshëm".into()))?;
+                let vk = opts.key.verifying_key();
+                let body = &text[h.len() + 1.min(text.len() - h.len())..];
+                // Rreshti i fundit pa '\n' = shkrim i papërfunduar (firma s'u kthye kurrë, sepse kthehet
+                // vetëm pas fsync-ut të rreshtit të plotë). Ruhet për diagnozë dhe hiqet.
+                let (complete, torn) = match body.rfind('\n') {
+                    Some(i) => (&body[..=i], &body[i + 1..]),
+                    None => ("", body),
+                };
+                let mut signed = BTreeMap::new();
+                let mut last: Option<u64> = None;
+                for (n, line) in complete.lines().enumerate() {
+                    let (slot, root, sig) = parse_v2(line).ok_or_else(|| bad(format!("rreshti {} i dëmtuar ose jo kanonik: {line:?}", n + 2)))?;
+                    if slot < floor {
+                        return Err(bad(format!("sloti {slot} nën kufirin e historisë {floor}")));
+                    }
+                    if last.is_some_and(|l| slot <= l) {
+                        return Err(bad(format!("sloti {slot} pas slotit {} (rend i gabuar ose dy root-e për një slot)", last.unwrap())));
+                    }
+                    // A03: çdo hyrje vërtetohet me firmën e saj origjinale; asgjë s'rifirmoset.
+                    if vk.verify_strict(&attest_message(&opts.genesis, slot, &root), &ed25519_dalek::Signature::from_bytes(&sig)).is_err() {
+                        return Err(bad(format!("firma e slotit {slot} s'vërtetohet: rekordi u ndryshua")));
+                    }
+                    last = Some(slot);
+                    signed.insert(slot, (root, sig));
                 }
-                Some(_) if opts.adopt_legacy => log::warn!("zilja: log-u i firmave {} s'ka kontekst; po adoptohet me kontekstin aktual (attest_adopt_legacy)", p.display()),
-                Some(_) => {
+                if !torn.is_empty() {
+                    let off = text.len() - torn.len();
+                    let keep = PathBuf::from(format!("{}.tail-{off}", p.display()));
+                    std::fs::write(&keep, torn).map_err(|e| format!("{}: {e}", keep.display()))?;
+                    let f = OpenOptions::new().write(true).open(&p).map_err(|e| e.to_string())?;
+                    f.set_len(off as u64).and_then(|_| f.sync_all()).map_err(|e| format!("{}: {e}", p.display()))?;
+                    log::warn!("zilja: u hoq rreshti i papërfunduar i log-ut të firmave ({} B); u ruajt në {}", torn.len(), keep.display());
+                }
+                let n = signed.len();
+                (signed, floor, n)
+            }
+            Some(h) if h.starts_with(HEADER_V1) || !h.starts_with('#') => {
+                if h.starts_with(HEADER_V1) {
+                    check_header(&h.replacen(HEADER_V1, HEADER, 1), &ctx).map_err(bad)?;
+                } else if !opts.adopt_legacy {
                     return Err(format!(
                         "{} s'ka kontekst (genesis/identity/signer; version i vjetër). Nëse je i sigurt që u krijua nga ky çelës për këtë rrjet, \
                          vendos attest_adopt_legacy = true një herë; përndryshe përdor një attest_state të ri vetëm me një çelës të ri (docs/OPERIMI.md)",
                         p.display()
-                    ))
+                    ));
                 }
-            }
-            for line in it {
-                let mut f = line.split_whitespace();
-                let (Some(s), Some(r)) = (f.next(), f.next()) else { continue };
-                let slot: u64 = s.parse().map_err(|_| format!("rresht i dëmtuar në {}: {line}", p.display()))?;
-                let root: Hash = hex::decode(r).ok().and_then(|b| b.try_into().ok()).ok_or_else(|| format!("rresht i dëmtuar: {line}"))?;
-                if let Some(prev) = signed.get(&slot) {
-                    if *prev != root {
-                        return Err(format!(
-                            "{} përmban dy root-e të ndryshme për slotin {slot} ({} dhe {}): firmosje e dyfishtë; hapja refuzohet, skedari s'u prek",
-                            p.display(),
-                            hex::encode(prev),
-                            hex::encode(root)
-                        ));
+                // A03: v1 s'ka firma: historia s'mund të vërtetohet, ndaj s'shërbehet dhe s'rifirmoset.
+                // Ruhet vetëm si mbrojtje: asnjë slot deri te më i madhi i saj s'firmoset më.
+                let skip = usize::from(h.starts_with('#'));
+                let mut max: Option<u64> = None;
+                let mut seen: BTreeMap<u64, Hash> = BTreeMap::new();
+                for (n, line) in text.lines().skip(skip).enumerate() {
+                    let (slot, root) = parse_v1(line).ok_or_else(|| bad(format!("rreshti {} i dëmtuar ose jo kanonik: {line:?}", n + 1 + skip)))?;
+                    if seen.get(&slot).is_some_and(|r| *r != root) {
+                        return Err(bad(format!("dy root-e të ndryshme për slotin {slot}: firmosje e dyfishtë")));
                     }
+                    seen.insert(slot, root);
+                    max = Some(max.map_or(slot, |m| m.max(slot)));
                 }
-                signed.insert(slot, root);
-                lines += 1;
+                let floor = max.map_or(0, |m| m.saturating_add(1));
+                let old = PathBuf::from(format!("{}.v1-migrated", p.display()));
+                if old.exists() {
+                    return Err(bad(format!("{} ekziston tashmë", old.display())));
+                }
+                std::fs::copy(&p, &old).map_err(|e| format!("{}: {e}", old.display()))?;
+                File::open(&old).and_then(|f| f.sync_all()).map_err(|e| e.to_string())?;
+                write_log(&p, &ctx, floor, &BTreeMap::new())?;
+                log::warn!(
+                    "zilja: log-u i firmave {} u migrua në v2: {} hyrje pa firmë s'shërbehen; asnjë slot nën {floor} s'firmoset (origjinali: {})",
+                    p.display(),
+                    seen.len(),
+                    old.display()
+                );
+                (BTreeMap::new(), floor, 0)
             }
-        }
-        let mut file = match &opts.log {
-            Some(p) => Some(OpenOptions::new().create(true).append(true).open(p).map_err(|e| e.to_string())?),
-            None => None,
+            Some(h) => return Err(bad(format!("format i panjohur i log-ut të firmave: {h:?} (pritej {HEADER:?})"))),
         };
-        if let (Some(p), true) = (&opts.log, need_header) {
-            if signed.is_empty() {
-                // Log i ri: koka para çdo firme.
-                let f = file.as_mut().unwrap();
-                writeln!(f, "{header}").and_then(|_| f.sync_all()).map_err(|e| format!("{}: {e}", p.display()))?;
-                sync_parent(p)?;
-            } else {
-                // Adoptimi: rishkrim atomik me kokën dhe hyrjet ekzistuese.
-                write_log(p, &header, &signed)?;
-                file = Some(OpenOptions::new().append(true).open(p).map_err(|e| e.to_string())?);
-            }
-        }
-        Ok(Attester { opts, _lock: lock, signed, file, lines, refused: 0 })
+        let file = Some(OpenOptions::new().append(true).open(&p).map_err(|e| e.to_string())?);
+        Ok(Attester { opts, _lock: lock, signed, floor, file, lines, refused: 0 })
     }
 
     pub fn info(&self) -> AttesterInfo {
@@ -159,57 +225,69 @@ impl Attester {
         }
     }
 
-    fn sig(&self, slot: u64, root: &Hash) -> [u8; 64] {
-        self.opts.key.sign(&attest_message(&self.opts.genesis, slot, root)).to_bytes()
-    }
-
-    /// Firmat e fundit nga skedari, për t'i shërbyer menjëherë pas rinisjes.
+    /// A03: firmat e fundit, ato origjinale nga skedari (të vërtetuara në hapje), për t'i shërbyer
+    /// menjëherë pas rinisjes. Asgjë s'rifirmoset.
     pub fn recent(&self, n: usize) -> Vec<(u64, Hash, [u8; 64])> {
-        self.signed.iter().rev().take(n).map(|(s, r)| (*s, *r, self.sig(*s, r))).collect()
+        self.signed.iter().rev().take(n).map(|(s, (r, g))| (*s, *r, *g)).collect()
     }
 
-    /// Firmos (slot, root), ose refuzon kur kjo do të ishte firmosje e dyfishtë.
+    /// Firmos (slot, root), ose refuzon kur kjo do të ishte firmosje e dyfishtë ose kur sloti s'mund
+    /// të dihet që s'është firmosur (nën kufirin, ose para firmës së fundit).
     pub fn sign(&mut self, slot: u64, root: &Hash) -> Result<[u8; 64], String> {
-        if let Some(prev) = self.signed.get(&slot) {
+        if let Some((prev, sig)) = self.signed.get(&slot) {
             if prev != root {
                 self.refused += 1;
                 return Err(format!("sloti {slot} është firmosur tashmë me një root tjetër: s'firmos sërish"));
             }
-            return Ok(self.sig(slot, root));
+            return Ok(*sig);
         }
-        // Më i vjetër se çfarë mbajmë: s'mund ta dimë që s'është firmosur. Refuzo.
-        if self.signed.len() >= KEEP && self.signed.keys().next().is_some_and(|first| slot < *first) {
+        if slot < self.floor {
             self.refused += 1;
-            return Err(format!("sloti {slot} është më i vjetër se historia e firmave"));
+            return Err(format!("sloti {slot} është nën kufirin e historisë së firmave ({})", self.floor));
         }
+        if self.signed.keys().next_back().is_some_and(|last| slot < *last) {
+            self.refused += 1;
+            return Err(format!("sloti {slot} është para firmës së fundit: s'firmoset jashtë radhe"));
+        }
+        let sig = self.opts.key.sign(&attest_message(&self.opts.genesis, slot, root)).to_bytes();
         if let Some(f) = &mut self.file {
-            writeln!(f, "{slot} {}", hex::encode(root)).and_then(|_| f.sync_data()).map_err(|e| format!("skedari i firmave: {e}"))?;
+            writeln!(f, "{slot} {} {}", hex::encode(root), hex::encode(sig)).and_then(|_| f.sync_data()).map_err(|e| format!("skedari i firmave: {e}"))?;
             self.lines += 1;
         }
-        self.signed.insert(slot, *root);
+        self.signed.insert(slot, (*root, sig));
         while self.signed.len() > KEEP {
             self.signed.pop_first();
+            self.floor = *self.signed.keys().next().unwrap();
         }
         if self.lines > KEEP * 4 {
             self.compact()?;
         }
-        Ok(self.sig(slot, root))
+        Ok(sig)
     }
 
-    /// Rishkruan skedarin vetëm me hyrjet që mbahen (shkrim i ri + rename atomik), me kokën.
+    /// Rishkruan skedarin vetëm me hyrjet që mbahen (shkrim i ri + rename atomik), me kokën dhe kufirin.
     fn compact(&mut self) -> Result<(), String> {
         let Some(p) = &self.opts.log else { return Ok(()) };
-        write_log(p, &header_line(&self.opts), &self.signed)?;
+        write_log(p, &context_line(&self.opts), self.floor, &self.signed)?;
         self.file = Some(OpenOptions::new().append(true).open(p).map_err(|e| e.to_string())?);
         self.lines = self.signed.len();
         Ok(())
     }
 }
 
-fn header_line(o: &AttestOptions) -> String {
+/// Koka pa `floor`: konteksti (genesis, identiteti, çelësi).
+fn context_line(o: &AttestOptions) -> String {
     let signer = o.key.verifying_key().to_bytes();
     let b = |h: &[u8; 32]| bs58::encode(h).into_string();
     format!("{HEADER} genesis={} identity={} signer={}", b(&o.genesis), b(&o.identity.unwrap_or(signer)), b(&signer))
+}
+
+fn header_floor(h: &str) -> Option<u64> {
+    let v: Vec<&str> = h.split_whitespace().filter_map(|t| t.strip_prefix("floor=")).collect();
+    match v.as_slice() {
+        [f] => canon_u64(f),
+        _ => None,
+    }
 }
 
 /// Krahason kokën e ruajtur me atë të konfigurimit; gabimi emërton çdo fushë që ndryshon.
@@ -228,13 +306,13 @@ fn check_header(stored: &str, want: &str) -> Result<(), String> {
     }
 }
 
-fn write_log(p: &std::path::Path, header: &str, signed: &BTreeMap<u64, Hash>) -> Result<(), String> {
+fn write_log(p: &Path, ctx: &str, floor: u64, signed: &BTreeMap<u64, (Hash, [u8; 64])>) -> Result<(), String> {
     let tmp = p.with_extension("tmp");
     {
         let mut f = File::create(&tmp).map_err(|e| e.to_string())?;
-        writeln!(f, "{header}").map_err(|e| e.to_string())?;
-        for (s, r) in signed {
-            writeln!(f, "{s} {}", hex::encode(r)).map_err(|e| e.to_string())?;
+        writeln!(f, "{ctx} floor={floor}").map_err(|e| e.to_string())?;
+        for (s, (r, g)) in signed {
+            writeln!(f, "{s} {} {}", hex::encode(r), hex::encode(g)).map_err(|e| e.to_string())?;
         }
         f.sync_all().map_err(|e| e.to_string())?;
     }
@@ -317,27 +395,107 @@ mod tests {
         panic!("dy instanca u hapën mbi të njëjtin log; firmosën: {} dhe {}", ra.is_ok(), rb.is_ok());
     }
 
+    /// Rresht v2 i firmosur saktë me çelësin e `opts`.
+    fn line(slot: u64, root: [u8; 32]) -> String {
+        let o = opts(None);
+        let sig = o.key.sign(&attest_message(&o.genesis, slot, &root)).to_bytes();
+        format!("{slot} {} {}", hex::encode(root), hex::encode(sig))
+    }
+
+    fn head(floor: u64) -> String {
+        format!("{} floor={floor}", context_line(&opts(None)))
+    }
+
     /// P-04: një log me dy root-e për të njëjtin slot është provë firmosjeje të dyfishtë: hapja
-    /// refuzohet dhe asnjë nga të dy nuk "fiton" në heshtje.
+    /// refuzohet dhe asnjë nga të dy nuk "fiton" në heshtje. (A03: edhe e njëjta hyrje e përsëritur
+    /// s'del kurrë nga shkruesi, ndaj refuzohet si rend i gabuar.)
     #[test]
     fn conflicting_roots_in_log_refuse_open() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("attest.log");
-        let h = header_line(&opts(None));
-        std::fs::write(&p, format!("{h}\n10 {}\n11 {}\n10 {}\n", hex::encode([5u8; 32]), hex::encode([7u8; 32]), hex::encode([6u8; 32]))).unwrap();
-        let before = std::fs::read(&p).unwrap();
-        match Attester::open(opts(Some(p.clone()))) {
-            Ok(mut a) => {
-                let r5 = a.sign(10, &[5; 32]).is_ok();
-                let r6 = a.sign(10, &[6; 32]).is_ok();
-                panic!("log me konflikt u pranua (firmos [5]: {r5}, firmos [6]: {r6})");
+        for body in [
+            format!("{}\n{}\n{}\n", line(10, [5; 32]), line(11, [7; 32]), line(10, [6; 32])),
+            format!("{}\n{}\n", line(10, [5; 32]), line(10, [5; 32])),
+        ] {
+            std::fs::write(&p, format!("{}\n{body}", head(0))).unwrap();
+            let before = std::fs::read(&p).unwrap();
+            match Attester::open(opts(Some(p.clone()))) {
+                Ok(mut a) => {
+                    let r5 = a.sign(10, &[5; 32]).is_ok();
+                    let r6 = a.sign(10, &[6; 32]).is_ok();
+                    panic!("log me konflikt u pranua (firmos [5]: {r5}, firmos [6]: {r6})");
+                }
+                Err(e) => assert!(e.contains("10"), "mesazhi duhet të tregojë slotin: {e}"),
             }
-            Err(e) => assert!(e.contains("10"), "mesazhi duhet të tregojë slotin: {e}"),
+            assert_eq!(std::fs::read(&p).unwrap(), before, "log-u me konflikt u ndryshua");
         }
-        assert_eq!(std::fs::read(&p).unwrap(), before, "log-u me konflikt u ndryshua");
-        // E njëjta hyrje e përsëritur nuk është konflikt.
-        std::fs::write(&p, format!("{h}\n10 {}\n10 {}\n", hex::encode([5u8; 32]), hex::encode([5u8; 32]))).unwrap();
-        assert!(Attester::open(opts(Some(p))).is_ok());
+    }
+
+    /// A03: një rekord i ndryshuar (root që dekodohet ende, slot, firmë) s'pranohet dhe s'rifirmoset.
+    #[test]
+    fn tampered_or_incomplete_records_are_refused() {
+        let good = format!("{}\n{}\n{}\n", head(0), line(10, [0xab; 32]), line(11, [7; 32]));
+        let mut root_changed = good.clone();
+        root_changed = root_changed.replacen(&hex::encode([7u8; 32]), &hex::encode([8u8; 32]), 1);
+        let cases: [(&str, String); 5] = [
+            ("root i ndryshuar", root_changed),
+            ("slot i ndryshuar", good.replacen("\n11 ", "\n12 ", 1)),
+            ("pa firmë", format!("{}\n10 {}\n", head(0), hex::encode([5u8; 32]))),
+            ("vetëm një fushë", format!("{}\n{}\n12\n", head(0), line(10, [5; 32]))),
+            ("hex i madh", good.replacen(&hex::encode([0xabu8; 32]), &hex::encode([0xabu8; 32]).to_uppercase(), 1)),
+        ];
+        for (what, text) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let p = dir.path().join("attest.log");
+            std::fs::write(&p, &text).unwrap();
+            match Attester::open(opts(Some(p.clone()))) {
+                Ok(a) => panic!("{what}: u pranua; firmat e kthyera: {:?}", a.recent(5).iter().map(|x| x.0).collect::<Vec<_>>()),
+                Err(e) => assert!(e.contains("refuzohet"), "{what}: {e}"),
+            }
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), text, "{what}: skedari u ndryshua");
+        }
+        // I pandryshuari hapet dhe kthen firmat origjinale.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("attest.log");
+        std::fs::write(&p, &good).unwrap();
+        let a = Attester::open(opts(Some(p))).unwrap();
+        let o = opts(None);
+        for (s, r, g) in a.recent(5) {
+            assert_eq!(g, o.key.sign(&attest_message(&o.genesis, s, &r)).to_bytes());
+        }
+    }
+
+    /// A03: rreshti i fundit pa '\n' (shkrim i ndërprerë; firma s'u kthye kurrë) ruhet dhe hiqet.
+    #[test]
+    fn torn_last_line_is_dropped_and_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("attest.log");
+        let full = format!("{}\n{}\n", head(0), line(10, [5; 32]));
+        std::fs::write(&p, format!("{full}11 {}", &hex::encode([7u8; 32])[..20])).unwrap();
+        let mut a = Attester::open(opts(Some(p.clone()))).unwrap();
+        assert_eq!(a.recent(5).len(), 1);
+        assert!(std::fs::read_dir(dir.path()).unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".tail-")));
+        a.sign(11, &[7; 32]).unwrap();
+        drop(a);
+        assert_eq!(Attester::open(opts(Some(p))).unwrap().recent(5).len(), 2);
+    }
+
+    /// A03: v1 s'ka firma. Migrimi s'i jep vlefshmëri historisë: s'shërbehet, s'rifirmoset, dhe asnjë
+    /// slot deri te më i madhi i saj s'firmoset më. Origjinali ruhet.
+    #[test]
+    fn v1_log_migrates_without_trusting_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("attest.log");
+        let v1 = format!("{}\n10 {}\n20 {}\n", head(0).replacen(HEADER, HEADER_V1, 1).replace(" floor=0", ""), hex::encode([5u8; 32]), hex::encode([6u8; 32]));
+        std::fs::write(&p, &v1).unwrap();
+        let mut a = Attester::open(opts(Some(p.clone()))).unwrap();
+        assert!(a.recent(10).is_empty(), "historia pa firmë u shërbye");
+        assert!(a.sign(15, &[1; 32]).is_err(), "slot brenda historisë së vjetër u firmos");
+        assert!(a.sign(20, &[6; 32]).is_err());
+        assert!(a.sign(21, &[1; 32]).is_ok());
+        drop(a);
+        assert_eq!(std::fs::read_to_string(dir.path().join("attest.log.v1-migrated")).unwrap(), v1);
+        assert!(std::fs::read_to_string(&p).unwrap().starts_with(HEADER));
     }
 
     /// P-05: një log i krijuar për genesis A s'mund të përdoret për të firmosur root-et e tij si
@@ -409,7 +567,10 @@ mod tests {
                 a.sign(s, &[(s % 251) as u8; 32]).unwrap();
             }
         }
-        assert!(Attester::open(opts(Some(p.clone()))).is_ok());
+        // A03: kufiri i historisë së kompaktuar mbijeton rinisjen.
+        let mut a = Attester::open(opts(Some(p.clone()))).unwrap();
+        assert!(a.sign(0, &[0; 32]).is_err(), "slot nën kufirin e kompaktuar u firmos pas rinisjes");
+        drop(a);
         let mut o = opts(Some(p));
         o.genesis = [2; 32];
         assert!(Attester::open(o).is_err());
