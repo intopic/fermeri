@@ -330,7 +330,8 @@ print("   firma v2: genesis", g[:8]+"…, çelës i veçantë", r["signer"][:8]+
   node --input-type=module -e '
 import { ZiljaClient } from "'"$ROOT"'/sdk/js/src/index.js";
 const [z, rpc, ...pks] = process.argv.slice(1);
-const rs = await new ZiljaClient({ endpoints: [z], solanaRpc: rpc, minTrust: "single" }).verifyAccounts(pks);
+// compareData: false: Clock ndryshon çdo slot, ndaj krahasimi me RPC-në do të ishte "mismatch" i saktë.
+const rs = await new ZiljaClient({ endpoints: [z], solanaRpc: rpc, minTrust: "single", compareData: false }).verifyAccounts(pks);
 const want = ["exists", "does_not_exist", "exists", "exists"];
 for (const [i, r] of rs.entries()) {
   if (!r.ok || r.verdict !== want[i]) { console.error("GABIM: multi-proof", pks[i], r.verdict, r.errors); process.exit(1); }
