@@ -99,6 +99,21 @@ pub struct Config {
     /// Në Solana rrënjosja ndodh çdo ~0.4 s; 60 s do të thotë që zilja ose validatori kanë mbetur pas.
     #[serde(default = "default_max_root_age")]
     pub max_root_age_secs: u64,
+    /// A18: mbi kaq banka të parrënjosura zilja ndalon (fail-closed) para se të shterojë kujtesën
+    /// e validatorit. 0 = pa kufi.
+    #[serde(default = "default_max_pending_banks")]
+    pub max_pending_banks: usize,
+    /// A18: mbi kaq ndryshime llogarish në pritje (~250 B secili) zilja ndalon. 0 = pa kufi.
+    #[serde(default = "default_max_pending_updates")]
+    pub max_pending_updates: usize,
+}
+
+fn default_max_pending_banks() -> usize {
+    zilja_node::tracker::Limits::default().max_pending_banks
+}
+
+fn default_max_pending_updates() -> usize {
+    zilja_node::tracker::Limits::default().max_pending_updates
 }
 
 fn default_max_root_age() -> u64 {
@@ -356,7 +371,7 @@ impl GeyserPlugin for ZiljaPlugin {
             }
             None => None,
         };
-        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree, mid_run_load: is_reload, max_root_age_secs: Some(cfg.max_root_age_secs) }).map_err(custom)?;
+        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree, mid_run_load: is_reload, max_root_age_secs: Some(cfg.max_root_age_secs), limits: Some(zilja_node::tracker::Limits { max_pending_banks: cfg.max_pending_banks, max_pending_updates: cfg.max_pending_updates }) }).map_err(custom)?;
         self.resuming.store(service.resumed, Ordering::Relaxed);
         self.snapshot_on_resume.store(cfg.snapshot_on_resume, Ordering::Relaxed);
         let main = rpc::serve_routes(&cfg.bind, service.shared.clone(), rpc::Routes { jsonrpc: true, metrics: false, cors: cfg.cors })

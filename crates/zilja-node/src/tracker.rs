@@ -84,6 +84,20 @@ pub struct TrackerStats {
     pub parents_from_slot_hashes: u64,
 }
 
+/// A18: buxheti i bankave në pritje. Kur rrënjosja ngec, bankat dhe ndryshimet e tyre mbahen në RAM
+/// brenda procesit të validatorit; mbi këtë buxhet zilja ndalon (fail-closed) para se ta shterojë.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub max_pending_banks: usize,
+    pub max_pending_updates: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits { max_pending_banks: 8192, max_pending_updates: 4_000_000 }
+    }
+}
+
 #[derive(Default)]
 pub struct Tracker {
     started: bool,
@@ -106,6 +120,13 @@ pub struct Tracker {
     resumed: bool,
     /// A02: nisje pa snapshot. E vlefshme vetëm kur zinxhiri i parë zbret deri te sloti 0 (genesis).
     genesis_boot: bool,
+    /// A24: në slotin e fundit të rrënjosur jetuan disa banka: hash-i i bankës së rrënjosur s'mund të
+    /// lidhet me BankId-në e saj, ndaj as gjurma s'ruhet, as lidhja e radhës (vetëm me slot) s'pranohet.
+    base_ambiguous: bool,
+    /// A18: kufijtë e kujtesës për bankat në pritje (0 = pa kufi).
+    limits: Limits,
+    /// A18: ndryshimet e llogarive në pritje (në të gjitha bankat e parrënjosura).
+    pending_updates: usize,
     broken: bool,
     pub stats: TrackerStats,
 }
@@ -122,6 +143,35 @@ impl Tracker {
 
     pub fn set_mid_run_load(&mut self, v: bool) {
         self.mid_run_load = v;
+    }
+
+    /// A18: vendos buxhetin e kujtesës.
+    pub fn set_limits(&mut self, l: Limits) {
+        self.limits = l;
+    }
+
+    pub fn pending_updates(&self) -> usize {
+        self.pending_updates
+    }
+
+    /// A18: kontrollon buxhetin pas çdo ngjarjeje që shton gjendje.
+    fn over_budget(&mut self) -> Vec<Output> {
+        let l = self.limits;
+        if l.max_pending_banks > 0 && self.banks.len() > l.max_pending_banks {
+            return self.break_with(format!(
+                "{} banka në pritje (kufiri {}): rrënjosja ka ngecur; zilja ndalon para se të shterojë kujtesën e validatorit",
+                self.banks.len(),
+                l.max_pending_banks
+            ));
+        }
+        if l.max_pending_updates > 0 && self.pending_updates > l.max_pending_updates {
+            return self.break_with(format!(
+                "{} ndryshime llogarish në pritje (kufiri {}): rrënjosja ka ngecur; zilja ndalon para se të shterojë kujtesën e validatorit",
+                self.pending_updates,
+                l.max_pending_updates
+            ));
+        }
+        vec![]
     }
 
     /// Vazhdon nga gjendja e ruajtur në disk, pa snapshot. Asnjë slot nuk aplikohet derisa
@@ -164,6 +214,7 @@ impl Tracker {
     /// Ndalim i përhershëm (F-05): hidhet gjithçka në pritje dhe asgjë e re nuk mbahet më.
     pub fn halt(&mut self) {
         self.broken = true;
+        self.pending_updates = 0;
         self.banks = HashMap::new();
         self.deferred_roots = Vec::new();
         self.startup = Vec::new();
@@ -264,10 +315,12 @@ impl Tracker {
                 match bank.updates.get(&pubkey) {
                     Some((wv, _)) if *wv > write_version => {}
                     _ => {
-                        bank.updates.insert(pubkey, (write_version, meta));
+                        if bank.updates.insert(pubkey, (write_version, meta)).is_none() {
+                            self.pending_updates += 1;
+                        }
                     }
                 }
-                vec![]
+                self.over_budget()
             }
             Event::Status { slot, parent, bank_id, status } => {
                 if let Some(b) = bank_id {
@@ -281,6 +334,9 @@ impl Tracker {
                             bank.parent = parent;
                         }
                     }
+                }
+                if !self.broken && self.limits.max_pending_banks > 0 && self.banks.len() > self.limits.max_pending_banks {
+                    return self.over_budget();
                 }
                 match status {
                     Status::Dead => {
@@ -396,6 +452,14 @@ impl Tracker {
             let parent = self.banks[&cur].parent;
             match (parent, self.last_rooted) {
                 (Some(p), Some(r)) if p == r => {
+                    // A24: në slotin e rrënjosur jetuan disa banka dhe hash-i i së rrënjosurës s'dihet:
+                    // lidhja vetëm me slot mund të jetë me bankën tjetër. S'pranohet.
+                    if self.last_fp.is_none() && self.base_ambiguous {
+                        return self.break_with(format!(
+                            "sloti {} lidhet me slotin {r}, ku jetuan disa banka: lidhja me BankId-në e rrënjosur s'mund të verifikohet",
+                            self.banks[&cur].slot
+                        ));
+                    }
                     // P-06: lidhja me bankën e rrënjosur, jo vetëm me slotin e saj.
                     if let Some((_, want)) = self.last_fp {
                         match self.banks[&cur].parent_hash {
@@ -462,6 +526,10 @@ impl Tracker {
             }
         }
         chain.reverse();
+        // A24: sa banka të gjalla (jo Dead, jo të pastruara) kishte sloti i rrënjosur. Agave s'e jep
+        // lidhjen BankId → hash-i i bankës; hash-i nxirret nga SlotHashes i pasardhësve, të cilët
+        // lidhen me slotin, jo me BankId-në. Vetëm me një bankë të vetme në slot ky hash është i saji.
+        let live_at_slot = self.banks.values().filter(|b| b.slot == slot && !b.dead).count();
         let slots_in_batch = chain.len();
         let mut merged: HashMap<Key, Option<AccountMeta>> = HashMap::new();
         for b in &chain {
@@ -483,15 +551,21 @@ impl Tracker {
         let mut seen: Vec<[u8; 32]> = self.banks.values().filter(|b| !b.dead).filter_map(|b| b.ancestors.iter().find(|(s, _)| *s == slot).map(|(_, h)| *h)).collect();
         seen.sort();
         seen.dedup();
+        self.base_ambiguous = live_at_slot > 1;
         let fingerprint = match seen.as_slice() {
-            [h] => Some((slot, *h)),
+            [h] if !self.base_ambiguous => Some((slot, *h)),
             _ => None,
         };
+        if self.base_ambiguous {
+            self.stats.ambiguous_banks += 1;
+        }
         if let Some((_, h)) = fingerprint {
             // Bankat që njohin një bankë tjetër në S s'rrjedhin nga rrënja: hidhen.
             self.banks.retain(|_, b| b.ancestors.iter().find(|(s, _)| *s == slot).is_none_or(|(_, x)| *x == h));
         }
         self.last_fp = fingerprint;
+        // A18: ndryshimet në pritje pas heqjes së zinxhirit dhe të fork-eve.
+        self.pending_updates = self.banks.values().map(|b| b.updates.len()).sum();
         vec![Output::Rooted { slot, slots_in_batch, updates: merged.into_iter().collect(), fingerprint }]
     }
 }

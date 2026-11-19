@@ -118,6 +118,9 @@ pub struct Metrics {
     pub stopping: AtomicBool,
     /// P-10: `false` pasi thread-i i punëtorit mbaron (normalisht ose me panic).
     pub worker_alive: AtomicBool,
+    /// A18: bankat dhe ndryshimet e llogarive në pritje (të parrënjosura).
+    pub pending_banks: AtomicU64,
+    pub pending_updates: AtomicU64,
     /// A01: njoftimet e entry-ve nga Agave (kostoja e `entry_notifications_enabled = true`).
     pub entries_seen: AtomicU64,
     /// A01: njoftimet UpdateParent (Alpenglow) që arritën te plugin-i.
@@ -189,6 +192,8 @@ impl Metrics {
             g("ambiguous_banks", "Herët kur një slot kishte disa banka të gjalla që SlotHashes s'i dallonte (ndalim, P-07)", &self.ambiguous_banks),
             g("resume_verified", "1 kur pas rinisjes u konfirmua që jemi në të njëjtin zinxhir (SlotHashes)", &self.resume_verified),
             g("phase", "Faza: 0 starting, 1 recovered (nga disku, e paverifikuar), 2 serving, 3 halted", &self.phase),
+            g("pending_banks", "Bankat e parrënjosura në RAM (A18: buxheti max_pending_banks)", &self.pending_banks),
+            g("pending_updates", "Ndryshimet e llogarive në pritje në RAM (A18: buxheti max_pending_updates)", &self.pending_updates),
             g("entries_seen", "Njoftimet e entry-ve nga validatori (A01: kostoja e marrjes së UpdateParent)", &self.entries_seen),
             g("update_parent_seen", "Njoftimet UpdateParent (Alpenglow) të marra", &self.update_parent_seen),
             g("max_root_age_secs", "Pragu i freskisë së root-it për /health (0 = pa kontroll)", &self.max_root_age_secs),
@@ -222,6 +227,8 @@ pub struct Options {
     /// Plugin-i u ngarkua ndërsa validatori punonte (`reloadPlugin`): bankat që po përpunoheshin
     /// u krijuan para ngarkimit dhe vëzhgohen vetëm pjesërisht.
     pub mid_run_load: bool,
+    /// A18: buxheti i bankave dhe i ndryshimeve në pritje (`None` = parazgjedhja).
+    pub limits: Option<crate::tracker::Limits>,
 }
 
 pub struct Service {
@@ -264,6 +271,7 @@ impl Service {
         let shared = Shared::default();
         let mut tracker = Tracker::new();
         tracker.set_mid_run_load(opts.mid_run_load);
+        tracker.set_limits(opts.limits.unwrap_or_default());
         let attester = match opts.attest {
             Some(a) => Some(Attester::open(a).map_err(std::io::Error::other)?),
             None => None,
@@ -629,6 +637,8 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
             }
         }
         m.ambiguous_banks.store(tracker.stats.ambiguous_banks, Ordering::Relaxed);
+        m.pending_banks.store(tracker.pending_banks() as u64, Ordering::Relaxed);
+        m.pending_updates.store(tracker.pending_updates() as u64, Ordering::Relaxed);
     }
 }
 
