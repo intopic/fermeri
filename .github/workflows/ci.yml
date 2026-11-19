@@ -70,7 +70,9 @@ jobs:
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@v2
       - name: build plugin + cli + aggregator + snapshot-bench
-        run: cargo build --release -p zilja-plugin -p zilja-cli -p zilja-aggregator -p zilja-bench --bin zilja-snapshot-bench
+        run: |
+          cargo build --release -p zilja-plugin -p zilja-cli -p zilja-aggregator
+          cargo build --release -p zilja-bench --bin zilja-snapshot-bench
       - name: shkarko Agave
         run: |
           curl -sSL -o agave.tar.bz2 "https://github.com/anza-xyz/agave/releases/download/${AGAVE_VERSION}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
