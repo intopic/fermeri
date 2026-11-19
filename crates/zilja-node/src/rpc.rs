@@ -4,8 +4,9 @@
 //! - `getAccountProof [pubkey_base58, {"slot": n}?]` → dëftesa në slotin e fundit të rrënjosur,
 //!   ose në gjendjen e një sloti të kaluar brenda kujtesës (vetëm me pemën në disk). `slot` në
 //!   përgjigje është sloti i rrënjosur që u përdor vërtet (≤ i kërkuari, L-05).
-//! - `getZiljaRoot [slot?]` → `{slot, root, accounts, complete}`; me `slot`, root-i i atij sloti
-//!   nga unaza e sloteve të fundit (Simpler-5), në të dyja mënyrat.
+//! - `getZiljaRoot [slot?]` → `{slot, root, complete, provableFrom, accounts?}`; me `slot`, root-i i atij
+//!   sloti nga unaza e sloteve të fundit (Simpler-5). A19: `accounts` (i pemës aktuale) jepet vetëm për
+//!   slotin aktual; mbi majë `-32008`.
 //!
 //! `lamports` dhe `dataLen` dalin si tekst dhjetor (F-08): JSON-i s'mund t'i mbajë saktë mbi 2^53.
 //! - `getZiljaAttestation [slot?]` → `{slot, root, validator, signer, authorization, genesis, signature}`
@@ -32,6 +33,8 @@ pub type RpcError = (i64, String);
 pub const CODE_NOT_READY: i64 = -32002;
 pub const CODE_HALTED: i64 = -32003;
 pub const CODE_OUT_OF_HISTORY: i64 = -32007;
+/// A19: sloti i kërkuar është pas slotit të fundit të rrënjosur: përgjigja s'do të ishte e qëndrueshme.
+pub const CODE_NOT_YET_ROOTED: i64 = -32008;
 /// Gabim I/O ose dëmtim i ruajtjes: zilja ndalon së shërbyeri (s'garanton më korrektësinë).
 pub const CODE_STORAGE: i64 = -32010;
 
@@ -40,7 +43,9 @@ pub fn account_proof_json(st: &State, pubkey: &Key, at: Option<u64>) -> Result<V
     // L-05: gjendja në slotin `v` është ajo e slotit më të fundit të rrënjosur ≤ v; ai etiketohet.
     let at = match at {
         None => None,
-        Some(v) if v >= st.slot => Some(st.slot),
+        Some(v) if v == st.slot => Some(st.slot),
+        // A19: mbi majë s'ka përgjigje të qëndrueshme ("i fundit ≤ v" do të ndryshonte me rrënjosjet e reja).
+        Some(v) if v > st.slot => return Err((CODE_NOT_YET_ROOTED, format!("sloti {v} s'është rrënjosur ende (i fundit: {})", st.slot))),
         Some(v) => match st.roots.range(..=v).next_back() {
             Some((s, _)) => Some(*s),
             None => return Err((CODE_OUT_OF_HISTORY, format!("sloti {v} është jashtë kujtesës"))),
@@ -143,10 +148,14 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
             }
         }
         "getZiljaRoot" => {
+            if params.len() > 1 {
+                return err(id, -32602, "duhet params: [slot?]");
+            }
             let (slot, root) = match params.first() {
                 None => (st.slot, st.tree.root()),
                 Some(v) => match v.as_u64() {
                     Some(s) if s == st.slot => (s, st.tree.root()),
+                    Some(s) if s > st.slot => return err(id, CODE_NOT_YET_ROOTED, &format!("sloti {s} s'është rrënjosur ende (i fundit: {})", st.slot)),
                     Some(s) => match st.roots.get(&s) {
                         Some(r) => (s, *r),
                         None => return err(id, -32005, &format!("s'ka root për slotin {s}")),
@@ -154,15 +163,20 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
                     None => return err(id, -32602, "slot duhet numër i plotë jo negativ"),
                 },
             };
-            json!({
-                "jsonrpc": "2.0", "id": id,
-                "result": {
-                    "slot": slot, "root": hex::encode(root), "accounts": st.tree.len(), "complete": st.complete,
-                    "provableFrom": st.tree.provable_range().map(|r| r.0),
-                }
-            })
+            // A19: `accounts` është i pemës aktuale: jepet vetëm kur përgjigja është për slotin aktual.
+            let mut res = json!({
+                "slot": slot, "root": hex::encode(root), "complete": st.complete,
+                "provableFrom": st.tree.provable_range().map(|r| r.0),
+            });
+            if slot == st.slot {
+                res["accounts"] = json!(st.tree.len());
+            }
+            json!({"jsonrpc": "2.0", "id": id, "result": res})
         }
         "getZiljaAttestation" => {
+            if params.len() > 1 {
+                return err(id, -32602, "duhet params: [slot?]");
+            }
             let Some(attester) = st.attester.clone() else {
                 return err(id, -32004, "kjo zile nuk firmos (mungon attest_keypair)");
             };
