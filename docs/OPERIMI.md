@@ -321,6 +321,18 @@ nuk mjafton: `ok` / kodi 0 kërkon që të kalojnë katër kontrolle të ndara.
 Nuk thirret kur validatori ndalet me SIGTERM (u mat në Fazën 0). Prandaj gjendja në disk
 është e sigurt ndaj ndalimit pa paralajmërim: çdo slot shkruhet në një `WriteBatch` atomik.
 
+**Ngarkimi në mes të punës s'mbështetet (A02).** Agave lëshon `CreatedBank` pasi konstruktori i
+bankës ka shkruar tashmë llogari: epokën, shpërblimet e ndara dhe sysvar-ët. Ndryshimet e bankave
+në fluturim i shkojnë instancës së vjetër. Kështu asgjë nga upstream s'provon që një bankë u
+vëzhgua e plotë pas një ngarkimi në mes të punës. Prandaj:
+
+- `reloadPlugin` (`on_load(.., true)`): instanca e re s'aplikon asnjë bankë dhe ndalon fail-closed
+  (`/health` 503), si në RAM edhe me `pages`. Validatori vazhdon pa u rrëzuar.
+- `loadPlugin` pa snapshot (`on_load(.., false)` në mes të punës): pranohet si nisje nga genesis
+  vetëm kur zinxhiri i parë i rrënjosur zbret te sloti 0. Përndryshe zilja ndalon.
+- Rruga e mbështetur: **rinis validatorin.** Zilja ndërtohet nga snapshot-i, ose vazhdon nga
+  pema në disk pas kontrollit të zinxhirit.
+
 ## Firmosja (F-10)
 
 1. Krijo një çelës të veçantë: `solana-keygen new -o attest-signer.json`.

@@ -82,8 +82,6 @@ pub struct TrackerStats {
     /// P-07: herët kur një slot kishte disa banka të gjalla që SlotHashes s'i dallonte (ndalim).
     pub ambiguous_banks: u64,
     pub parents_from_slot_hashes: u64,
-    /// Banka të vëzhguara vetëm pjesërisht (para ngarkimit të plugin-it) që u bënë bazë, pa u aplikuar.
-    pub partial_banks_skipped: u64,
 }
 
 #[derive(Default)]
@@ -103,12 +101,11 @@ pub struct Tracker {
     /// P-06: hash-i i bankës së slotit të fundit të rrënjosur, kur dihet. Lidhja e parë e çdo
     /// zinxhiri të ri duhet të jetë pikërisht me këtë bankë, jo vetëm me këtë slot.
     last_fp: Option<Fingerprint>,
-    /// Plugin-i u ngarkua në mes të punës (`reloadPlugin`).
+    /// Plugin-i u ngarkua në mes të punës (`reloadPlugin`). A02: s'ka bazë të verifikueshme.
     mid_run_load: bool,
-    /// Ngarkim në mes të punës pa bazë (pema në RAM): bankat pa `CreatedBank` u krijuan para
-    /// ngarkimit dhe një pjesë e ndryshimeve të tyre i shkoi instancës tjetër; s'aplikohen, bëhen baza.
-    no_base: bool,
     resumed: bool,
+    /// A02: nisje pa snapshot. E vlefshme vetëm kur zinxhiri i parë zbret deri te sloti 0 (genesis).
+    genesis_boot: bool,
     broken: bool,
     pub stats: TrackerStats,
 }
@@ -307,13 +304,22 @@ impl Tracker {
                         if self.broken {
                             return vec![];
                         }
+                        if self.mid_run_load {
+                            // A02: Agave lëshon `CreatedBank` pasi konstruktori i bankës ka shkruar
+                            // tashmë llogari (epoka, shpërblimet, sysvar-ët), dhe ndryshimet e bankave
+                            // në fluturim i shkuan instancës së vjetër. Asgjë s'provon që një bankë u
+                            // vëzhgua e plotë: s'aplikohet asnjë; rinisja e validatorit jep bazën.
+                            return self.break_with(format!(
+                                "plugin-i u ringarkua në mes të punës (sloti i rrënjosur {slot}): s'ka bazë të verifikueshme për bankat në fluturim; rinis validatorin"
+                            ));
+                        }
                         if !self.started {
                             if self.startup.is_empty() && self.snapshot_slot.is_none() {
                                 // Nisje nga genesis (pa snapshot): validatori nuk dërgon fund-nisjeje.
                                 // Pema nis bosh dhe mbulon vetëm llogaritë që ndryshojnë: `complete = false`.
                                 self.started = true;
                                 self.complete = false;
-                                self.no_base = self.mid_run_load;
+                                self.genesis_boot = true;
                                 let mut out = vec![Output::Startup { slot: 0, accounts: vec![] }];
                                 out.extend(self.root(slot, bank_id));
                                 return out;
@@ -384,15 +390,6 @@ impl Tracker {
             return self.break_with(format!("sloti i rrënjosur {slot} nuk ka asnjë bank të njohur"));
         };
         // Zinxhiri i bankave nga S prapa. Duhet të mbarojë SAKTËSISHT te sloti i fundit i rrënjosur (F-01).
-        // Ngarkim në mes të punës pa bazë: një bankë pa `CreatedBank` u krijua para ngarkimit, dhe një
-        // pjesë e ndryshimeve të saj i shkoi instancës tjetër. S'aplikohet: bëhet baza.
-        if self.no_base && !self.banks[&start].created {
-            self.stats.partial_banks_skipped += 1;
-            self.banks.retain(|_, b| b.slot > slot);
-            self.last_rooted = Some(slot);
-            self.last_fp = None;
-            return vec![];
-        }
         let mut chain: Vec<BankId> = vec![start];
         let mut cur = start;
         loop {
@@ -426,16 +423,20 @@ impl Tracker {
                 }
                 (Some(p), _) => match self.bank_at(p, Some(cur)) {
                     Err(e) => return self.break_with(e),
-                    Ok(Some(next)) if self.no_base && !self.banks[&next].created => {
-                        // Paraardhës i vëzhguar pjesërisht: zinxhiri nis pas tij.
-                        self.stats.partial_banks_skipped += 1;
-                        break;
-                    }
                     Ok(Some(next)) => {
                         chain.push(next);
                         cur = next;
                     }
-                    Ok(None) if self.last_rooted.is_none() => break, // nisje nga genesis: s'ka gjë më poshtë
+                    // Nisje nga genesis: banka e parë rrjedh nga sloti 0. A02: një zinxhir që s'zbret te
+                    // genesis do të thotë që plugin-i u ngarkua në mes të punës (`loadPlugin`), pas
+                    // bankave që s'i pa: s'ka bazë.
+                    Ok(None) if self.last_rooted.is_none() && p == 0 => break,
+                    Ok(None) if self.last_rooted.is_none() => {
+                        self.stats.missing_parents += 1;
+                        return self.break_with(format!(
+                            "nisje pa snapshot, por zinxhiri i slotit {slot} s'zbret te genesis (mungon sloti {p}): plugin-i u ngarkua në mes të punës; rinis validatorin"
+                        ));
+                    }
                     Ok(None) => {
                         self.stats.missing_parents += 1;
                         return self.break_with(format!(
@@ -444,7 +445,13 @@ impl Tracker {
                         ));
                     }
                 },
-                (None, None) => break,
+                // Pa prind dhe pa bazë: vetëm vetë banka e genesis-it.
+                (None, None) if self.banks[&cur].slot == 0 => break,
+                (None, None) => {
+                    self.stats.missing_parents += 1;
+                    let s = self.banks[&cur].slot;
+                    return self.break_with(format!("nisje pa snapshot: prindi i slotit {s} është i panjohur, zinxhiri s'lidhet me genesis"));
+                }
                 (None, Some(r)) => {
                     self.stats.missing_parents += 1;
                     let s = self.banks[&cur].slot;
