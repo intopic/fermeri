@@ -86,6 +86,8 @@ while True:
 PY
 }
 metric() { curl -s --noproxy '*' "$METRICS/metrics" | awk -v m="zilja_$1" '$1==m {print $2}'; }
+# A08: thread-et e pool-it Rayon të Ziles në procesin e validatorit.
+rayon_threads() { cat /proc/"$VPID"/task/*/comm 2>/dev/null | grep -c '^zilja-rayon' || true; }
 zroot() { curl -s --noproxy '*' -X POST -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"getZiljaRoot"}' "$ZILJA"; }
 
@@ -320,8 +322,12 @@ PY
     grep -q "$(solana -u "$RPC" genesis-hash)" "$WORK/zdb/MANIFEST" || { echo "GABIM: MANIFEST pa genesis-in e ri"; exit 1; }
     echo "   ✅ u ndërtua për genesis-in e ri"
     echo "== Hapi 9 (pages): ringarkimi i plugin-it me admin RPC → LOCK-u lirohet; pema s'mund të vazhdojë"
+    RAYON_BEFORE=$(rayon_threads)
     admin_rpc reloadPlugin zilja "$WORK/zilja.json"
     kill -0 "$VPID" || { echo "GABIM: validatori ra"; exit 1; }
+    RAYON_AFTER=$(rayon_threads)
+    echo "   A08: thread-e zilja-rayon para/pas ringarkimit: $RAYON_BEFORE / $RAYON_AFTER"
+    [ "$RAYON_BEFORE" -gt 0 ] && [ "$RAYON_AFTER" = "$RAYON_BEFORE" ] || { echo "GABIM: thread-et Rayon të instancës së vjetër mbetën pas unload (A08)"; exit 1; }
     # Instanca e re hapi të njëjtën dosje: lock-u i së vjetrës u lirua (P-01).
     for _ in $(seq 1 60); do [ "$(metric resumed)" = "1" ] && break; sleep 1; done
     [ "$(metric resumed)" = "1" ] || { echo "GABIM: instanca e re s'e hapi pemën (LOCK?)"; tail -20 "$WORK/validator.out"; exit 1; }
@@ -359,8 +365,12 @@ PY
   fi
 else
   echo "== Hapi 7 (RAM): ringarkimi i plugin-it me admin RPC (F-07)"
+  RAYON_BEFORE=$(rayon_threads)
   admin_rpc reloadPlugin zilja "$WORK/zilja.json"
   grep -q on_unload "$ZILJA_PROBE" || { echo "GABIM: on_unload nuk u thirr"; exit 1; }
+  RAYON_AFTER=$(rayon_threads)
+  echo "   A08: thread-e zilja-rayon para/pas ringarkimit: $RAYON_BEFORE / $RAYON_AFTER"
+  [ "$RAYON_BEFORE" -gt 0 ] && [ "$RAYON_AFTER" = "$RAYON_BEFORE" ] || { echo "GABIM: thread-et Rayon të instancës së vjetër mbetën pas unload (A08)"; exit 1; }
   for _ in $(seq 1 120); do [ "$(health)" = "200" ] && break; sleep 1; done
   [ "$(health)" = "200" ] || { echo "GABIM: zilja s'u ringrit pas ringarkimit"; exit 1; }
   kill -0 "$VPID" || { echo "GABIM: validatori ra"; exit 1; }
