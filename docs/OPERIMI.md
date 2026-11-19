@@ -489,3 +489,20 @@ python3 scripts/plot-bench.py /nvme/zilja-bench-out/results.csv   # ms_slot.png,
 - **Provë e shpejtë:** `--limit 2000000` lexon vetëm 2M rekordet e para (pema s'shënohet e plotë).
 - **Kujdes te checkpoint-i:** slotet 256, 512… bëjnë checkpoint; shihen si pika të kuqe te
   `ms_slot.png`.
+
+### Në GitHub (`.github/workflows/snapshot-bench.yml`)
+
+- **smoke** (falas, runner-i i GitHub-it): çdo të hënë, ose me dorë nga Actions → snapshot-bench →
+  Run workflow. Arkivi lexohet direkt nga rrjeti (`curl | zilja-snapshot-bench - …`), pa u ruajtur,
+  dhe ndërtohet pema vetëm me `limit` rekordet e para (parazgjedhja 3M; runner-i ka 14 GB disk).
+  Provon që parser-i lexon të dhëna reale pa gabim dhe që dëftesat verifikohen; kap ndryshimet e
+  formatit nga Agave. **Nuk** jep numrat e prodhimit: makina është virtuale, e ndarë, pa NVMe.
+  Rezultatet dhe grafikët dalin si artifact, përmbledhja te faqja e ekzekutimit.
+- **full** (makina jote): numrat realë mbi snapshot-in e plotë. Regjistro PC-në ose serverin si
+  self-hosted runner (repo → Settings → Actions → Runners → New self-hosted runner, Linux) dhe jepi
+  etiketën `zilja-bench`. Duhen Rust (`rustup`), `curl`, `python3` me `matplotlib`, dhe disk NVMe me
+  ≥ 700 GB – 1 TB të lira te `ZILJA_BENCH_DIR` (parazgjedhja `~/zilja-bench`; çdo ekzekutim merr
+  dosjen e vet). Nis me Actions → snapshot-bench → Run workflow → mode `full` dhe URL-në e snapshot-it.
+- URL-ja: një `.tar.zst` i plotë, ose `https://<rpc>/snapshot.tar.bz2`, që ridrejton te skedari i
+  fundit. Nëse një RPC publik s'e shërben, përdor një burim tjetër snapshot-esh.
+- Me stdin, sloti merret nga skedarët e llogarive (ose jepet me `--slot`).

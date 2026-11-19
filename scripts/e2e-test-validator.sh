@@ -251,6 +251,9 @@ else
     echo "   snapshot $S1: plugin $PLUGIN_ROOT"
     echo "   snapshot $S1: bench  $BENCH_ROOT"
     [ -n "$PLUGIN_ROOT" ] && [ "$PLUGIN_ROOT" = "$BENCH_ROOT" ] || { echo "GABIM: parser-i i snapshot-it jep root tjetër nga plugin-i"; exit 1; }
+    # I njëjti arkiv nga stdin (si në GitHub: curl | bench), pa e ruajtur në disk.
+    STDIN_ROOT=$(cat "$SNAPF" | "$SNAPBENCH" - "$WORK/snapbench-db2" --out "$WORK/snapbench2/results.csv" --ingest-only --slot "$S1" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["root"])')
+    [ "$STDIN_ROOT" = "$PLUGIN_ROOT" ] || { echo "GABIM: leximi nga stdin jep root tjetër ($STDIN_ROOT)"; exit 1; }
     echo "   ✅ zilja-snapshot-bench (AppendVec nga .tar.zst) = plugin-i (Geyser) për snapshot-in $S1"
   fi
 fi

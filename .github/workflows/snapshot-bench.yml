@@ -1,0 +1,117 @@
+name: snapshot-bench
+
+# Benchmark-u mbi një snapshot të vërtetë Solana (zilja-snapshot-bench).
+#
+# - smoke (GitHub, falas): arkivi lexohet direkt nga rrjeti (curl | bench), vetëm `limit` rekordet e
+#   para (runner-i ka 14 GB disk). Provon parser-in mbi të dhëna reale dhe se dëftesat verifikohen.
+#   S'jep numrat e prodhimit: makina është virtuale dhe e ndarë.
+# - full (self-hosted): snapshot-i i plotë në makinën tënde (etiketa `zilja-bench`), me numrat realë.
+#   Shih docs/OPERIMI.md, "Benchmark mbi një snapshot të vërtetë".
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke = GitHub, me limit · full = runner-i yt self-hosted (etiketa zilja-bench)"
+        type: choice
+        options: [smoke, full]
+        default: smoke
+      snapshot_url:
+        description: "URL e snapshot-it (.tar.zst, ose një /snapshot.tar.bz2 që ridrejton te .tar.zst)"
+        default: "https://api.testnet.solana.com/snapshot.tar.bz2"
+      limit:
+        description: "smoke: sa rekorde të lexohen (full: injorohet)"
+        default: "3000000"
+      updates:
+        description: "ndryshime për slot, të ndara me presje"
+        default: "5000,15000,30000"
+      slots:
+        description: "slote për çdo profil (≥ 257 përfshin një checkpoint)"
+        default: "300"
+      proofs:
+        default: "5000"
+  schedule:
+    # Çdo të hënë: kontroll i formatit mbi Testnet (nëse Agave ndryshon AppendVec-un, dështon këtu).
+    - cron: "17 3 * * 1"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  smoke:
+    if: github.event_name == 'schedule' || inputs.mode == 'smoke'
+    name: smoke (GitHub, ${{ inputs.limit || '3000000' }} rekorde)
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust (versioni nga rust-toolchain.toml)
+        run: rustup toolchain install && rustc --version
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build --release -p zilja-bench --bin zilja-snapshot-bench
+      - name: bench (streaming nga rrjeti)
+        env:
+          URL: ${{ inputs.snapshot_url || 'https://api.testnet.solana.com/snapshot.tar.bz2' }}
+          LIMIT: ${{ inputs.limit || '3000000' }}
+          UPDATES: ${{ inputs.updates || '5000' }}
+          SLOTS: ${{ inputs.slots || '300' }}
+          PROOFS: ${{ inputs.proofs || '2000' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          echo "snapshot: $(curl -sIL -o /dev/null -w '%{url_effective}' "$URL")"
+          # Bench-i ndalon pas LIMIT rekordesh; curl merr pastaj SIGPIPE: vlen statusi i bench-it.
+          curl -fsSL --retry 3 "$URL" | ./target/release/zilja-snapshot-bench - "$RUNNER_TEMP/db" \
+            --out "$RUNNER_TEMP/out/results.csv" --limit "$LIMIT" --cache-depth 20 \
+            --slots "$SLOTS" --updates "$UPDATES" --proofs "$PROOFS" > "$RUNNER_TEMP/out/stdout.json"
+          st=${PIPESTATUS[1]}
+          [ "$st" = 0 ] || { echo "bench-i dështoi ($st)"; exit "$st"; }
+      - name: grafikët dhe përmbledhja
+        if: always()
+        run: |
+          pip install -q matplotlib || true
+          python3 scripts/plot-bench.py "$RUNNER_TEMP/out/results.csv" || true
+          python3 - "$RUNNER_TEMP/out/summary.json" <<'PY' >> "$GITHUB_STEP_SUMMARY" || true
+          import json, sys
+          s = json.load(open(sys.argv[1]))
+          print(f"### Snapshot {s['snapshot_slot']}: {s['accounts']:,} llogari (smoke, me limit)")
+          print(f"- ndërtimi: {s['build']['finish_seconds']:.0f} s, RAM maksimal {s['build']['hwm_mb']:.0f} MB, maja e blloqeve {s['build']['packer_peak_blocks']}")
+          for k, v in s.get("slots", {}).items():
+              t = v["total_ms"]; print(f"- {int(k):,}/slot: p50 {t['p50']:.1f} ms, p99 {t['p99']:.1f} ms")
+          p = s.get("proofs")
+          if p: print(f"- dëftesa: {p['n']} (të pavlefshme: {p['invalid']}), {p['bytes']['p50']:.0f} B p50")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snapshot-bench-smoke
+          path: ${{ runner.temp }}/out
+
+  full:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'full'
+    name: full (self-hosted)
+    runs-on: [self-hosted, linux, zilja-bench]
+    timeout-minutes: 2880
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        run: cargo build --release -p zilja-bench --bin zilja-snapshot-bench
+      - name: bench (snapshot i plotë, streaming)
+        env:
+          URL: ${{ inputs.snapshot_url }}
+        run: |
+          # Dosje e re për çdo ekzekutim (bench-i s'fshin asgjë që s'e krijoi).
+          W="${ZILJA_BENCH_DIR:-$HOME/zilja-bench}/run-${{ github.run_id }}"
+          mkdir -p "$W/out"
+          echo "W=$W" >> "$GITHUB_ENV"
+          curl -fsSL --retry 3 "$URL" | ./target/release/zilja-snapshot-bench - "$W/db" \
+            --out "$W/out/results.csv" --cache-depth 20 --slots "${{ inputs.slots }}" \
+            --updates "${{ inputs.updates }}" --proofs "${{ inputs.proofs }}" > "$W/out/stdout.json"
+          st=${PIPESTATUS[1]}
+          [ "$st" = 0 ] || exit "$st"
+          python3 scripts/plot-bench.py "$W/out/results.csv"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snapshot-bench-full
+          path: ${{ env.W }}/out
