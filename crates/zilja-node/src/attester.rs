@@ -1,7 +1,9 @@
 //! Firmosja e root-eve (F-10, I-02).
 //!
 //! - Mesazhi v2 përfshin hash-in e genesis-it.
-//! - Firmos një çelës i veçantë, i autorizuar një herë nga identiteti, ose vetë identiteti.
+//! - Firmos një çelës i veçantë, i autorizuar nga identiteti për një periudhë epokash (v2, maksimumi
+//!   15), ose vetë identiteti. Autorizimi rinovohet pa rinisje: kur skedari i tij ndryshon, lexohet,
+//!   verifikohet dhe zëvendësohet; një skedar i pavlefshëm s'e prek autorizimin e mëparshëm.
 //! - Firmoset vetëm kur pema është e plotë dhe zinxhiri është konfirmuar (thirrësi e garanton).
 //! - Asnjëherë dy root-e të ndryshme për të njëjtin slot, as pas rinisjes: çdo (slot, root) i
 //!   firmosur shkruhet në një skedar (me `sync`) para se firma të dalë. Po ky skedar i rikthen
@@ -23,7 +25,7 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use zilja_verifier::attest::{attest_message, authorize_message};
+use zilja_verifier::attest::{attest_message, Authorization, MAX_AUTH_EPOCHS};
 use zilja_verifier::Hash;
 
 /// Sa (slot, root) të fundit mbahen në skedar.
@@ -40,8 +42,10 @@ pub struct AttestOptions {
     pub key: SigningKey,
     /// Identiteti i validatorit, kur firmos një çelës i veçantë.
     pub identity: Option<[u8; 32]>,
-    /// Firma e identitetit mbi `authorize_message(genesis, key)`.
-    pub authorization: Option<[u8; 64]>,
+    /// Autorizimi i `key` nga identiteti (v2, me afat).
+    pub authorization: Option<Authorization>,
+    /// Skedari nga i cili erdhi autorizimi (`zilja-authorize`); rilexohet kur ndryshon.
+    pub authorization_file: Option<PathBuf>,
     pub genesis: Hash,
     /// Skedari i firmave (kundër firmosjes së dyfishtë). `None` vetëm në teste.
     pub log: Option<PathBuf>,
@@ -55,8 +59,34 @@ pub struct AttestOptions {
 pub struct AttesterInfo {
     pub identity: [u8; 32],
     pub signer: [u8; 32],
-    pub authorization: Option<[u8; 64]>,
+    pub authorization: Option<Authorization>,
     pub genesis: Hash,
+}
+
+/// Lexon skedarin që nxjerr `zilja-authorize` (v2):
+/// `{"version": 2, "identity", "signer", "genesis", "fromEpoch", "untilEpoch", "authorization"}`.
+/// Kthen identitetin dhe autorizimin; firma kontrollohet nga `Attester`. Një skedar v1 (pa afat)
+/// refuzohet me udhëzimin për ta rikrijuar.
+pub fn read_authorization_file(path: &Path) -> Result<([u8; 32], Authorization), String> {
+    let at = |e: String| format!("{}: {e}", path.display());
+    let text = std::fs::read_to_string(path).map_err(|e| at(e.to_string()))?;
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| at(e.to_string()))?;
+    if v.get("version").and_then(|x| x.as_u64()) != Some(2) {
+        return Err(at("autorizim i vjetër (v1, pa afat) ose i panjohur: s'pranohet më. Rikrijoje me `zilja-authorize ... <from_epoch>` (v2, maksimumi 15 epoka)".into()));
+    }
+    let id: [u8; 32] = bs58::decode(v["identity"].as_str().ok_or_else(|| at("mungon identity".into()))?)
+        .into_vec()
+        .map_err(|e| at(e.to_string()))?
+        .try_into()
+        .map_err(|_| at("identity duhet 32 bajt".into()))?;
+    let epoch = |k: &str| v[k].as_u64().ok_or_else(|| at(format!("{k} duhet numër i plotë")));
+    let signature: [u8; 64] = lower_hex(v["authorization"].as_str().ok_or_else(|| at("mungon authorization".into()))?)
+        .ok_or_else(|| at("authorization duhet 64 bajt hex i vogël".into()))?;
+    let a = Authorization { from_epoch: epoch("fromEpoch")?, until_epoch: epoch("untilEpoch")?, signature };
+    if !a.well_formed() {
+        return Err(at(format!("periudha {}..{} s'vlen (duhet 1..={MAX_AUTH_EPOCHS} epoka)", a.from_epoch, a.until_epoch)));
+    }
+    Ok((id, a))
 }
 
 pub struct Attester {
@@ -69,6 +99,13 @@ pub struct Attester {
     file: Option<File>,
     lines: usize,
     pub refused: u64,
+    /// Përmbajtja e skedarit të autorizimit kur u lexua së fundi.
+    auth_seen: Option<Vec<u8>>,
+    auth_checked: Option<std::time::Instant>,
+}
+
+fn auth_bytes(o: &AttestOptions) -> Option<Vec<u8>> {
+    o.authorization_file.as_ref().and_then(|p| std::fs::read(p).ok())
 }
 
 /// Një rresht v2: `<slot> <root 64 hex> <firma 128 hex>`, kanonik (pa hapësira të tepërta, hex i vogël).
@@ -101,11 +138,8 @@ impl Attester {
     pub fn open(opts: AttestOptions) -> Result<Self, String> {
         let signer = opts.key.verifying_key().to_bytes();
         if let (Some(id), Some(auth)) = (opts.identity, opts.authorization) {
-            let ok = ed25519_dalek::VerifyingKey::from_bytes(&id)
-                .map(|vk| vk.verify_strict(&authorize_message(&opts.genesis, &signer), &ed25519_dalek::Signature::from_bytes(&auth)).is_ok())
-                .unwrap_or(false);
-            if !ok {
-                return Err("autorizimi i çelësit të firmosjes nuk vlen për këtë identitet dhe genesis".into());
+            if !auth.signed_by(&id, &opts.genesis, &signer) {
+                return Err("autorizimi i çelësit të firmosjes nuk vlen për këtë identitet, çelës dhe genesis (ose periudha s'është 1..=15 epoka)".into());
             }
         } else if opts.identity.is_some_and(|id| id != signer) {
             return Err("një çelës i veçantë firmosjeje kërkon autorizim nga identiteti".into());
@@ -116,7 +150,8 @@ impl Attester {
             None => None,
         };
         let Some(p) = opts.log.clone() else {
-            return Ok(Attester { opts, _lock: lock, signed: BTreeMap::new(), floor: 0, file: None, lines: 0, refused: 0 });
+            let auth_seen = auth_bytes(&opts);
+            return Ok(Attester { opts, _lock: lock, signed: BTreeMap::new(), floor: 0, file: None, lines: 0, refused: 0, auth_seen, auth_checked: None });
         };
         let ctx = context_line(&opts);
         let text = match std::fs::read(&p) {
@@ -212,7 +247,46 @@ impl Attester {
             Some(h) => return Err(bad(format!("format i panjohur i log-ut të firmave: {h:?} (pritej {HEADER:?})"))),
         };
         let file = Some(OpenOptions::new().append(true).open(&p).map_err(|e| e.to_string())?);
-        Ok(Attester { opts, _lock: lock, signed, floor, file, lines, refused: 0 })
+        let auth_seen = auth_bytes(&opts);
+        Ok(Attester { opts, _lock: lock, signed, floor, file, lines, refused: 0, auth_seen, auth_checked: None })
+    }
+
+    /// Rinovimi pa rinisje: kur përmbajtja e skedarit të autorizimit ndryshon (kontrollohet më së
+    /// shumti një herë në sekondë), lexohet dhe verifikohet; vetëm një autorizim i vlefshëm për të njëjtin identitet,
+    /// çelës dhe genesis e zëvendëson të vjetrin. Kthen `true` kur autorizimi ndryshoi.
+    pub fn refresh_authorization(&mut self) -> bool {
+        let Some(path) = self.opts.authorization_file.clone() else { return false };
+        let now = std::time::Instant::now();
+        if self.auth_checked.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(1)) {
+            return false;
+        }
+        self.auth_checked = Some(now);
+        // Krahasohet përmbajtja, jo mtime-i: dy shkrime brenda të njëjtës "tik" të orës së sistemit të
+        // skedarëve kanë të njëjtin mtime (u pa në e2e me `cp` + `mv`). Skedari është ~400 B.
+        let m = auth_bytes(&self.opts);
+        if m == self.auth_seen {
+            return false;
+        }
+        self.auth_seen = m;
+        let signer = self.opts.key.verifying_key().to_bytes();
+        match read_authorization_file(&path) {
+            Ok((id, a)) if Some(id) == self.opts.identity && a.signed_by(&id, &self.opts.genesis, &signer) => {
+                if self.opts.authorization == Some(a) {
+                    return false;
+                }
+                log::info!("zilja: autorizimi i çelësit u rinovua: epokat {}..{}", a.from_epoch, a.until_epoch);
+                self.opts.authorization = Some(a);
+                true
+            }
+            Ok(_) => {
+                log::error!("zilja: {}: autorizimi i ri s'vlen për këtë identitet, çelës dhe genesis; mbetet i vjetri", path.display());
+                false
+            }
+            Err(e) => {
+                log::error!("zilja: autorizimi i ri s'u lexua ({e}); mbetet i vjetri");
+                false
+            }
+        }
     }
 
     pub fn info(&self) -> AttesterInfo {
@@ -346,7 +420,7 @@ mod tests {
     use super::*;
 
     fn opts(log: Option<PathBuf>) -> AttestOptions {
-        AttestOptions { key: SigningKey::from_bytes(&[3; 32]), identity: None, authorization: None, genesis: [1; 32], log, adopt_legacy: false }
+        AttestOptions { key: SigningKey::from_bytes(&[3; 32]), identity: None, authorization: None, authorization_file: None, genesis: [1; 32], log, adopt_legacy: false }
     }
 
     #[test]
@@ -365,18 +439,138 @@ mod tests {
         assert_eq!(a.refused, 1);
     }
 
+    fn auth(id: &SigningKey, g: &Hash, key: &SigningKey, from: u64, until: u64) -> Authorization {
+        let m = zilja_verifier::attest::authorize_message(g, &key.verifying_key().to_bytes(), from, until);
+        Authorization { from_epoch: from, until_epoch: until, signature: id.sign(&m).to_bytes() }
+    }
+
+    fn dedicated(id: &SigningKey, key: &SigningKey, g: Hash, a: Option<Authorization>) -> AttestOptions {
+        AttestOptions { key: key.clone(), identity: Some(id.verifying_key().to_bytes()), authorization: a, authorization_file: None, genesis: g, log: None, adopt_legacy: false }
+    }
+
     #[test]
     fn dedicated_key_needs_valid_authorization() {
         let id = SigningKey::from_bytes(&[9; 32]);
         let key = SigningKey::from_bytes(&[3; 32]);
         let g = [1u8; 32];
-        let auth = id.sign(&authorize_message(&g, &key.verifying_key().to_bytes())).to_bytes();
-        let ok = AttestOptions { key: key.clone(), identity: Some(id.verifying_key().to_bytes()), authorization: Some(auth), genesis: g, log: None, adopt_legacy: false };
-        assert!(Attester::open(ok).is_ok());
-        let bad = AttestOptions { key: key.clone(), identity: Some(id.verifying_key().to_bytes()), authorization: Some(auth), genesis: [2; 32], log: None, adopt_legacy: false };
-        assert!(Attester::open(bad).is_err());
-        let none = AttestOptions { key, identity: Some(id.verifying_key().to_bytes()), authorization: None, genesis: g, log: None, adopt_legacy: false };
-        assert!(Attester::open(none).is_err());
+        let a = auth(&id, &g, &key, 800, 815);
+        assert!(Attester::open(dedicated(&id, &key, g, Some(a))).is_ok());
+        assert!(Attester::open(dedicated(&id, &key, [2; 32], Some(a))).is_err());
+        assert!(Attester::open(dedicated(&id, &key, g, None)).is_err());
+        // Periudhë më e gjatë se 15 epoka: refuzohet edhe e firmosur.
+        assert!(Attester::open(dedicated(&id, &key, g, Some(auth(&id, &g, &key, 800, 816)))).is_err());
+    }
+
+    /// Rinovimi: skedari i ri zëvendëson autorizimin pa rinisje; një skedar i prishur, i një
+    /// identiteti tjetër ose v1 s'e prek të vjetrin.
+    #[test]
+    fn authorization_file_is_reloaded_without_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("zilja-authorization.json");
+        let id = SigningKey::from_bytes(&[9; 32]);
+        let key = SigningKey::from_bytes(&[3; 32]);
+        let g = [1u8; 32];
+        let write = |id: &SigningKey, from: u64, until: u64, extra: Option<serde_json::Value>| {
+            let a = auth(id, &g, &key, from, until);
+            let mut v = serde_json::json!({
+                "version": 2,
+                "identity": bs58::encode(id.verifying_key().to_bytes()).into_string(),
+                "signer": bs58::encode(key.verifying_key().to_bytes()).into_string(),
+                "genesis": bs58::encode(g).into_string(),
+                "fromEpoch": from, "untilEpoch": until,
+                "authorization": hex::encode(a.signature),
+            });
+            if let Some(x) = extra {
+                v = x;
+            }
+            std::fs::write(&f, v.to_string()).unwrap();
+            // mtime-i duhet të lëvizë edhe në sisteme skedarësh me rezolucion të ulët.
+            let t = std::time::SystemTime::now() + std::time::Duration::from_secs(from);
+            File::options().write(true).open(&f).unwrap().set_modified(t).unwrap();
+        };
+        write(&id, 800, 815, None);
+        let (fid, fa) = read_authorization_file(&f).unwrap();
+        let mut o = dedicated(&id, &key, g, Some(fa));
+        assert_eq!(Some(fid), o.identity);
+        o.authorization_file = Some(f.clone());
+        let mut at = Attester::open(o).unwrap();
+        let now = |at: &Attester| at.info().authorization.map(|a| (a.from_epoch, a.until_epoch));
+        assert_eq!(now(&at), Some((800, 815)));
+        let refresh = |at: &mut Attester| {
+            at.auth_checked = None;
+            at.refresh_authorization()
+        };
+        assert!(!refresh(&mut at), "pa ndryshim");
+        write(&id, 813, 828, None);
+        assert!(refresh(&mut at));
+        assert_eq!(now(&at), Some((813, 828)));
+        // Identitet tjetër, periudhë e gjatë, skedar v1, JSON i prishur: mbetet 813..828.
+        write(&SigningKey::from_bytes(&[8; 32]), 820, 830, None);
+        assert!(!refresh(&mut at));
+        write(&id, 820, 840, None);
+        assert!(!refresh(&mut at));
+        write(&id, 821, 830, Some(serde_json::json!({"identity": "x", "authorization": "00"})));
+        assert!(!refresh(&mut at));
+        std::fs::write(&f, "{").unwrap();
+        File::options().write(true).open(&f).unwrap().set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(9999)).unwrap();
+        assert!(!refresh(&mut at));
+        assert_eq!(now(&at), Some((813, 828)));
+    }
+
+    /// Rinovimi me `cp` + `mv` (si në OPERIMI.md): edhe një skedar me mtime më të vjetër se i
+    /// fundit i lexuari lexohet, sepse ndryshimi s'është "më i ri", por "tjetër".
+    #[test]
+    fn authorization_swap_back_with_older_mtime_is_reloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("auth.json");
+        let id = SigningKey::from_bytes(&[9; 32]);
+        let key = SigningKey::from_bytes(&[3; 32]);
+        let g = [1u8; 32];
+        let body = |from: u64, until: u64| {
+            serde_json::json!({
+                "version": 2,
+                "identity": bs58::encode(id.verifying_key().to_bytes()).into_string(),
+                "signer": bs58::encode(key.verifying_key().to_bytes()).into_string(),
+                "genesis": bs58::encode(g).into_string(),
+                "fromEpoch": from, "untilEpoch": until,
+                "authorization": hex::encode(auth(&id, &g, &key, from, until).signature),
+            })
+            .to_string()
+        };
+        std::fs::write(&f, body(0, 15)).unwrap();
+        let (_, a0) = read_authorization_file(&f).unwrap();
+        let mut o = dedicated(&id, &key, g, Some(a0));
+        o.authorization_file = Some(f.clone());
+        let mut at = Attester::open(o).unwrap();
+        let ok = dir.path().join("ok.json");
+        std::fs::copy(&f, &ok).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let tmp = dir.path().join("tmp.json");
+        std::fs::write(&tmp, body(20, 35)).unwrap();
+        std::fs::rename(&tmp, &f).unwrap();
+        at.auth_checked = None;
+        assert!(at.refresh_authorization());
+        assert_eq!(at.info().authorization.unwrap().from_epoch, 20);
+        std::fs::rename(&ok, &f).unwrap();
+        at.auth_checked = None;
+        assert!(at.refresh_authorization(), "kthimi te skedari i vjetër duhet lexuar");
+        assert_eq!(at.info().authorization.unwrap().from_epoch, 0);
+        // I njëjti mtime (dy shkrime brenda një "tik" të orës): ndryshimi duhet parë gjithsesi.
+        let t = std::fs::metadata(&f).unwrap().modified().unwrap();
+        std::fs::write(&f, body(20, 35)).unwrap();
+        File::options().write(true).open(&f).unwrap().set_modified(t).unwrap();
+        at.auth_checked = None;
+        assert!(at.refresh_authorization(), "mtime i njëjtë, përmbajtje tjetër");
+        assert_eq!(at.info().authorization.unwrap().from_epoch, 20);
+    }
+
+    #[test]
+    fn v1_authorization_file_is_refused_with_instructions() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.json");
+        std::fs::write(&f, r#"{"identity":"11111111111111111111111111111111","signer":"x","genesis":"y","authorization":"00"}"#).unwrap();
+        let e = read_authorization_file(&f).unwrap_err();
+        assert!(e.contains("v1") && e.contains("zilja-authorize"), "{e}");
     }
 
     /// P-04: dy instanca mbi të njëjtin log nuk mund të firmosin dy root-e për një slot.
@@ -509,7 +703,7 @@ mod tests {
             ("signer", |o| o.key = SigningKey::from_bytes(&[4; 32])),
             ("identity", |o| {
                 let id = SigningKey::from_bytes(&[9; 32]);
-                o.authorization = Some(id.sign(&authorize_message(&o.genesis, &o.key.verifying_key().to_bytes())).to_bytes());
+                o.authorization = Some(auth(&id, &o.genesis, &o.key, 1, 2));
                 o.identity = Some(id.verifying_key().to_bytes());
             }),
         ];

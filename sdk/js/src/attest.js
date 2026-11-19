@@ -1,12 +1,16 @@
 // Firmat e validatorëve, formati v2 (F-10): "zilja/attest/v2" ‖ genesis_hash ‖ slot LE ‖ root.
-// Një çelës i veçantë mund të firmosë, kur identiteti e ka autorizuar me
-// "zilja/authorize/v1" ‖ genesis_hash ‖ signer.
+// Një çelës i veçantë mund të firmosë, kur identiteti e ka autorizuar për një periudhë epokash (v2):
+// "zilja/authorize/v2" ‖ genesis_hash ‖ signer ‖ from_epoch LE ‖ until_epoch LE, e vlefshme për
+// from_epoch ≤ epoka < until_epoch, me maksimumi MAX_AUTH_EPOCHS (15) epoka. Autorizimi v1 (pa
+// afat) s'pranohet.
 // Përdor Ed25519 të WebCrypto (Node ≥ 22, Chrome/Edge ≥ 137, Firefox ≥ 129, Safari ≥ 17).
 import { b58decode, hexToBytes, toU64 } from "./verifier.js";
 
 const enc = new TextEncoder();
 const ATTEST_DOMAIN = enc.encode("zilja/attest/v2");
-const AUTHORIZE_DOMAIN = enc.encode("zilja/authorize/v1");
+const AUTHORIZE_DOMAIN = enc.encode("zilja/authorize/v2");
+/** Gjatësia maksimale e një autorizimi, në epoka (15 ≈ 30 ditë në mainnet). */
+export const MAX_AUTH_EPOCHS = 15n;
 
 function hex32(h) {
   const b = hexToBytes(h);
@@ -26,16 +30,27 @@ export function attestMessage(genesisHex, slot, rootHex) {
   return m;
 }
 
-/** Mesazhi me të cilin identiteti autorizon çelësin që firmos. */
-export function authorizeMessage(genesisHex, signerB58) {
+/** Mesazhi me të cilin identiteti autorizon çelësin që firmos, për epokat [fromEpoch, untilEpoch). */
+export function authorizeMessage(genesisHex, signerB58, fromEpoch, untilEpoch) {
   const d = AUTHORIZE_DOMAIN.length;
-  const m = new Uint8Array(d + 64);
+  const m = new Uint8Array(d + 64 + 16);
   m.set(AUTHORIZE_DOMAIN, 0);
   m.set(hex32(genesisHex), d);
   const s = b58decode(signerB58);
   if (s.length !== 32) throw new Error("signer duhet 32 bajt");
   m.set(s, d + 32);
+  const v = new DataView(m.buffer);
+  v.setBigUint64(d + 64, toU64(fromEpoch), true);
+  v.setBigUint64(d + 72, toU64(untilEpoch), true);
   return m;
+}
+
+/** Periudha 1..=15 epoka dhe e mbulon `epoch`? (Hedh gabim për numra jo-u64.) */
+function authCovers(au, epoch) {
+  const from = toU64(au.fromEpoch);
+  const until = toU64(au.untilEpoch);
+  const e = toU64(epoch);
+  return until > from && until - from <= MAX_AUTH_EPOCHS && from <= e && e < until;
 }
 
 async function ed25519Verify(pubkey, sig, msg) {
@@ -72,17 +87,22 @@ export function stakeTableFromVoteAccounts(result) {
   return t;
 }
 
-/** A është kjo firmë e vlefshme për (genesis, slot, root)? */
-export async function verifyAttestation(genesisHex, slot, rootHex, a) {
+/**
+ * A është kjo firmë e vlefshme për (genesis, slot, root)? `epoch` është epoka e `slot`-it; një
+ * autorizim që s'e mbulon s'vlen.
+ */
+export async function verifyAttestation(genesisHex, epoch, slot, rootHex, a) {
   try {
     const id = b58decode(a.validator);
     const sig = hexToBytes(a.signature);
     if (id.length !== 32 || sig.length !== 64) return false;
     let signer = id;
     if (a.signer != null && a.signer !== a.validator) {
-      if (a.authorization == null) return false;
-      const auth = hexToBytes(a.authorization);
-      if (auth.length !== 64 || !(await ed25519Verify(id, auth, authorizeMessage(genesisHex, a.signer)))) return false;
+      const au = a.authorization;
+      // v2: objekt {fromEpoch, untilEpoch, signature}. Një tekst (v1, pa afat) s'pranohet.
+      if (au == null || typeof au !== "object" || !authCovers(au, epoch)) return false;
+      const asig = hexToBytes(au.signature);
+      if (asig.length !== 64 || !(await ed25519Verify(id, asig, authorizeMessage(genesisHex, a.signer, au.fromEpoch, au.untilEpoch)))) return false;
       signer = b58decode(a.signer);
       if (signer.length !== 32) return false;
     }
@@ -95,12 +115,13 @@ export async function verifyAttestation(genesisHex, slot, rootHex, a) {
 /**
  * Kontrollon firmat mbi (genesis, slot, root) dhe kuorumin > 2/3 të stake-ut.
  * @param {string} genesisHex hash-i i genesis-it të zinxhirit që pret klienti
+ * @param {number|bigint} epoch epoka e `slot`-it (ajo e tabelës së stake-ut)
  * @param {number|bigint} slot
  * @param {string} rootHex
- * @param {{validator: string, signer?: string|null, authorization?: string|null, signature: string}[]} atts
+ * @param {{validator: string, signer?: string|null, authorization?: {fromEpoch: number|bigint, untilEpoch: number|bigint, signature: string}|null, signature: string}[]} atts
  * @param {Map<string, bigint>} table
  */
-export async function verifyQuorum(genesisHex, slot, rootHex, atts, table) {
+export async function verifyQuorum(genesisHex, epoch, slot, rootHex, atts, table) {
   const seen = new Set();
   let attested = 0n;
   let valid = 0;
@@ -116,7 +137,7 @@ export async function verifyQuorum(genesisHex, slot, rootHex, atts, table) {
       rejected++;
       continue;
     }
-    if (await verifyAttestation(genesisHex, slot, rootHex, a)) {
+    if (await verifyAttestation(genesisHex, epoch, slot, rootHex, a)) {
       seen.add(a.validator);
       valid++;
       attested += stake;

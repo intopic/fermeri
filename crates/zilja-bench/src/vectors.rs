@@ -93,7 +93,7 @@ fn main() {
 /// Vektorë për firmat e validatorëve: 10 validatorë me çelësa të njohur dhe stake të ndryshëm.
 fn attest_vectors() -> Value {
     use ed25519_dalek::{Signer, SigningKey};
-    use zilja_verifier::attest::{attest_message, authorize_message, verify_quorum, Attestation, StakeTable};
+    use zilja_verifier::attest::{attest_message, authorize_message, verify_quorum, Attestation, Authorization, StakeTable};
     let genesis = zilja_verifier::sha256(b"zilja-vektoret-genesis");
     let keys: Vec<SigningKey> = (1u8..=10).map(|i| SigningKey::from_bytes(&[i; 32])).collect();
     let stakes: Vec<u64> = (1..=10).map(|i| i * 1_000_000_000).collect(); // 1..10 SOL, gjithsej 55
@@ -105,13 +105,15 @@ fn attest_vectors() -> Value {
         signature: k.sign(&attest_message(&genesis, slot, root)).to_bytes(),
     };
     // Çelës i veçantë firmosjeje, i autorizuar nga identiteti (F-10).
+    // v2: autorizimi vlen për epokat [800, 815).
     let sign_dedicated = |id: &SigningKey, slot: u64, root: &[u8; 32], g_auth: &[u8; 32]| {
         let signer = SigningKey::from_bytes(&zilja_verifier::sha256(&id.to_bytes()));
         let s_pk = signer.verifying_key().to_bytes();
+        let (from, until) = (800, 815);
         Attestation {
             validator: id.verifying_key().to_bytes(),
             signer: Some(s_pk),
-            authorization: Some(id.sign(&authorize_message(g_auth, &s_pk)).to_bytes()),
+            authorization: Some(Authorization { from_epoch: from, until_epoch: until, signature: id.sign(&authorize_message(g_auth, &s_pk, from, until)).to_bytes() }),
             signature: signer.sign(&attest_message(&genesis, slot, root)).to_bytes(),
         }
     };
@@ -121,7 +123,9 @@ fn attest_vectors() -> Value {
                 json!({
                     "validator": bs58::encode(a.validator).into_string(),
                     "signer": a.signer.map(|s| bs58::encode(s).into_string()),
-                    "authorization": a.authorization.map(hex::encode),
+                    "authorization": a.authorization.map(|au| json!({
+                        "fromEpoch": au.from_epoch, "untilEpoch": au.until_epoch, "signature": hex::encode(au.signature),
+                    })),
                     "signature": hex::encode(a.signature),
                 })
             })
@@ -130,13 +134,14 @@ fn attest_vectors() -> Value {
     let root = [7u8; 32];
     let slot = 123_456u64;
     let mut cases = Vec::new();
-    let mut add = |name: &str, s: u64, r: &[u8; 32], atts: Vec<Attestation>| {
-        let rep = verify_quorum(&genesis, s, r, &atts, &table);
+    let mut add_at = |name: &str, epoch: u64, s: u64, r: &[u8; 32], atts: Vec<Attestation>| {
+        let rep = verify_quorum(&genesis, epoch, s, r, &atts, &table);
         cases.push(json!({
-            "name": name, "slot": s, "root": hex::encode(r), "atts": enc(&atts),
+            "name": name, "epoch": epoch, "slot": s, "root": hex::encode(r), "atts": enc(&atts),
             "expectReached": rep.reached, "expectAttested": rep.attested_stake.to_string(),
         }));
     };
+    let mut add = |name: &str, s: u64, r: &[u8; 32], atts: Vec<Attestation>| add_at(name, 805, s, r, atts);
     // 7 më të mëdhenjtë: 4+..+10 = 49/55 → po.
     add("quorum_reached", slot, &root, keys[3..].iter().map(|k| sign(k, slot, &root)).collect());
     // 5 më të mëdhenjtë: 6+..+10 = 40/55 = 72.7% → po. 4 më të mëdhenjtë: 34/55 = 61.8% → jo.
@@ -158,6 +163,18 @@ fn attest_vectors() -> Value {
     add("corrupted_signatures", slot, &root, bad);
     add("dedicated_signers", slot, &root, keys[3..].iter().map(|k| sign_dedicated(k, slot, &root, &genesis)).collect());
     add("dedicated_signers_other_chain_auth", slot, &root, keys[3..].iter().map(|k| sign_dedicated(k, slot, &root, &[1u8; 32])).collect());
+    // Autorizimi [800, 815): vlen në 800 dhe 814, jo në 799 dhe 815.
+    let ded = || -> Vec<Attestation> { keys[3..].iter().map(|k| sign_dedicated(k, slot, &root, &genesis)).collect() };
+    add_at("dedicated_signers_first_epoch", 800, slot, &root, ded());
+    add_at("dedicated_signers_last_epoch", 814, slot, &root, ded());
+    add_at("dedicated_signers_before_start", 799, slot, &root, ded());
+    add_at("dedicated_signers_expired", 815, slot, &root, ded());
+    // Periudha e zgjatur pa firmë të re.
+    let mut extended = ded();
+    for a in extended.iter_mut() {
+        a.authorization.as_mut().unwrap().until_epoch = 816;
+    }
+    add_at("dedicated_signers_extended_period", 815, slot, &root, extended);
     json!({
         "genesis": hex::encode(genesis),
         "table": table.entries.iter().map(|(k, s)| json!([bs58::encode(k).into_string(), s.to_string()])).collect::<Vec<_>>(),

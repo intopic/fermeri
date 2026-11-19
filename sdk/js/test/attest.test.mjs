@@ -1,12 +1,12 @@
 // Firmat e validatorëve: JS duhet të japë saktësisht të njëjtin vendim si Rust.
 import { readFileSync } from "node:fs";
-import { verifyQuorum, stakeTableFromVoteAccounts, attestMessage, bytesToHex } from "../src/index.js";
+import { verifyQuorum, stakeTableFromVoteAccounts, attestMessage, authorizeMessage, bytesToHex } from "../src/index.js";
 
 const v = JSON.parse(readFileSync(new URL("./vectors.json", import.meta.url), "utf8")).attest;
 const table = new Map(v.table.map(([k, s]) => [k, BigInt(s)]));
 let fail = 0;
 for (const c of v.cases) {
-  const r = await verifyQuorum(v.genesis, c.slot, c.root, c.atts, table);
+  const r = await verifyQuorum(v.genesis, c.epoch, c.slot, c.root, c.atts, table);
   if (r.reached !== c.expectReached || r.attestedStake.toString() !== c.expectAttested) {
     fail++;
     console.error(`❌ ${c.name}: pritej ${c.expectReached}/${c.expectAttested}, erdhi ${r.reached}/${r.attestedStake}`);
@@ -20,10 +20,32 @@ if (bytesToHex(m.subarray(47, 55)) !== "0100000000000000" || m.length !== 15 + 3
   console.error("❌ attestMessage");
 }
 
+// v2: domen ‖ genesis ‖ signer ‖ from LE ‖ until LE.
+{
+  const am = authorizeMessage("cd".repeat(32), "11111111111111111111111111111111", 800, 815);
+  if (am.length !== 18 + 32 + 32 + 16 || bytesToHex(am.subarray(82, 98)) !== "2003000000000000" + "2f03000000000000") {
+    fail++;
+    console.error("❌ authorizeMessage v2");
+  }
+}
+
+// Opsioni A: autorizimi si tekst (v1, pa afat) ose me numra të pasigurt s'pranohet.
+{
+  const c = v.cases.find((x) => x.name === "dedicated_signers");
+  const asV1 = c.atts.map((a) => ({ ...a, authorization: a.authorization.signature }));
+  const r1 = await verifyQuorum(v.genesis, c.epoch, c.slot, c.root, asV1, table);
+  const badNum = c.atts.map((a) => ({ ...a, authorization: { ...a.authorization, untilEpoch: -1 } }));
+  const r2 = await verifyQuorum(v.genesis, c.epoch, c.slot, c.root, badNum, table);
+  if (r1.validSignatures !== 0 || r2.validSignatures !== 0) {
+    fail++;
+    console.error("❌ autorizim v1 / numër i pavlefshëm u pranua");
+  }
+}
+
 // Një zinxhir tjetër (genesis tjetër) → asnjë firmë s'vlen.
 {
   const c = v.cases.find((x) => x.name === "quorum_reached");
-  const r = await verifyQuorum("00".repeat(32), c.slot, c.root, c.atts, table);
+  const r = await verifyQuorum("00".repeat(32), c.epoch, c.slot, c.root, c.atts, table);
   if (r.validSignatures !== 0) {
     fail++;
     console.error("❌ genesis tjetër u pranua");
@@ -102,8 +124,8 @@ for (const bad of [2n ** 64n, -1n, -1, 2 ** 53, 1.5, "18446744073709551616"]) {
   const bad = (i) => ({ ...good(i), signature: "01".repeat(64) });
   const table = new Map(ids.map((id) => [id, 10n]));
   const atts = [bad(0), good(0), good(1), good(2)];
-  const a = await verifyQuorum(G, 9, R, atts, table);
-  const b = await verifyQuorum(G, 9, R, [...atts].reverse(), table);
+  const a = await verifyQuorum(G, 1, 9, R, atts, table);
+  const b = await verifyQuorum(G, 1, 9, R, [...atts].reverse(), table);
   if (!a.reached || !b.reached || a.attestedStake !== b.attestedStake) {
     fail++;
     console.error("❌ A15: firma e pavlefshme fshehu të vlefshmen ose radha ndryshoi rezultatin", a, b);

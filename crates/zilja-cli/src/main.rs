@@ -207,7 +207,7 @@ fn run() -> Result<bool, String> {
         let res = (|| -> Result<_, String> {
             let view = stake_view(sol)?;
             let g = genesis(sol, a.genesis.as_deref())?;
-            Ok((view.covers(slot), quorum_by_root(&a.endpoints, slot, &g, &view.table)))
+            Ok((view.covers(slot), quorum_by_root(&a.endpoints, view.epoch, slot, &g, &view.table)))
         })();
         match res {
             Ok((epoch_ok, q)) => {

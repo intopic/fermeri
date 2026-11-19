@@ -91,6 +91,10 @@ const r = await zilja.verifyAccount(pubkey, { slot: 312345678 });
 import { verifyAccount, dataMatches, verifyQuorum } from "zilja-verify";
 const verdict = await verifyAccount(rootHex, pubkey, account /* ose null */, proofHex);
 // "exists" | "does_not_exist" | "invalid"
+
+// Kuorumi: `epoch` është epoka e slotit (ajo e tabelës së stake-ut). Një çelës i veçantë numërohet
+// vetëm me autorizim v2 që e mbulon atë epokë (maksimumi 15 epoka); v1 s'pranohet.
+const q = await verifyQuorum(genesisHex, epoch, slot, rootHex, attestations, stakeTable);
 ```
 
 Formati i plotë: [`docs/SPEC.md`](https://github.com/intopic/fermeri/blob/main/docs/SPEC.md).
@@ -107,6 +111,6 @@ node examples/verify.mjs <PUBKEY> --zilja http://127.0.0.1:7799 --rpc http://127
 npm test
 ```
 
-Testet përdorin të njëjtët vektorë si verifikuesi në Rust: 110 dëftesa, 50 prej tyre sulme, dhe 8 raste firmash.
+Testet përdorin të njëjtët vektorë si verifikuesi në Rust: 110 dëftesa, 50 prej tyre sulme, dhe 15 raste firmash (përfshirë skadimin e autorizimit v2).
 
 Licenca: Apache-2.0
