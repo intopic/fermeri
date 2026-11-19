@@ -121,8 +121,11 @@ gabuar kthejnë `-32602` (L-04). Shih `docs/OPERIMI.md` për portet dhe proxy-n.
 
 Me pemën në disk, `slot` mund të jetë çdo slot brenda kujtesës (`provableFrom` deri te sloti
 i fundit; parazgjedhja 32 slote). Dëftesa jep gjendjen pas slotit të fundit të rrënjosur
-≤ `slot`, dhe **`slot` në përgjigje është ai slot i rrënjosur** (L-05). Jashtë kujtesës
-kthehet gabim `-32602`.
+≤ `slot`, dhe **`slot` në përgjigje është ai slot i rrënjosur** (L-05). Kontrata (A19):
+- `slot` nën kujtesë → `-32007` (jashtë historisë);
+- `slot` mbi slotin e fundit të rrënjosur → `-32008` (s'është rrënjosur ende), jo sloti i fundit,
+  sepse ajo përgjigje do të ndryshonte me rrënjosjet e reja;
+- parametrat e pavlefshëm (lloji, numri, opsionet) → `-32602`, para çdo kontrolli tjetër.
 
 ```json
 {"slot": 68, "root": "<hex>", "complete": true, "pubkey": "<base58>",
@@ -143,11 +146,13 @@ pema s'është e plotë, kthehet gabim `-32006`.
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"getZiljaRoot","params":[1234]}
-{"slot": 68, "root": "<hex>", "accounts": 332, "complete": true, "provableFrom": 37}
+{"slot": 68, "root": "<hex>", "complete": true, "provableFrom": 37}
 ```
 
-Pa parametër: sloti i fundit. Me `slot`: root-i i atij sloti nga unaza e 1024 sloteve të
-fundit, ose `-32005` kur s'është aty.
+Pa parametër: sloti i fundit, me edhe `"accounts"` (numri i llogarive të pemës aktuale). Me
+`slot`: root-i i atij sloti nga unaza e 1024 sloteve të fundit, ose `-32005` kur s'është aty;
+mbi slotin e fundit `-32008`. A19: një root historik **s'ka** `accounts`, sepse ai numër është
+i pemës aktuale, jo i asaj pamjeje. Më shumë se një parametër → `-32602`.
 
 Kur zilja ndalon (boshllëk, zinxhir tjetër, disk i dëmtuar), çdo metodë kthen gabim
 `-32003` me arsyen, deri në rindërtimin nga snapshot-i.

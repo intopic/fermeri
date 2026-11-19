@@ -275,3 +275,27 @@ fn stop_from_rpc_freezes_queued_work() {
     assert_eq!(svc.shared.metrics.phase.load(Ordering::Relaxed), zilja_node::service::PHASE_HALTED, "faza u rishkrua pas ndalimit");
     assert_eq!(svc.shared.metrics.ready.load(Ordering::Relaxed), 0, "gatishmëria u rishkrua pas ndalimit");
 }
+
+/// A19: kontrata e historisë: poshtë kujtesës -32007, mbi majë -32008 (jo sloti i fundit), `accounts`
+/// vetëm për slotin aktual, dhe parametrat e tepërt -32602.
+#[test]
+fn history_contract_matches_the_spec() {
+    let svc = Service::start_opts(Default::default()).unwrap();
+    for s in 1..=5 {
+        slot(&svc, s, 1, s);
+    }
+    assert!(wait(|| svc.shared.state.read().unwrap().slot == 5));
+    let r = proof(&svc.shared, 1, Some(9));
+    assert_eq!(code(&r), Some(-32008), "slot mbi majë u përgjigj si i fundit: {r}");
+    let r = rpc_call(&svc.shared, r#"{"id":1,"method":"getZiljaRoot","params":[9]}"#);
+    assert_eq!(code(&r), Some(-32008), "{r}");
+    let cur = rpc_call(&svc.shared, r#"{"id":1,"method":"getZiljaRoot"}"#);
+    assert!(cur["result"]["accounts"].is_u64(), "{cur}");
+    let old = rpc_call(&svc.shared, r#"{"id":1,"method":"getZiljaRoot","params":[3]}"#);
+    assert_eq!(old["result"]["slot"], 3, "{old}");
+    assert!(old["result"].get("accounts").is_none(), "accounts i pemës aktuale te një root historik: {old}");
+    for m in ["getZiljaRoot", "getZiljaAttestation"] {
+        let r = rpc_call(&svc.shared, &format!(r#"{{"id":1,"method":"{m}","params":[3,4]}}"#));
+        assert_eq!(code(&r), Some(-32602), "{m} pranoi parametra të tepërt: {r}");
+    }
+}
