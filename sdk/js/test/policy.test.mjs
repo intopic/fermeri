@@ -7,7 +7,7 @@ const vectors = JSON.parse(readFileSync(new URL("./policy-vectors.json", import.
 let fail = 0;
 for (const v of vectors) {
   const d = decide(v.input);
-  const got = { ok: d.ok, verdict: d.verdict, trust: d.trust, agreeing: d.agreeing, checks: d.checks, errors: d.errors, warnings: d.warnings };
+  const got = { ok: d.ok, verdict: d.verdict, trust: d.trust, agreeing: d.agreeing, checks: d.checks, errors: d.errors, warnings: d.warnings, raiseFloor: d.raiseFloor };
   if (JSON.stringify(got) !== JSON.stringify(v.expect)) {
     fail++;
     console.log(`❌ ${v.name}\n   pritej ${JSON.stringify(v.expect)}\n   u mor  ${JSON.stringify(got)}`);

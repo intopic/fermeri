@@ -62,13 +62,15 @@ export interface Checks {
   proof: "valid" | "invalid";
   completeness: "complete" | "partial";
   root: RootTrust;
-  freshness: "fresh" | "stale" | "rollback" | "unknown" | "unchecked" | "historical";
-  data: "match" | "mismatch" | "unchecked";
+  /** A12: "ahead" = sloti mbi referencën e finalizuar; A14: "unverifiable" = referencë vetëm-hash. */
+  freshness: "fresh" | "stale" | "rollback" | "ahead" | "unknown" | "unverifiable" | "unchecked" | "historical";
+  /** A13: "unavailable" = krahasimi u kërkua por s'u krye (s'jep `ok`). */
+  data: "match" | "mismatch" | "unavailable" | "unchecked";
 }
 
 /** Politika e përbashkët me web-in dhe CLI-në (crates/zilja-cli/src/policy.rs). */
 export function configErrors(o: { minTrust: string; minAgree: number; endpoints: number; quorumEnabled: boolean; rootOverride: boolean }): string[];
-export function decide(i: unknown): { ok: boolean; verdict: ClientVerdict; trust: RootTrust; agreeing: number; checks: Checks; errors: string[]; warnings: string[] };
+export function decide(i: unknown): { ok: boolean; verdict: ClientVerdict; trust: RootTrust; agreeing: number; checks: Checks; errors: string[]; warnings: string[]; raiseFloor: number | null };
 
 export interface ZiljaClientOptions {
   /** Adresat e zileve. E para jep dëftesën; të tjerat krahasojnë root-in. */
@@ -87,9 +89,13 @@ export interface ZiljaClientOptions {
   maxSlotLag?: number | null;
   /** Slot minimal i pranuar (p.sh. i fundit që pe në një seancë të kaluar). */
   minSlot?: number;
-  /** Root-i (64 hex) që e njeh vetë: besimi "user", pa pyetur zile të tjera. */
-  root?: string;
-  /** Krahaso të dhënat me `solanaRpc`. Parazgjedhja: po. */
+  /**
+   * A14: referenca që e njeh vetë (besimi "user"). Vetëm hash: vërteton përfshirjen te ai root, por
+   * jo slotin, freskinë apo mungesën. Me `slot` (dhe `complete: true` për mungesë), dëftesa duhet të
+   * jetë për atë slot dhe nga një pemë e plotë.
+   */
+  root?: string | { root: string; slot?: number; complete?: boolean };
+  /** Krahaso lamports, owner, executable dhe bajtet me `solanaRpc`. Parazgjedhja: po. A13: kur kërkohet, vetëm përputhja jep `ok`. */
   compareData?: boolean;
   timeoutMs?: number;
   fetch?: typeof fetch;
