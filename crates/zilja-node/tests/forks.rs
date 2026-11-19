@@ -136,23 +136,33 @@ fn bottom_link_must_match_the_rooted_bank_hash() {
     assert!(broken(&out), "u pranua një bankë që s'rrjedh nga banka e rrënjosur: {:?}", lamports(&out));
 }
 
-/// Ringarkim në RAM: një bankë e krijuar para ngarkimit (pa `CreatedBank`; SlotHashes dhe një pjesë
-/// e llogarive i shkuan instancës tjetër) s'aplikohet me ndryshime që mungojnë; bëhet baza.
+/// A02: pas ringarkimit (`is_reload`) asgjë s'provon që një bankë u vëzhgua e plotë: Agave lëshon
+/// `CreatedBank` pasi konstruktori ka shkruar llogari (epoka, shpërblimet, sysvar-ët). Asnjë bankë
+/// s'aplikohet, as ajo me `CreatedBank` dhe SlotHashes; zilja ndalon.
 #[test]
-fn partially_observed_banks_become_the_base_after_a_reload() {
+fn reload_never_applies_banks() {
     let mut t = Tracker::new();
     t.set_mid_run_load(true);
-    // Bankat 10 dhe 11 u krijuan para ngarkimit: vetëm statuse dhe një pjesë e llogarive.
     t.handle(acc(10, 10, 2, 999));
-    let out = t.handle(rooted(10, 9, 10));
-    assert!(!broken(&out) && lamports(&out).is_none(), "banka e pjesshme u aplikua: {out:?}");
-    t.handle(acc(11, 11, 3, 888));
-    // Banka 12: e vëzhguar plotësisht.
     t.handle(sh(12, 12, vec![(11, h(11, 0)), (10, h(10, 0))]));
     t.handle(created(12, 11, 12));
     t.handle(acc(12, 12, 4, 12));
     let out = t.handle(rooted(12, 11, 12));
-    assert_eq!(lamports(&out), Some(vec![(4, 12)]), "vetëm banka e vëzhguar plotësisht: {out:?}");
+    assert!(broken(&out), "ringarkimi u trajtua si bazë e vlefshme: {out:?}");
+    assert!(lamports(&out).is_none(), "u aplikua një bankë pas ringarkimit: {out:?}");
+}
+
+/// A02: `loadPlugin` administrativ në mes të punës kalon nga `on_load(.., false)`, si nisja. Pa
+/// snapshot, kjo s'është nisje nga genesis nëse zinxhiri s'zbret te sloti 0: ndalim, asgjë s'aplikohet.
+#[test]
+fn admin_load_mid_run_is_not_a_genesis_boot() {
+    let mut t = Tracker::new();
+    t.handle(sh(100, 7, vec![(99, h(99, 0)), (98, h(98, 0))]));
+    t.handle(created(100, 99, 7));
+    t.handle(acc(100, 7, 2, 5));
+    let out = t.handle(rooted(100, 99, 7));
+    assert!(broken(&out), "u trajtua si nisje nga genesis: {out:?}");
+    assert!(lamports(&out).is_none(), "{out:?}");
 }
 
 /// Nisja e validatorit nga genesis (plugin-i i ngarkuar që në fillim): bankat e para s'kapërcehen

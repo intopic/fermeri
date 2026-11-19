@@ -358,16 +358,21 @@ PY
   echo "   ✅ u rindërtua vetë dhe punon"
   fi
 else
-  echo "== Hapi 7 (RAM): ringarkimi i plugin-it me admin RPC (F-07)"
+  echo "== Hapi 7 (RAM): ringarkimi i plugin-it me admin RPC (F-07, A02)"
   admin_rpc reloadPlugin zilja "$WORK/zilja.json"
   grep -q on_unload "$ZILJA_PROBE" || { echo "GABIM: on_unload nuk u thirr"; exit 1; }
-  for _ in $(seq 1 120); do [ "$(health)" = "200" ] && break; sleep 1; done
-  [ "$(health)" = "200" ] || { echo "GABIM: zilja s'u ringrit pas ringarkimit"; exit 1; }
   kill -0 "$VPID" || { echo "GABIM: validatori ra"; exit 1; }
-  # Pema duhet të përparojë pas ringarkimit (bankat në fluturim kapërcehen, s'aplikohen gjysmake).
+  # A02: pas ringarkimit asgjë s'provon që një bankë u vëzhgua e plotë: zilja ndalon, s'aplikon gjysmake.
+  for _ in $(seq 1 120); do [ "$(metric broken)" = "1" ] && break; sleep 1; done
+  [ "$(metric broken)" = "1" ] && [ "$(health)" = "503" ] || { echo "GABIM: pas ringarkimit zilja duhej të ndalonte, jo të aplikonte banka të pjesshme (A02)"; exit 1; }
+  echo "   ✅ ringarkim pa rrëzim; instanca e re ndaloi fail-closed (A02)"
+  echo "== Hapi 7b (RAM): rinisja e validatorit jep bazën"
+  stop
+  sleep 2
+  start
   wait_rooted_past "$(( $(solana -u "$RPC" slot --commitment finalized) + 3 ))"
-  [ "$(metric broken)" = "0" ] || { echo "GABIM: zilja ndaloi pas ringarkimit"; exit 1; }
-  echo "   ✅ ringarkim pa rrëzim: portet u liruan dhe u rimorën, pema vazhdon (kapërcyen $(metric partial_banks_skipped) banka në fluturim)"
+  [ "$(metric broken)" = "0" ] && [ "$(health)" = "200" ] || { echo "GABIM: pas rinisjes"; exit 1; }
+  echo "   ✅ pas rinisjes punon"
 fi
 echo "== Sonda: pyetjet e hapura të auditimit"
 python3 "$ROOT/scripts/probe-report.py" "$ZILJA_PROBE" || true
