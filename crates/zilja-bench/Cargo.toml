@@ -49,3 +49,6 @@ path = "src/crash_test.rs"
 [[bin]]
 name = "zilja-disk-bench"
 path = "src/disk_bench.rs"
+
+[dev-dependencies]
+tempfile = "3"

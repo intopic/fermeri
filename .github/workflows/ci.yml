@@ -92,7 +92,7 @@ jobs:
         run: ZILJA_DB=${{ matrix.db }} WORK=$RUNNER_TEMP/e2e scripts/e2e-test-validator.sh "$PWD/solana-release/bin"
 
   release:
-    name: Release pa RocksDB dhe pa libclang (A21)
+    name: Release pa RocksDB dhe pa libclang (A21, A09)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -103,8 +103,23 @@ jobs:
           cargo tree -p zilja-plugin -e normal,build --target x86_64-unknown-linux-gnu > tree.txt
           cargo tree -p zilja-cli -e normal,build --target x86_64-unknown-linux-gnu >> tree.txt
           if grep -iE "rocksdb|bindgen|clang-sys" tree.txt; then echo "release-i përmban motorin e vjetër"; exit 1; fi
-      - name: ndërtim nga zero pa libclang
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: paketa e release-it pa libclang, e ndërtuar dy herë (A09, A21, A23, A25)
         run: |
           if ldconfig -p | grep -q libclang; then sudo apt-get remove -y -q 'libclang*' || true; fi
-          cargo build --release -p zilja-plugin -p zilja-cli
-          ls -l target/release/libzilja_plugin.so
+          scripts/release.sh dist
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob, json
+          m = json.load(open(glob.glob("dist/*/MANIFEST.json")[0]))
+          print(f"### Release {m['commit'][:12]} (zyrtar: {m['official']})")
+          print("```"); print("\n".join(m["rustc"])); print("```")
+          for k, v in m["artifacts"].items(): print(f"- `{k}` {v['bytes']} B `{v['sha256'][:16]}…`")
+          j = m["sdk_js"]
+          print(f"- SDK npm: {j['npm_tarball_bytes']} B tarball, {j['npm_unpacked_bytes']} B i shpaketuar; bundle {j['bundle_full_min_gzip_bytes']} B gzip (vetëm verifikuesi {j['bundle_verify_only_min_gzip_bytes']} B gzip)")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zilja-release
+          path: dist/*.tar.gz

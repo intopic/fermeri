@@ -38,8 +38,10 @@ BYTES_PER_ACCOUNT=520
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 die() { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
+# A22: fshihen vetëm dosjet që krijoi ky skript (mktemp), kurrë një shteg i dhënë nga përdoruesi.
+RUN_DIRS=()
 cleanup() {
-  rm -rf "$DATA_DIR/run" 2>/dev/null || true
+  for d in "${RUN_DIRS[@]}"; do rm -rf -- "$d" 2>/dev/null || true; done
 }
 trap 'cleanup; echo; echo "U ndal. Të dhënat e testit u fshinë; raportet e mbaruara janë në $OUT_DIR."' INT TERM
 trap cleanup EXIT
@@ -86,10 +88,14 @@ if ! command -v cargo >/dev/null; then
 fi
 # shellcheck disable=SC1091
 source "$HOME/.cargo/env" 2>/dev/null || true
+# A22: kodi fshihet në fund vetëm nëse e kloni ky skript; një checkout ekzistues s'preket kurrë.
+CLONED=0
 if [ -d "$SRC_DIR/.git" ]; then
   git -C "$SRC_DIR" pull -q
 else
+  [ ! -e "$SRC_DIR" ] || die "$SRC_DIR ekziston dhe s'është checkout git: s'e përdor dhe s'e fshij"
   git clone -q "$REPO" "$SRC_DIR"
+  CLONED=1
 fi
 (cd "$SRC_DIR" && cargo build -q --release -p zilja-bench --bin zilja-disk-bench)
 BENCH="$SRC_DIR/target/release/zilja-disk-bench"
@@ -113,8 +119,8 @@ run_one() { # motori, llogari
   local out="$RES/$eng-$n.json"
   say "3/4 Matja: $eng, $n llogari ($SLOTS slote × $PER_SLOT ndryshime)"
   local t0=$SECONDS
-  rm -rf "$DATA_DIR/run"
-  if ZILJA_ENGINE=$eng ZILJA_SYNC_EVERY=1 "$BENCH" "$n" "$SLOTS" "$PER_SLOT" "$DATA_DIR/run" > "$out.tmp" 2> "$RES/$eng-$n.log"; then
+  local run; run=$(mktemp -d "$DATA_DIR/run.XXXXXX"); RUN_DIRS+=("$run")
+  if ZILJA_ENGINE=$eng ZILJA_SYNC_EVERY=1 "$BENCH" "$n" "$SLOTS" "$PER_SLOT" "$run" > "$out.tmp" 2> "$RES/$eng-$n.log"; then
     mv "$out.tmp" "$out"
     python3 - "$out" <<'PY'
 import json, sys
@@ -127,7 +133,7 @@ PY
     echo "  ✗ dështoi; shih $RES/$eng-$n.log"
     rm -f "$out.tmp"
   fi
-  rm -rf "$DATA_DIR/run"
+  rm -rf -- "$run"
   echo "  ($(( (SECONDS - t0) / 60 )) min)"
 }
 
@@ -170,9 +176,9 @@ open(os.path.join(res, "RAPORTI.md"), "w").write(txt)
 print(txt)
 PY
 
-if [ "$KEEP_TOOLS" != 1 ]; then
-  rm -rf "$SRC_DIR"
-  echo "Kodi i Ziles u fshi ($SRC_DIR). Rust-i mbetet; për ta hequr: rustup self uninstall"
+if [ "$KEEP_TOOLS" != 1 ] && [ "$CLONED" = 1 ]; then
+  rm -rf -- "$SRC_DIR"
+  echo "Kodi i Ziles u fshi ($SRC_DIR, i klonuar nga ky skript). Rust-i mbetet; për ta hequr: rustup self uninstall"
 fi
 rmdir "$DATA_DIR" 2>/dev/null || true
 echo

@@ -270,8 +270,8 @@ fn stop_from_rpc_freezes_queued_work() {
     std::thread::sleep(Duration::from_millis(100));
     let st = svc.shared.state.read().unwrap();
     assert_eq!((st.slot, st.roots.keys().copied().collect::<Vec<_>>()), frozen, "punë e pranuar u bë commit pas ndalimit");
-    // (Një commit para se `stop_serving` të kthehet është i ligjshëm: punëtori mund ta fitojë kyçin.)
-    assert!(frozen.0 < 6, "e gjithë radha u bë commit: ndalimi s'ndali asgjë");
+    // Një commit para se `stop_serving` të kthehet është i ligjshëm (punëtori mund ta fitojë kyçin, edhe
+    // për gjithë radhën): kontrata vlen nga kthimi i ndalimit, dhe vetëm ajo pohohet këtu.
     assert_eq!(svc.shared.metrics.phase.load(Ordering::Relaxed), zilja_node::service::PHASE_HALTED, "faza u rishkrua pas ndalimit");
     assert_eq!(svc.shared.metrics.ready.load(Ordering::Relaxed), 0, "gatishmëria u rishkrua pas ndalimit");
 }

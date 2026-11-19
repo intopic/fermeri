@@ -386,3 +386,24 @@ plugin-i refuzon të ngarkohet derisa të bësh një autorizim të ri.
 Zilja firmos vetëm pemë të plota (nisur nga snapshot) dhe kurrë dy root-e për të njëjtin slot.
 Firmat ruhen te `attest_state`, parazgjedhja `<db_path>.attest.log`. **Mos e fshi këtë skedar:**
 pa të, zilja s'e di më çfarë ka firmosur.
+
+## Paketa e release-it (A09, A21, A22, A23, A25)
+
+`scripts/release.sh` ndërton paketën `zilja-<commit>-x86_64-unknown-linux-gnu.tar.gz` (CI: artefakti
+`zilja-release` i punës "Release pa RocksDB"):
+
+- **Përmbajtja:** `libzilja_plugin.so`, `zilja-check`, `zilja-quorum`, `zilja-authorize`, `LICENSE`
+  (Apache-2.0), `README.md`, `docs/SPEC.md`, `docs/OPERIMI.md`, `MANIFEST.json`. Asnjë vegël bench
+  ose skript që fshin dosje (A22: `zilja-bench` ka `publish = false`).
+- **Kompilatori:** duhet të jetë ai i `rust-toolchain.toml` (rustc 1.97.1, i njëjti si Agave 4.3.2),
+  sepse plugin-i ngarkohet si trait object dhe ABI-ja e Rust s'garantohet me kompilator tjetër.
+  `MANIFEST.json` mban `rustc -vV` të plotë (me `commit-hash`), `cargo -V`, hash-in e `Cargo.lock`
+  dhe versionin e `agave-geyser-plugin-interface`. Një paketë e ndërtuar me kompilator tjetër
+  shënohet `"official": false` dhe s'duhet shpërndarë.
+- **Riprodhueshmëria:** skripti ndërton dy herë në dosje target të ndara dhe kërkon hash-e identike.
+- **Verifikimi nga operatori:** `sha256sum` i çdo skedari duhet të përputhet me `MANIFEST.json`.
+  Plugin-i duhet të ndërtohet me të njëjtin target, kompilator, varësi dhe feature si binari i
+  validatorit që e ngarkon (Agave 4.3.2 nga release-i zyrtar).
+- **Formatet** e shkruara në manifest: `zilja-pages` v1, dëftesa v2, ditari i firmave v2.
+- **SDK (A25):** madhësia jepet për artefaktin e emërtuar (tarball npm, bundle i minifikuar me
+  esbuild, i gjithi dhe vetëm `verifyAccount`), me komandën dhe commit-in.

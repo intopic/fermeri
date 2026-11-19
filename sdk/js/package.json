@@ -13,6 +13,7 @@
     "./verifier": "./src/verifier.js"
   },
   "files": [
+    "LICENSE",
     "src",
     "index.d.ts",
     "README.md",
