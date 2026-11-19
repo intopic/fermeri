@@ -258,7 +258,7 @@ skedar i përket vetë rrjetit ku punon validatori. Kur jepen edhe `genesis_hash
 - **Migrimi i formatit të pemës** (`format_version` i ri në një version të ardhshëm): s'ka
   migrim në vend. Zhvendos dosjen dhe rindërto nga snapshot-i.
 
-## Lidhja me bankat dhe fork-et (P-06, P-07)
+## Lidhja me bankat dhe fork-et (P-06, P-07, A24, A18)
 
 Agave 4.3.2 i jep plugin-it `bank_id` për çdo status dhe ndryshim llogarie, por prindin e
 jep vetëm si **slot**. Zilja e merr lidhjen e saktë bankë → bankë prind nga sysvar-i
@@ -277,6 +277,20 @@ Kufizim: rastet me banka të dyfishta (bllok i dyfishtë, UpdateParent pa njofti
 janë testuar me ngjarje sintetike (`zilja-node/tests/forks.rs`) që ndjekin kontratën e
 ndërfaqes. Ato s'mund të prodhohen me një validator të vetëm në e2e, dhe kërkojnë një
 cluster testues me fork-e.
+
+**Disa banka në slotin e rrënjosur (A24).** Agave e jep BankId-në e bankës së rrënjosur, por jo
+hash-in e saj. Hash-i nxirret nga SlotHashes i pasardhësve, të cilët lidhen me slotin, jo me
+BankId-në. Kur në slotin e rrënjosur kanë jetuar disa banka (bllok i dyfishtë, jo Dead dhe jo të
+pastruara), ky hash mund të jetë i bankës tjetër. Prandaj gjurma s'ruhet (pas rinisjes pema
+rindërtohet), dhe lidhja e radhës, që do të mbështetej vetëm te sloti, ndalon zilen
+(`zilja_ambiguous_banks_total` rritet).
+
+**Buxheti i kujtesës (A18).** Kur rrënjosja ngec, bankat dhe ndryshimet e tyre mbahen në RAM brenda
+procesit të validatorit. Mbi `max_pending_banks` (parazgjedhja 8192) ose `max_pending_updates`
+(parazgjedhja 4 000 000) zilja ndalon fail-closed dhe e liron kujtesën. E matur: rreth 212 B
+për ndryshim, pra 4 000 000 ≈ 800 MB, dhe rreth 220 ns për ndryshim në tracker. Callback-et e
+validatorit s'presin: ato vetëm shtyjnë në kanal. Metrikat: `zilja_pending_banks`,
+`zilja_pending_updates`.
 
 ## Klientët: një politikë e vetme verifikimi (P-11)
 

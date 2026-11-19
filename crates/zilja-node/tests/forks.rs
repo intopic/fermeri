@@ -219,3 +219,96 @@ fn update_parent_is_order_independent() {
         assert_eq!(lamports(&out), Some(vec![(2, 200), (3, 48), (5, 51)]), "radha {when}");
     }
 }
+
+/// A24: dy banka të gjalla në slotin e rrënjosur (bllok i dyfishtë me të njëjtin prind). Hash-i që
+/// SlotHashes i pasardhësve jep për atë slot mund të jetë i bankës TJETËR: s'certifikohet si gjurmë,
+/// dhe një zinxhir që lidhet vetëm me slotin s'pranohet.
+#[test]
+fn duplicate_banks_at_rooted_slot_are_not_certified() {
+    let mut t = from_snapshot(49);
+    // A dhe B: dy banka në 50, të dyja mbi 49.
+    t.handle(sh(50, 10, vec![(49, h(49, 0))]));
+    t.handle(created(50, 49, 10));
+    t.handle(acc(50, 10, 2, 100));
+    t.handle(sh(50, 11, vec![(49, h(49, 0))]));
+    t.handle(created(50, 49, 11));
+    t.handle(acc(50, 11, 2, 200));
+    // Vetëm B ka një pasardhës: hash-i i vetëm i dukshëm për 50 është i B-së.
+    t.handle(sh(51, 12, vec![(50, h(50, 0xB)), (49, h(49, 0))]));
+    t.handle(created(51, 50, 12));
+    t.handle(acc(51, 12, 3, 300));
+    // Rrënjoset A (BankId 10).
+    let out = t.handle(rooted(50, 49, 10));
+    assert_eq!(lamports(&out), Some(vec![(2, 100)]), "{out:?}");
+    let fp = out.iter().find_map(|o| match o {
+        Output::Rooted { fingerprint, .. } => Some(*fingerprint),
+        _ => None,
+    });
+    assert_eq!(fp, Some(None), "hash-i i B-së u certifikua si gjurmë e A-së");
+    // Fëmija i B-së lidhet vetëm me slotin 50: s'pranohet.
+    let out = t.handle(rooted(51, 50, 12));
+    assert!(broken(&out), "u aplikua zinxhiri i bankës tjetër: {:?}", lamports(&out));
+}
+
+/// A18: kur rrënjosja ngec, bankat dhe ndryshimet në pritje rriten brenda procesit të validatorit.
+/// Mbi buxhet zilja ndalon (fail-closed) dhe e liron kujtesën.
+#[test]
+fn pending_state_has_a_memory_budget() {
+    use zilja_node::tracker::Limits;
+    let mut t = from_snapshot(49);
+    t.set_limits(Limits { max_pending_banks: 1000, max_pending_updates: 50 });
+    let mut halted = false;
+    for s in 50..60u64 {
+        t.handle(sh(s, s, vec![(s - 1, h(s - 1, 0))]));
+        t.handle(created(s, s - 1, s));
+        for k in 0..10u8 {
+            if broken(&t.handle(acc(s, s, k.wrapping_add((s as u8).wrapping_mul(10)), s))) {
+                halted = true;
+            }
+        }
+    }
+    assert!(halted, "buxheti i ndryshimeve u kapërcye pa ndalim ({} në pritje)", t.pending_updates());
+    assert!(t.is_broken());
+    assert_eq!(t.pending_banks(), 0, "kujtesa s'u lirua");
+    let mut t = from_snapshot(49);
+    t.set_limits(Limits { max_pending_banks: 3, max_pending_updates: 0 });
+    let mut halted = false;
+    for s in 50..60u64 {
+        halted |= broken(&t.handle(created(s, s - 1, s)));
+    }
+    assert!(halted, "buxheti i bankave u kapërcye pa ndalim");
+}
+
+/// A18: matje (jo pohim): kujtesa dhe koha për ndryshim në pritje kur rrënjosja ngec.
+/// `cargo test --release -p zilja-node --test forks measure_pending_memory -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn measure_pending_memory() {
+    use zilja_node::tracker::Limits;
+    let rss = || std::fs::read_to_string("/proc/self/statm").unwrap().split_whitespace().nth(1).unwrap().parse::<u64>().unwrap() * 4096;
+    let mut t = from_snapshot(49);
+    t.set_limits(Limits { max_pending_banks: 0, max_pending_updates: 0 });
+    let (n_banks, per) = (200u64, 10_000u64);
+    let before = rss();
+    let t0 = std::time::Instant::now();
+    for s in 50..50 + n_banks {
+        t.handle(sh(s, s, vec![(s - 1, h(s - 1, 0))]));
+        t.handle(created(s, s - 1, s));
+        for i in 0..per {
+            let mut k = [0u8; 32];
+            k[..8].copy_from_slice(&(s * per + i).to_le_bytes());
+            t.handle(Event::Account { slot: s, bank_id: s, pubkey: k, write_version: i, meta: Some(AccountMeta { lamports: i, ..Default::default() }) });
+        }
+    }
+    let dt = t0.elapsed();
+    let n = n_banks * per;
+    let grew = rss().saturating_sub(before);
+    println!(
+        "A18: {n} ndryshime në {n_banks} banka: RSS +{} MB ({} B/ndryshim), {:.0} ns/ndryshim në tracker; parazgjedhja 4 000 000 ≈ {} MB",
+        grew >> 20,
+        grew / n,
+        dt.as_nanos() as f64 / n as f64,
+        (grew / n * 4_000_000) >> 20
+    );
+    assert_eq!(t.pending_updates() as u64, n);
+}
