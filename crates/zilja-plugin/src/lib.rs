@@ -25,8 +25,8 @@
 //! RPC-ja publike duhet të qëndrojë pas një proxy (TLS, kufij kërkesash); shih `docs/OPERIMI.md`.
 
 use agave_geyser_plugin_interface::geyser_plugin_interface::{
-    GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, ReplicaEntryUpdateParentInfoVersions,
-    Result as PluginResult,
+    GeyserPlugin, GeyserPluginError, ReplicaAccountInfoVersions, ReplicaEntryInfoVersions,
+    ReplicaEntryUpdateParentInfoVersions, Result as PluginResult,
     SlotStatus,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -211,6 +211,9 @@ pub struct ZiljaPlugin {
     snapshot_on_resume: AtomicBool,
     /// Serverët HTTP (RPC dhe metrikat); ndalen dhe priten në `on_unload` (F-07).
     servers: Mutex<Vec<rpc::HttpServer>>,
+    /// Testet: ngjarjet që do t'i shkonin shërbimit.
+    #[cfg(test)]
+    sent: Mutex<Vec<Event>>,
 }
 
 impl std::fmt::Debug for ZiljaPlugin {
@@ -303,6 +306,8 @@ fn custom<E: std::fmt::Display>(e: E) -> GeyserPluginError {
 
 impl ZiljaPlugin {
     fn send(&self, ev: Event) {
+        #[cfg(test)]
+        self.sent.lock().unwrap().push(ev.clone());
         if let Some(s) = &self.service {
             s.send(ev);
         }
@@ -432,11 +437,26 @@ impl GeyserPlugin for ZiljaPlugin {
     }
 
     // L-06 (Alpenglow): një shënues UpdateParent pastron një bank; zëvendësuesja vjen me CreatedBank.
+    // A01: Agave 4.3.2 e thërret këtë VETËM kur `entry_notifications_enabled()` është `true`
+    // (geyser-plugin-manager/src/entry_notifier.rs, `notify_entry_update_parent`). Vjen nga thread-i
+    // i njoftuesit të entry-ve, pa radhë të garantuar ndaj `update_bank_status`: tracker-i e lidh me
+    // `cleared_bank_id`, jo me radhën.
     fn notify_entry_update_parent(&self, info: ReplicaEntryUpdateParentInfoVersions) -> PluginResult<()> {
         match info {
             ReplicaEntryUpdateParentInfoVersions::V0_0_1(u) => {
+                if let Some(s) = &self.service {
+                    s.metrics().update_parent_seen.fetch_add(1, Ordering::Relaxed);
+                }
                 self.send(Event::BankCleared { slot: u.slot, bank_id: u.cleared_bank_id })
             }
+        }
+        Ok(())
+    }
+
+    /// A01: entry-t vetë s'na duhen; numërohen vetëm (kostoja e marrjes së UpdateParent).
+    fn notify_entry(&self, _entry: ReplicaEntryInfoVersions) -> PluginResult<()> {
+        if let Some(s) = &self.service {
+            s.metrics().entries_seen.fetch_add(1, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -445,8 +465,9 @@ impl GeyserPlugin for ZiljaPlugin {
         false
     }
 
+    /// A01: `true`, ndryshe Agave s'na dërgon kurrë UpdateParent (njoftuesi i entry-ve s'krijohet fare).
     fn entry_notifications_enabled(&self) -> bool {
-        false
+        true
     }
 }
 
@@ -464,6 +485,7 @@ pub unsafe extern "C" fn _create_plugin() -> *mut dyn GeyserPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agave_geyser_plugin_interface::geyser_plugin_interface::ReplicaEntryUpdateParentInfo;
 
     #[test]
     fn slot_hashes_id_and_parse() {
@@ -505,6 +527,30 @@ mod tests {
         // Pubkey me gjatësi të gabuar: injorohet.
         let bad = AccountView { pubkey: &[1u8; 5], ..v };
         assert!(to_meta(&bad).is_none());
+    }
+
+    /// A01: kopje e saktë e portës së Agave 4.3.2 (geyser-plugin-manager/src/entry_notifier.rs:
+    /// `if plugin.entry_notifications_enabled() && let Err(err) = plugin.notify_entry_update_parent(..)`)
+    /// dhe e kushtit që krijon vetë njoftuesin (geyser_plugin_service.rs: `entry_notifications_enabled()
+    /// || block_footer_notifications_enabled()`). Banka e pastruar duhet të arrijë si `BankCleared`.
+    #[test]
+    fn update_parent_passes_the_agave_gate() {
+        let p = ZiljaPlugin::default();
+        let plugins: Vec<&dyn GeyserPlugin> = vec![&p];
+        let notifier_created = plugins.iter().any(|p| p.entry_notifications_enabled() || p.block_footer_notifications_enabled());
+        assert!(notifier_created, "Agave s'do ta krijonte njoftuesin e entry-ve: UpdateParent s'vjen kurrë");
+        let parent_block_id = Default::default();
+        let info = ReplicaEntryUpdateParentInfo { slot: 77, cleared_bank_id: 9, parent_slot: 75, parent_block_id: &parent_block_id };
+        for plugin in &plugins {
+            if plugin.entry_notifications_enabled() {
+                plugin.notify_entry_update_parent(ReplicaEntryUpdateParentInfoVersions::V0_0_1(&info)).unwrap();
+            }
+        }
+        let sent = p.sent.lock().unwrap();
+        assert!(
+            sent.iter().any(|e| matches!(e, Event::BankCleared { slot: 77, bank_id: 9 })),
+            "banka e pastruar s'arriti te tracker-i: {sent:?}"
+        );
     }
 
     #[test]

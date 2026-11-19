@@ -119,6 +119,10 @@ pub struct Metrics {
     pub stopping: AtomicBool,
     /// P-10: `false` pasi thread-i i punëtorit mbaron (normalisht ose me panic).
     pub worker_alive: AtomicBool,
+    /// A01: njoftimet e entry-ve nga Agave (kostoja e `entry_notifications_enabled = true`).
+    pub entries_seen: AtomicU64,
+    /// A01: njoftimet UpdateParent (Alpenglow) që arritën te plugin-i.
+    pub update_parent_seen: AtomicU64,
 }
 
 /// P-08: fazat. `starting`: pema po ndërtohet (snapshot/genesis). `recovered`: pema u hap nga disku,
@@ -147,6 +151,7 @@ impl Metrics {
         const COUNTERS: &[&str] = &[
             "batches", "updates_applied", "total_apply_us", "events_received", "missing_parents",
             "abandoned_banks", "dead_banks", "proofs_served", "ambiguous_banks", "attest_refused",
+            "entries_seen", "update_parent_seen",
         ];
         let g = |n: &str, h: &str, v: &AtomicU64| {
             let t = if COUNTERS.contains(&n) { "counter" } else { "gauge" };
@@ -186,6 +191,8 @@ impl Metrics {
             g("ambiguous_banks", "Herët kur një slot kishte disa banka të gjalla që SlotHashes s'i dallonte (ndalim, P-07)", &self.ambiguous_banks),
             g("resume_verified", "1 kur pas rinisjes u konfirmua që jemi në të njëjtin zinxhir (SlotHashes)", &self.resume_verified),
             g("phase", "Faza: 0 starting, 1 recovered (nga disku, e paverifikuar), 2 serving, 3 halted", &self.phase),
+            g("entries_seen", "Njoftimet e entry-ve nga validatori (A01: kostoja e marrjes së UpdateParent)", &self.entries_seen),
+            g("update_parent_seen", "Njoftimet UpdateParent (Alpenglow) të marra", &self.update_parent_seen),
             g("max_root_age_secs", "Pragu i freskisë së root-it për /health (0 = pa kontroll)", &self.max_root_age_secs),
             format!(
                 "# HELP zilja_invalidate_failed 1 kur shënimi 'i pavlefshëm' i pemës në disk dështoi (rindërtoje me dorë)\n# TYPE zilja_invalidate_failed gauge\nzilja_invalidate_failed {}\n",
@@ -327,6 +334,11 @@ impl Service {
             m.phase.store(PHASE_HALTED, Ordering::Relaxed);
         }
         m.queue_len.store(tx.len() as u64, Ordering::Relaxed);
+    }
+
+    /// Metrikat (vetëm lexim/numërim me atomike, pa kyçur gjë).
+    pub fn metrics(&self) -> &Metrics {
+        &self.shared.metrics
     }
 
     pub fn sender(&self) -> Option<Sender<Event>> {
