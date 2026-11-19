@@ -18,7 +18,14 @@ të pemës dhe `503 halted` pasi ka ndaluar (F-12). Load balancer-i duhet ta pë
 Serveri i Ziles ka kufij të vetët:
 - trupi i kërkesës deri në 64 KB;
 - 5 sekonda afat i plotë për kërkesë, që nga pranimi (radha, kokat, trupi, përgjigja; A17), dhe ≤ 5 s për çdo operacion leximi/shkrimi; prandaj edhe `on_unload` pret serverin ≤ ~5 s;
-- 8 punëtorë, ndaj një klient i ngadaltë zë vetëm një punëtor për pak sekonda.
+- 8 punëtorë, ndaj një klient i ngadaltë zë vetëm një punëtor për pak sekonda;
+- R4-3: maksimumi **2 lidhje njëkohësisht për IP** në çdo port; e treta merr menjëherë `503 too many
+  connections from this address`. Pra një sulmues duhet ≥ 4 IP për t'i zënë të gjithë punëtorët e
+  portit publik. Loopback-u (`127.0.0.1`, `::1`) s'kufizohet, sepse proxy-t në të njëjtin host i
+  sjellin të gjitha kërkesat nga aty. Proxy-t (nginx, Caddy) i buferojnë vetë kërkesat e ngadalta,
+  ndaj kufiri për IP real të klientit duhet vendosur te proxy-t (p.sh. `limit_conn` në nginx).
+- **Monitorimi:** lexo `/health` te `metrics_bind` (porti privat). Ka punëtorët e vet, ndaj
+  mbetet i arritshëm edhe kur porti publik është i zënë nga lidhje të ngadalta.
 
 Nuk ka TLS, kufij për IP ose cache. Për to, vendose pas një proxy. Shembull me nginx:
 
