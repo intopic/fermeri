@@ -3,7 +3,7 @@
 //! ```text
 //! zilja-snapshot-bench <snapshot-SLOT-HASH.tar.zst> <db_dir> \
 //!   --out results.csv --cache-depth 20 --slots 300 --updates 5000,15000,30000 --proofs 5000
-//!   [--limit N] [--ingest-only] [--sample 500000] [--seed 1] [--slot S]
+//!   [--limit N] [--ingest-only] [--sample 500000] [--seed 1] [--slot S] [--cold none|profile|slot]
 //! curl -sL <URL e snapshot-it> | zilja-snapshot-bench - <db_dir> --limit 3000000 …   # nga rrjeti, pa disk
 //! ```
 //!
@@ -20,6 +20,15 @@
 //!    çdo profil `--updates`; matet `prepare_slot`, `commit_slot`, checkpoint-et, RSS/HWM, CPU, I/O.
 //! 4. `--proofs` dëftesa (gjysma aktuale, gjysma historike), secila e verifikuar kundër root-it.
 //!
+//! Cache-i i sistemit (R8): pema sapo është shkruar, pra `pages.dat` është zakonisht i tëri në
+//! cache-in e Linux-it dhe slotet matin lexime "të ngrohta". `--cold profile` e nxjerr skedarin nga
+//! cache-i (`posix_fadvise(DONTNEED)`, pa root) pas ndërtimit, para çdo profili dhe para dëftesave;
+//! `--cold slot` edhe para çdo sloti (rasti më i keq: çdo lexim nga disku). Heqja bëhet jashtë kohës
+//! së matur. Për çdo slot shkruhen fazat (`read_ms` = leximi i faqeve, `fsync_ms`, …), faqet e
+//! kërkuara nga disku dhe MB të lexuara realisht nga pajisja; `os_cache_hit_pct` tregon sa lexime
+//! erdhën nga cache-i. Ndryshimet bien 75% mbi `--sample` llogari të rastit: sa më e madhe mostra,
+//! aq më pak ngrohet cache-i gjatë profilit.
+//!
 //! Dalja: `results.csv` (një rresht për slot), `timeline.csv` (një rresht në sekondë, nga fillimi),
 //! `summary.json`. Grafikët: `python3 scripts/plot-bench.py results.csv`.
 //!
@@ -32,7 +41,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use zilja_store::{PageOptions, PageTree};
+use zilja_store::{PageOptions, PageTree, PAGE_BLOCK};
 use zilja_tree::{StateTree, Update};
 use zilja_verifier::{tree_key, verify_tree_key, AccountMeta, Key, Verdict};
 
@@ -262,6 +271,42 @@ fn proc_io() -> (u64, u64) {
     (get("read_bytes:"), get("write_bytes:"))
 }
 
+/// Nxjerr skedarin nga cache-i i sistemit (vetëm faqet e pastra: pema bën fsync çdo slot).
+/// Cache-i është për inode, kështu që mjafton një fd i ri mbi të njëjtin skedar.
+fn drop_os_cache(p: &Path) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let f = std::fs::File::open(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        // SAFETY: fd i vlefshëm gjatë gjithë thirrjes; posix_fadvise s'prek memorie.
+        let r = unsafe { libc::posix_fadvise(f.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
+        if r != 0 {
+            return Err(format!("posix_fadvise({}): {}", p.display(), std::io::Error::from_raw_os_error(r)));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = p;
+        Err("--cold punon vetëm në Linux (edhe WSL2)".into())
+    }
+}
+
+fn meminfo_gb(key: &str) -> f64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| s.lines().find(|l| l.starts_with(key)).and_then(|l| l.split_whitespace().nth(1)?.parse::<f64>().ok()))
+        .unwrap_or(0.0)
+        / 1048576.0
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Cold {
+    None,
+    Profile,
+    Slot,
+}
+
 fn file_gb(p: &Path) -> f64 {
     std::fs::metadata(p).map(|m| m.len() as f64 / 1e9).unwrap_or(0.0)
 }
@@ -324,11 +369,12 @@ struct Args {
     seed: u64,
     /// Sloti i snapshot-it, kur s'del nga emri i skedarit (p.sh. stdin).
     slot: Option<u64>,
+    cold: Cold,
 }
 
 fn parse_args() -> Result<Args, String> {
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "përdorimi: zilja-snapshot-bench <snapshot.tar.zst> <db_dir> [--out results.csv] [--cache-depth 20] [--slots 300] [--updates 5000,15000,30000] [--proofs 5000] [--sample 500000] [--limit N] [--ingest-only] [--seed 1] [--slot S]\n<snapshot.tar.zst> mund të jetë `-` (stdin): curl -sL URL | zilja-snapshot-bench - <db_dir> --limit 3000000 …";
+    let usage = "përdorimi: zilja-snapshot-bench <snapshot.tar.zst> <db_dir> [--out results.csv] [--cache-depth 20] [--slots 300] [--updates 5000,15000,30000] [--proofs 5000] [--sample 500000] [--limit N] [--ingest-only] [--seed 1] [--slot S] [--cold none|profile|slot]\n<snapshot.tar.zst> mund të jetë `-` (stdin): curl -sL URL | zilja-snapshot-bench - <db_dir> --limit 3000000 …";
     if a.len() < 2 {
         return Err(usage.into());
     }
@@ -345,6 +391,7 @@ fn parse_args() -> Result<Args, String> {
         ingest_only: false,
         seed: 1,
         slot: None,
+        cold: Cold::None,
     };
     let mut it = a[2..].iter();
     while let Some(k) = it.next() {
@@ -361,6 +408,14 @@ fn parse_args() -> Result<Args, String> {
             "--seed" => r.seed = num(v()?)?,
             "--slot" => r.slot = Some(num(v()?)?),
             "--ingest-only" => r.ingest_only = true,
+            "--cold" => {
+                r.cold = match v()?.as_str() {
+                    "none" => Cold::None,
+                    "profile" => Cold::Profile,
+                    "slot" => Cold::Slot,
+                    x => return Err(format!("--cold: {x:?} (none, profile, slot)")),
+                }
+            }
             _ => return Err(format!("argument i panjohur {k:?}\n{usage}")),
         }
     }
@@ -387,6 +442,15 @@ fn run() -> Result<(), String> {
     let phase = Arc::new(AtomicU8::new(0));
     let stop = Arc::new(AtomicBool::new(false));
     let tl = timeline(out_dir.join("timeline.csv"), phase.clone(), stop.clone());
+    let mem_avail0 = meminfo_gb("MemAvailable:");
+    if a.cold != Cold::None {
+        // Gabimi del këtu, para orëve të ndërtimit, jo pas tyre.
+        let probe = a.db.join(".cold-probe");
+        std::fs::write(&probe, [0u8; 4096]).map_err(|e| e.to_string())?;
+        let r = drop_os_cache(&probe);
+        let _ = std::fs::remove_file(&probe);
+        r?;
+    }
     let mut rng = StdRng::seed_from_u64(a.seed);
     let opts = PageOptions { history: 32, cache_depth: a.cache_depth, durable: true, ..Default::default() };
     let mut tree = PageTree::open(&a.db, opts).map_err(|e| format!("PageTree: {e}"))?;
@@ -437,6 +501,14 @@ fn run() -> Result<(), String> {
             "cpu_model": std::fs::read_to_string("/proc/cpuinfo").ok().and_then(|s| s.lines().find(|l| l.starts_with("model name")).map(|l| l.split(':').nth(1).unwrap_or("").trim().to_string())),
         },
         "cache_depth": a.cache_depth,
+        "params": {
+            "cold": format!("{:?}", a.cold).to_lowercase(), "sample": a.sample, "slots": a.slots, "updates": a.updates,
+            "proofs": a.proofs, "seed": a.seed, "limit": a.limit,
+        },
+        "ram": {
+            "mem_available_gb_at_start": mem_avail0, "pages_gb_vs_mem_total": file_gb(&pages) / meminfo_gb("MemTotal:").max(1e-9),
+            "wsl2": std::fs::read_to_string("/proc/version").map(|v| v.to_lowercase().contains("microsoft")).unwrap_or(false),
+        },
     });
     if a.ingest_only || sample.is_empty() {
         phase.store(4, Ordering::Relaxed);
@@ -450,14 +522,26 @@ fn run() -> Result<(), String> {
     // 3. Slotet.
     phase.store(2, Ordering::Relaxed);
     let csv = Mutex::new(std::fs::File::create(&a.out).map_err(|e| format!("{}: {e}", a.out.display()))?);
-    writeln!(csv.lock().unwrap(), "profile,slot,updates,prepare_ms,commit_ms,total_ms,checkpoint,rss_mb,hwm_mb,cpu_pct,read_mb_s,write_mb_s,pages_gb").map_err(|e| e.to_string())?;
-    let ckpt_path = a.db.join("meta.ckpt");
-    let ckpt_id = |p: &Path| std::fs::metadata(p).ok().and_then(|m| m.modified().ok());
+    writeln!(
+        csv.lock().unwrap(),
+        "profile,slot,updates,prepare_ms,commit_ms,total_ms,checkpoint,rss_mb,hwm_mb,cpu_pct,read_mb_s,write_mb_s,pages_gb,read_ms,tree_ms,build_ms,pwrite_ms,fsync_ms,log_ms,disk_reads,disk_read_mb,pages_written"
+    )
+    .map_err(|e| e.to_string())?;
     let mut slot = snap_slot;
     let mut profiles = serde_json::Map::new();
     let mut created: Vec<Key> = Vec::new();
+    let mut cold_warn: Vec<String> = Vec::new();
+    let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
     for &n in &a.updates {
-        let (mut prep, mut comm, mut tot, mut ck) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        if a.cold != Cold::None {
+            drop_os_cache(&pages)?;
+        }
+        let (mut prep, mut comm, mut tot, mut ck, mut tot_nock) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut rd, mut fs, mut lg, mut reads, mut rmb) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut sum_reads, mut sum_read_bytes) = (0u64, 0u64);
+        // Sloti i parë pas heqjes nga cache-i: (faqe, bajte nga pajisja). Faqet e shkruara më pas
+        // janë natyrshëm në cache, kështu që vetëm ky slot tregon nëse heqja pati efekt.
+        let mut first_cold: Option<(u64, u64)> = None;
         for _ in 0..a.slots {
             slot += 1;
             let mut ups: Vec<Update> = Vec::with_capacity(n);
@@ -476,7 +560,9 @@ fn run() -> Result<(), String> {
             }
             // Llogaritë e reja bëhen pjesë e mostrës (ndryshohen/fshihen më vonë).
             sample.append(&mut created);
-            let before = ckpt_id(&ckpt_path);
+            if a.cold == Cold::Slot {
+                drop_os_cache(&pages)?;
+            }
             let (c0, io0) = (cpu_secs(), proc_io());
             let t0 = Instant::now();
             let p = tree.prepare_slot(slot, ups, None).map_err(|e| format!("prepare_slot {slot}: {e}"))?;
@@ -485,42 +571,101 @@ fn run() -> Result<(), String> {
             let t2 = Instant::now();
             let (c1, io1) = (cpu_secs(), proc_io());
             let dt = (t2 - t0).as_secs_f64().max(1e-9);
-            let is_ckpt = ckpt_id(&ckpt_path) != before;
+            let st = tree.last_timing().unwrap_or_default();
             let (pm, cm, tm) = ((t1 - t0).as_secs_f64() * 1e3, (t2 - t1).as_secs_f64() * 1e3, dt * 1e3);
+            let read_bytes = io1.0.saturating_sub(io0.0);
             prep.push(pm);
             comm.push(cm);
             tot.push(tm);
-            if is_ckpt {
+            rd.push(ms(st.read));
+            fs.push(ms(st.fsync));
+            lg.push(ms(st.commit));
+            reads.push(st.disk_reads as f64);
+            rmb.push(read_bytes as f64 / 1e6);
+            sum_reads += st.disk_reads;
+            sum_read_bytes += read_bytes;
+            if a.cold != Cold::None && first_cold.is_none() {
+                first_cold = Some((st.disk_reads, read_bytes));
+            }
+            if st.checkpoint {
                 ck.push(tm);
+            } else {
+                tot_nock.push(tm);
             }
             writeln!(
                 csv.lock().unwrap(),
-                "{n},{slot},{n},{pm:.3},{cm:.3},{tm:.3},{},{:.0},{:.0},{:.0},{:.1},{:.1},{:.3}",
-                is_ckpt as u8,
+                "{n},{slot},{n},{pm:.3},{cm:.3},{tm:.3},{},{:.0},{:.0},{:.0},{:.1},{:.1},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{:.3},{},{:.3},{}",
+                st.checkpoint as u8,
                 proc_status("VmRSS:"),
                 proc_status("VmHWM:"),
                 100.0 * (c1 - c0) / dt,
-                (io1.0 - io0.0) as f64 / 1e6 / dt,
+                read_bytes as f64 / 1e6 / dt,
                 (io1.1 - io0.1) as f64 / 1e6 / dt,
-                file_gb(&pages)
+                file_gb(&pages),
+                ms(st.read),
+                ms(st.tree),
+                ms(st.build),
+                ms(st.pwrite),
+                ms(st.fsync),
+                ms(st.commit),
+                st.disk_reads,
+                read_bytes as f64 / 1e6,
+                st.pages
             )
             .map_err(|e| e.to_string())?;
         }
-        eprintln!("profili {n}/slot: total p50 {:.1} ms, p99 {:.1} ms", pct(&mut tot.clone(), 0.5), pct(&mut tot.clone(), 0.99));
+        // Sa nga faqet e kërkuara erdhën nga cache-i: 1 − (bajte nga pajisja) / (faqe × 4 KB).
+        // I përafërt: disa faqe ndajnë një bllok 4 KB; readahead-i i kernelit e ul (kufizohet në 0).
+        let asked = sum_reads as f64 * PAGE_BLOCK as f64;
+        let hit = if asked > 0.0 { (100.0 * (1.0 - sum_read_bytes as f64 / asked)).clamp(0.0, 100.0) } else { 100.0 };
+        if let Some((r, b)) = first_cold {
+            if r >= 100 && (b as f64) < 0.05 * r as f64 * PAGE_BLOCK as f64 {
+                cold_warn.push(format!(
+                    "profili {n}: --cold s'pati efekt: sloti i parë pas heqjes nga cache-i kërkoi {r} faqe, por pajisja lexoi vetëm {:.2} MB (cache jashtë VM-së, p.sh. WSL2/Windows, ose /proc/self/io s'numëron)",
+                    b as f64 / 1e6
+                ));
+            }
+        }
+        eprintln!(
+            "profili {n}/slot: total p50 {:.1} ms, p99 {:.1} ms, max {:.1} ms | leximi p50 {:.1} ms, p99 {:.1} ms | fsync p50 {:.1} ms | {} checkpoint-e, max {:.1} ms | {:.0} faqe/slot nga disku, {:.1} MB/slot nga pajisja, cache {hit:.0}%",
+            pct(&mut tot.clone(), 0.5),
+            pct(&mut tot.clone(), 0.99),
+            tot.iter().cloned().fold(0.0, f64::max),
+            pct(&mut rd.clone(), 0.5),
+            pct(&mut rd.clone(), 0.99),
+            pct(&mut fs.clone(), 0.5),
+            ck.len(),
+            ck.iter().cloned().fold(0.0, f64::max),
+            sum_reads as f64 / a.slots.max(1) as f64,
+            sum_read_bytes as f64 / 1e6 / a.slots.max(1) as f64,
+        );
         profiles.insert(
             n.to_string(),
             json!({
                 "slots": a.slots, "prepare_ms": stats(prep), "commit_ms": stats(comm), "total_ms": stats(tot.clone()),
+                "total_ms_without_checkpoints": stats(tot_nock),
                 "checkpoint_ms": stats(ck), "updates_per_second": (n as f64 * a.slots as f64) / (tot.iter().sum::<f64>() / 1e3).max(1e-9),
+                "read_ms": stats(rd), "fsync_ms": stats(fs), "log_ms": stats(lg),
+                "disk_reads_per_slot": stats(reads), "device_read_mb_per_slot": stats(rmb),
+                "os_cache_hit_pct": hit, "device_bytes_per_page_read": if sum_reads > 0 { sum_read_bytes as f64 / sum_reads as f64 } else { 0.0 },
             }),
         );
     }
     summary["slots"] = Value::Object(profiles);
     summary["after_slots"] = json!({"hwm_mb": proc_status("VmHWM:"), "rss_mb": proc_status("VmRSS:"), "pages_gb": file_gb(&pages), "accounts": tree.len()});
+    if !cold_warn.is_empty() {
+        for w in &cold_warn {
+            eprintln!("KUJDES: {w}");
+        }
+        summary["warnings"] = json!(cold_warn);
+    }
 
     // 4. Dëftesat, secila e verifikuar.
     phase.store(3, Ordering::Relaxed);
     let (lo, hi) = tree.provable_range().ok_or("pema s'jep dëftesa")?;
+    if a.cold != Cold::None {
+        drop_os_cache(&pages)?;
+    }
     let (mut lat_now, mut lat_hist, mut sizes) = (Vec::new(), Vec::new(), Vec::new());
     let mut bad = 0u64;
     for i in 0..a.proofs {

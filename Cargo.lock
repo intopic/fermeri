@@ -4728,6 +4728,7 @@ dependencies = [
  "bs58",
  "ed25519-dalek",
  "hex",
+ "libc",
  "rand 0.8.8",
  "serde_json",
  "tar",

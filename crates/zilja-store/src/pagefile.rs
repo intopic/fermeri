@@ -772,6 +772,29 @@ pub struct PageStats {
     pub sparse_blocks: u64,
 }
 
+/// Matjet e slotit të fundit sipas fazave (për `zilja-snapshot-bench`). Kohët janë mure-ore.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SlotTiming {
+    /// Leximi paraprak i faqeve (nivel pas niveli, paralelisht) dhe i blloqeve për zhvendosje.
+    pub read: std::time::Duration,
+    /// Llogaritja e nyjeve dhe e hash-eve në RAM.
+    pub tree: std::time::Duration,
+    /// Ndërtimi dhe kodimi i faqeve të reja (pa `pwrite`/fsync).
+    pub build: std::time::Duration,
+    /// `pwrite` i blloqeve.
+    pub pwrite: std::time::Duration,
+    /// fsync i skedarit të faqeve.
+    pub fsync: std::time::Duration,
+    /// `commit_slot`: rekordi në log (me fsync-un e tij) dhe checkpoint-i, kur ka.
+    pub commit: std::time::Duration,
+    /// Faqe/blloqe të kërkuara nga disku (`pread`); nëse vijnë nga cache-i i sistemit s'dallohet këtu.
+    pub disk_reads: u64,
+    /// Faqe të shkruara.
+    pub pages: usize,
+    /// U shkrua `meta.ckpt` në këtë slot.
+    pub checkpoint: bool,
+}
+
 /// Rezultati i `prepare_slot`: faqet janë shkruar tashmë në blloqe të lira; mbetet rekordi.
 struct PagePrepared {
     slot: u64,
@@ -835,6 +858,7 @@ pub struct PageTree {
     pub last_disk_reads: AtomicU64,
     /// Matje: bajte të shkruara në skedarin e faqeve gjithsej.
     pub page_bytes_written: AtomicU64,
+    last_timing: Option<SlotTiming>,
     fault_every: AtomicU64,
     fault_count: AtomicU64,
 }
@@ -908,6 +932,7 @@ impl PageTree {
             profile: std::env::var_os("ZILJA_PROFILE").is_some(),
             last_disk_reads: AtomicU64::new(0),
             page_bytes_written: AtomicU64::new(0),
+            last_timing: None,
             fault_every: AtomicU64::new(0),
             fault_count: AtomicU64::new(0),
         };
@@ -1076,6 +1101,11 @@ impl PageTree {
     /// (≤ `SNAPSHOT_FLUSH_BLOCKS` + 1, pavarësisht madhësisë së pemës).
     pub fn snapshot_peak_blocks(&self) -> usize {
         self.snapshot_peak_blocks
+    }
+
+    /// Matjet e slotit të fundit të bërë commit (`None` para slotit të parë).
+    pub fn last_timing(&self) -> Option<SlotTiming> {
+        self.last_timing
     }
 
     pub fn page_stats(&self) -> PageStats {
@@ -2088,9 +2118,22 @@ impl StateTree for PageTree {
         self.root_id = rec.root_id;
         self.state = Some(rec.st);
         self.records_since_ckpt += 1;
-        if self.records_since_ckpt >= self.o.ckpt_every || self.log_len > self.o.ckpt_log_mb << 20 {
+        let ckpt = self.records_since_ckpt >= self.o.ckpt_every || self.log_len > self.o.ckpt_log_mb << 20;
+        if ckpt {
             self.checkpoint()?;
         }
+        let write = p.t_write.saturating_sub(p.t_tree);
+        self.last_timing = Some(SlotTiming {
+            read: p.t_pre,
+            tree: p.t_tree.saturating_sub(p.t_pre),
+            build: write.saturating_sub(p.t_split[1] + p.t_split[2]),
+            pwrite: p.t_split[1],
+            fsync: p.t_split[2],
+            commit: t0.elapsed(),
+            disk_reads: self.last_disk_reads.load(Ordering::Relaxed),
+            pages: p.pages,
+            checkpoint: ckpt,
+        });
         if self.profile {
             let s = self.page_stats();
             eprintln!(

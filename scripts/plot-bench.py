@@ -7,6 +7,7 @@ Lexon results.csv, timeline.csv dhe summary.json nga e njëjta dosje dhe shkruan
   ms_slot.png  — ms/slot në kohë për çdo profil, me vijat p50/p99 dhe pikat e checkpoint-eve
   ram.png      — RSS (GB) nga fillimi i leximit të snapshot-it deri në fund, me fazat
   cpu_io.png   — CPU% dhe disk I/O MB/s për çdo profil
+  phases.png   — ku shkon koha e slotit (leximi, pema, faqet, pwrite, fsync, log), p50 dhe p99 (R8)
 Kërkon matplotlib (pip install matplotlib).
 """
 import csv
@@ -53,6 +54,8 @@ def main():
         ys = [float(r["total_ms"]) for r in rows]
         ax.plot(xs, ys, lw=0.8, label="total ms/slot")
         ax.plot(xs, [float(r["prepare_ms"]) for r in rows], lw=0.6, alpha=0.6, label="prepare_slot")
+        if "read_ms" in rows[0]:
+            ax.plot(xs, [float(r["read_ms"]) for r in rows], lw=0.6, alpha=0.8, label="leximi i faqeve")
         for q, ls in ((0.5, "--"), (0.99, ":")):
             ax.axhline(pct(ys, q), ls=ls, color="k", lw=0.8, label=f"p{int(q * 100)} = {pct(ys, q):.1f} ms")
         ck = [(int(r["slot"]), float(r["total_ms"])) for r in rows if r["checkpoint"] == "1"]
@@ -101,7 +104,27 @@ def main():
     fig.suptitle(title)
     fig.tight_layout()
     fig.savefig(os.path.join(d, "cpu_io.png"), dpi=130)
-    print("u shkruan:", ", ".join(os.path.join(d, n) for n in ("ms_slot.png", "ram.png", "cpu_io.png")))
+    names = ["ms_slot.png", "ram.png", "cpu_io.png"]
+
+    # 4. Fazat e slotit (R8): p50 dhe p99 për çdo fazë dhe profil.
+    cols = [("read_ms", "leximi"), ("tree_ms", "pema/hash"), ("build_ms", "faqet"), ("pwrite_ms", "pwrite"), ("fsync_ms", "fsync"), ("log_ms", "log+ckpt")]
+    if results and all(c in results[0] for c, _ in cols):
+        fig, axs = plt.subplots(1, 2, figsize=(11, 3.8), sharey=False)
+        for ax, q in zip(axs, (0.5, 0.99)):
+            bottom = [0.0] * len(profiles)
+            for c, lab in cols:
+                vals = [pct([float(r[c]) for r in results if r["profile"] == p], q) for p in profiles]
+                ax.bar([f"{int(p):,}" for p in profiles], vals, bottom=bottom, label=lab)
+                bottom = [b + v for b, v in zip(bottom, vals)]
+            ax.set_title(f"p{int(q * 100)} e çdo faze (ms)")
+            ax.set_xlabel("ndryshime/slot")
+        axs[0].set_ylabel("ms")
+        axs[1].legend(fontsize=7)
+        fig.suptitle(f"Ku shkon koha e slotit — {title}")
+        fig.tight_layout()
+        fig.savefig(os.path.join(d, "phases.png"), dpi=130)
+        names.append("phases.png")
+    print("u shkruan:", ", ".join(os.path.join(d, n) for n in names))
 
 
 if __name__ == "__main__":
