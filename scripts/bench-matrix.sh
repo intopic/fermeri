@@ -4,6 +4,8 @@
 #   scripts/bench-matrix.sh check [dosja]                         # 1. a është PC-ja gati (rreth 1 min)
 #   scripts/bench-matrix.sh <snapshot.tar.zst | URL> [dosja]     # 2. nis të gjitha rastet
 #   scripts/bench-matrix.sh publish <dosja>                       # 3. kopjon rezultatet në bench-results/ për GitHub
+#   Kodi i daljes: 0 = të gjitha rastet mbaruan; 4 = disa raste dështuan (të tjerat mbaruan; një nisje e re
+#   provon vetëm ato); 1 = gabim që ndal gjithçka.
 #
 # Snapshot-i shkarkohet NJË herë (nëse jepet URL) dhe përdoret për çdo rast. Çdo rast
 # ndërton pemën nga e para në një DB të re, pastaj mat slotet dhe dëftesat.
@@ -45,6 +47,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/snapshot-url.sh
+. "$ROOT/scripts/snapshot-url.sh"
 BIN="${BIN:-$ROOT/target/release/zilja-snapshot-bench}"
 usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
@@ -182,11 +186,33 @@ case "$SNAP" in
       say "snapshot-i ekziston: $have"
       SNAP="$have"
     else
-      say "po shkarkoj $SNAP (një herë)…"
-      eff=$(curl -fL --retry 5 -C - -o "$OUT/snapshot.part" -w '%{url_effective}' "$SNAP") || { say "shkarkimi dështoi"; exit 1; }
+      # H1: URL-ja përfundimtare zgjidhet para shkarkimit dhe ruhet te snapshot.url. Vazhdimi
+      # (`-C -`) bëhet vetëm mbi të njëjtën URL; nëse serveri ka nxjerrë snapshot tjetër, pjesa e
+      # vjetër fshihet, që të mos ngjiten dy snapshot-e në një skedar.
+      part="$OUT/snapshot.part"; url_file="$OUT/snapshot.url"; got=0
+      for attempt in 1 2 3; do
+        eff=$(snapshot_resolve_retry "$SNAP"); rc=$?
+        if [ $rc -ne 0 ]; then
+          say "URL-ja e snapshot-it s'u zgjidh: $eff$([ $rc -eq 2 ] && echo ' (HTTP 429: shumë kërkesa; provo më vonë ose një URL tjetër)')"
+          exit 1
+        fi
+        if [ -f "$part" ] && [ "$(cat "$url_file" 2>/dev/null)" != "$eff" ]; then
+          say "snapshot-i në server ndryshoi ($(cat "$url_file" 2>/dev/null || echo '?') → $eff): pjesa e vjetër fshihet, nis nga e para"
+          rm -f "$part"
+        fi
+        echo "$eff" > "$url_file"
+        say "po shkarkoj $eff (një herë)…"
+        curl -fL --retry 5 --retry-delay 30 -C - -o "$part" "$eff"; st=$?
+        [ $st -eq 0 ] && { got=1; break; }
+        # 33: serveri s'pranon vazhdim (Range); pjesa s'vlen më, prova tjetër nis nga e para.
+        [ $st -eq 33 ] && rm -f "$part"
+        say "shkarkimi u ndërpre (kodi $st, prova $attempt/3); e vazhdoj nëse URL-ja s'ka ndryshuar"
+      done
+      [ $got = 1 ] || { say "shkarkimi dështoi"; exit 1; }
       name=$(basename "${eff%%\?*}")
       case "$name" in snapshot-*.tar.zst) ;; *) name="snapshot.tar.zst" ;; esac
-      mv "$OUT/snapshot.part" "$OUT/$name"
+      mv "$part" "$OUT/$name"
+      rm -f "$url_file"
       SNAP="$OUT/$name"
       say "u shkarkua: $SNAP ($(du -h "$SNAP" | cut -f1))"
     fi ;;
@@ -255,6 +281,8 @@ done
 python3 "$ROOT/scripts/bench-table.py" "$OUT" > "$OUT/RESULTS.md" && say "tabela: $OUT/RESULTS.md"
 if [ ${#FAILED[@]} -gt 0 ]; then
   say "DËSHTUAN: ${FAILED[*]} (shiko <rasti>/bench.log)"
-  exit 1
+  # M2: kodi 4 = disa raste dështuan, të tjerat mbaruan (≠ 1, gabim që ndal gjithçka). Një nisje
+  # e re në të njëjtën dosje provon vetëm rastet e dështuara.
+  exit 4
 fi
 say "të gjitha rastet mbaruan. Për GitHub: scripts/bench-matrix.sh publish $OUT"

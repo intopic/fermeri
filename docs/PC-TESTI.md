@@ -19,7 +19,23 @@ lër rreth 8 GB për Windows-in), dhe në PowerShell nis `wsl --shutdown`:
 ```
 [wsl2]
 memory=56GB
+swap=0
 ```
+
+`swap=0`: pa swap, një matje që s'nxë në RAM dështon qartë, në vend që numrat të prishen në heshtje
+(faza 0 jep KUJDES kur ka swap).
+
+Për Mainnet-in, disku virtual i WSL2 ka si parazgjedhje maksimumin 1 TB, kurse Mainnet-i kërkon
+≥ 700 GB të lirë brenda Ubuntu-s. Kontrolloje me `df -h ~`; nëse s'mjafton, zmadhoje në PowerShell
+(versioni i ri i WSL-së):
+
+```powershell
+wsl --shutdown
+wsl --manage Ubuntu-24.04 --resize 2TB
+```
+
+Edhe disku i Windows-it ku ndodhet disku virtual (zakonisht C:) duhet ta ketë këtë vend. Faza 0 i
+kontrollon të dyja.
 
 Në një PC me Linux, ky hap s'duhet.
 
@@ -59,7 +75,7 @@ e sistemit, ndalet dhe tregon komandën e saktë me `sudo`.
 | 4 mainnet | i shkurtuar: size i plotë (1 024 slote), cold slot dhe cache 24 (512 slote); profilet 1 000 – 60 000 ndryshime/slot (pa 100 000) | ~10–16 orë |
 | 5 publish | kopjon rezultatet te `bench-results/` për PR | ~1 min |
 
-- **Gjendja:** `~/zilja/results/STATUS.md` (faza, ora, OK/DËSHTOI). Log-u i çdo faze:
+- **Gjendja:** `~/zilja/results/STATUS.md` (faza, ora, OK/PJESËRISHT/DËSHTOI). Log-u i çdo faze:
   `~/zilja/results/phaseN-*.log`.
 - **Ndërprerje:** e njëjta komandë vazhdon nga faza dhe nga rasti ku mbeti.
 - **Vetëm disa faza:** `PHASES="3 4" scripts/pc-run-all.sh`.
@@ -83,3 +99,16 @@ Si lexohen rezultatet: docs/OPERIMI.md, "Seria e plotë në PC".
 | Disk i lirë (NVMe) | 300 GB | 1 TB |
 
 Dosja duhet të jetë brenda Linux-it (`~/`), jo te `/mnt/c`: `check` ndalet në këtë rast.
+
+Faza 0 kontrollon edhe para se të nisë gjithçka:
+
+- disku i lirë ≥ `MAINNET_MIN_FREE_GB` (700 GB) kur faza 4 është në plan, dhe vendi në C: në WSL2;
+- që URL-të e snapshot-eve (`TESTNET_URL`, `MAINNET_URL`) ridrejtojnë vërtet te një
+  `snapshot-*.tar.zst`. HTTP 429 (kufi shkarkimesh i endpoint-eve publike) jep vetëm KUJDES: shkarkimi
+  provon sërish vetë.
+
+Shkarkimi i snapshot-it mund të ndërpritet dhe të rinisë pa rrezik: vazhdon vetëm mbi të njëjtin
+snapshot (URL-ja ruhet te `snapshot.url`), dhe nis nga e para nëse rrjeti ka nxjerrë një të ri.
+
+Nëse në fazën 3 ose 4 dështojnë vetëm disa raste, faza shënohet PJESËRISHT te `STATUS.md` dhe nata
+vazhdon me fazën tjetër; skripti del në fund me kod 4. Një nisje e re provon vetëm rastet që dështuan.

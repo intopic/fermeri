@@ -14,6 +14,8 @@
 #
 # Gjendja: <rezultatet>/STATUS.md (faza, koha, OK/DËSHTOI), log-u i çdo faze te <rezultatet>/phaseN-*.log.
 # Fazat e mbaruara kapërcehen (skedari phaseN.done); brenda matrix-it, edhe rastet e mbaruara.
+# M2: kur në fazën 3 ose 4 dështojnë vetëm disa raste, faza shënohet PJESËRISHT dhe skripti vazhdon me
+# fazën tjetër; në fund del me kod 4. Një nisje e re provon vetëm rastet që dështuan.
 # Rezultatet: si parazgjedhje <dosja mbi repo-n>/results (p.sh. ~/zilja/results).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,6 +32,8 @@ M_EXTRA="${M_EXTRA:-}"
 mkdir -p "$R"
 R="$(cd "$R" && pwd)"
 MX="$ROOT/scripts/bench-matrix.sh"
+# shellcheck source=scripts/snapshot-url.sh
+. "$ROOT/scripts/snapshot-url.sh"
 
 # shellcheck disable=SC1091
 [ -f "$TOOLS/env.sh" ] && . "$TOOLS/env.sh"
@@ -76,6 +80,12 @@ run_phase() { # n komanda...
     say "faza $n (${NAMES[$n]}): OK për $m min"
   else
     local st=$?
+    if [ "$st" -eq 4 ]; then
+      status "$n" "PJESËRISHT" "disa raste dështuan — $(grep 'DËSHTUAN:' "$log" | tail -1 | cut -c1-150 | tr '|' '/')"
+      say "faza $n (${NAMES[$n]}): disa raste DËSHTUAN (shiko $log); vazhdoj me fazën tjetër. Një nisje e re provon vetëm ato raste."
+      PARTIAL=1
+      return 0
+    fi
     status "$n" "DËSHTOI" "kodi $st — $(tail -1 "$log" | cut -c1-150 | tr '|' '/')"
     say "faza $n (${NAMES[$n]}): DËSHTOI (kodi $st). Shiko $log. Pas rregullimit, e njëjta komandë vazhdon nga kjo fazë."
     exit "$st"
@@ -83,7 +93,42 @@ run_phase() { # n komanda...
 }
 
 p0() {
-  "$MX" check "$R/testnet"
+  "$MX" check "$R/testnet" || return 1
+  # M3/M4: disku dhe URL-të e snapshot-eve kontrollohen tani, jo pas 10 orësh në fazën 4.
+  local err=0 free host out rc net url
+  if [[ " $PHASES " == *" 4 "* ]] && [ -z "$M_EXTRA" ]; then
+    free=$(df -BG --output=avail "$R" | tail -1 | tr -dc 0-9)
+    if [ "${free:-0}" -lt "$MAINNET_MIN_FREE_GB" ]; then
+      echo "  GABIM   disk i lirë ${free} GB te $R; Mainnet-i kërkon ≥ ${MAINNET_MIN_FREE_GB} GB (docs/PC-TESTI.md, E)."
+      grep -qi microsoft /proc/version 2>/dev/null && echo "          WSL2: zmadho diskun virtual: në PowerShell 'wsl --shutdown', pastaj 'wsl --manage Ubuntu-24.04 --resize 2TB'."
+      err=1
+    else
+      echo "  OK      disk i lirë ${free} GB (Mainnet: ≥ ${MAINNET_MIN_FREE_GB} GB)"
+    fi
+    # Disku virtual i WSL2 rritet brenda diskut të Windows-it: edhe ai duhet ta ketë vendin.
+    if grep -qi microsoft /proc/version 2>/dev/null && [ -d /mnt/c ]; then
+      host=$(df -BG --output=avail /mnt/c 2>/dev/null | tail -1 | tr -dc 0-9)
+      if [ -n "$host" ] && [ "$host" -lt "$MAINNET_MIN_FREE_GB" ]; then
+        echo "  KUJDES  C: në Windows ka vetëm ${host} GB të lirë; disku virtual i WSL2 (zakonisht në C:) s'mund të rritet përtej tij."
+      fi
+    fi
+  fi
+  for net in testnet mainnet; do
+    case "$net" in testnet) [[ " $PHASES " == *" 3 "* ]] || continue; url=$TESTNET_URL ;; mainnet) [[ " $PHASES " == *" 4 "* ]] || continue; url=$MAINNET_URL ;; esac
+    case "$url" in http://*|https://*) ;; *) continue ;; esac
+    out=$(snapshot_resolve_retry "$url" 3 20); rc=$?
+    if [ $rc -eq 0 ]; then
+      case "${out##*/}" in
+        snapshot-*.tar.zst) echo "  OK      $net: $url → ${out##*/}" ;;
+        *) echo "  GABIM   $net: $url → $out (pritej snapshot-*.tar.zst)"; err=1 ;;
+      esac
+    elif [ $rc -eq 2 ]; then
+      echo "  KUJDES  $net: $url jep HTTP 429 (kufi shkarkimesh); shkarkimi do të provojë sërish, por mund të vonohet. Mund të japësh një URL tjetër me ${net^^}_URL."
+    else
+      echo "  GABIM   $net: $out"; err=1
+    fi
+  done
+  return $err
 }
 p1() {
   cd "$ROOT" && cargo test --release --workspace
@@ -102,6 +147,11 @@ p3() {
   # shellcheck disable=SC2086
   env NETWORK=testnet $T_EXTRA "$MX" "$TESTNET_URL" "$R/testnet"
 }
+# Një nisje e matrix-it: 4 (disa raste dështuan) mbahet mend dhe vazhdohet; çdo gabim tjetër ndal.
+mx_step() {
+  "$@"; local st=$?
+  case $st in 0) ;; 4) MX_PARTIAL=1 ;; *) return $st ;; esac
+}
 p4() {
   local free; free=$(df -BG --output=avail "$R" | tail -1 | tr -dc 0-9)
   if [ "${free:-0}" -lt "$MAINNET_MIN_FREE_GB" ] && [ -z "$M_EXTRA" ]; then
@@ -114,12 +164,15 @@ p4() {
     return 3
   fi
   # Tri nisje në të njëjtën dosje: snapshot-i shkarkohet një herë, rastet e mbaruara kapërcehen.
+  # M2: një rast i dështuar në njërën s'i ndal të tjerat (kodi 4 në fund).
+  MX_PARTIAL=0
   # shellcheck disable=SC2086
-  env NETWORK=mainnet BENCH_GROUPS=size LIMITS=full SLOTS=1024 UPDATES="$M_UPDATES" $M_EXTRA "$MX" "$MAINNET_URL" "$R/mainnet" || return 1
+  mx_step env NETWORK=mainnet BENCH_GROUPS=size LIMITS=full SLOTS=1024 UPDATES="$M_UPDATES" $M_EXTRA "$MX" "$MAINNET_URL" "$R/mainnet" || return
   # shellcheck disable=SC2086
-  env NETWORK=mainnet BENCH_GROUPS=cold COLD_MODES=slot COLD_LIMIT=full SLOTS=512 UPDATES="$M_UPDATES" $M_EXTRA "$MX" "$MAINNET_URL" "$R/mainnet" || return 1
+  mx_step env NETWORK=mainnet BENCH_GROUPS=cold COLD_MODES=slot COLD_LIMIT=full SLOTS=512 UPDATES="$M_UPDATES" $M_EXTRA "$MX" "$MAINNET_URL" "$R/mainnet" || return
   # shellcheck disable=SC2086
-  env NETWORK=mainnet BENCH_GROUPS=cache CACHE_DEPTHS=24 COLD_LIMIT=full SLOTS=512 UPDATES="$M_UPDATES" $M_EXTRA "$MX" "$MAINNET_URL" "$R/mainnet" || return 1
+  mx_step env NETWORK=mainnet BENCH_GROUPS=cache CACHE_DEPTHS=24 COLD_LIMIT=full SLOTS=512 UPDATES="$M_UPDATES" $M_EXTRA "$MX" "$MAINNET_URL" "$R/mainnet" || return
+  [ "$MX_PARTIAL" = 0 ] || return 4
 }
 p5() {
   local net
@@ -130,6 +183,7 @@ p5() {
   echo "Rezultatet janë te $ROOT/bench-results/ (gati për PR)."
 }
 
+PARTIAL=0
 say "=== pc-run-all: fazat '$PHASES' → $R ==="
 grep -qi microsoft /proc/version 2>/dev/null && say "WSL2: mbaje dritaren e Ubuntu-s hapur dhe PC-në pa gjumë (Windows: Cilësimet → Energjia → Gjumi: Kurrë)."
 for n in $PHASES; do
@@ -144,3 +198,7 @@ for n in $PHASES; do
   esac
 done
 say "=== gati: $(grep -c OK "$R/status.tsv") faza OK. Shiko $R/STATUS.md ==="
+if [ "$PARTIAL" = 1 ]; then
+  say "=== mbaroi, por disa raste dështuan (STATUS.md: PJESËRISHT). Nise sërish për t'i provuar vetëm ato. ==="
+  exit 4
+fi
