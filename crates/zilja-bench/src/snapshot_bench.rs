@@ -45,6 +45,8 @@ use zilja_store::{PageOptions, PageTree, PAGE_BLOCK};
 use zilja_tree::{StateTree, Update};
 use zilja_verifier::{tree_key, verify_tree_key, AccountMeta, Key, Verdict};
 
+mod snapshot_rpc;
+
 /// Madhësia e kokës së një rekordi AppendVec (StoredMeta 48 + AccountMeta 56 + hash 32).
 pub const HEADER: usize = 136;
 /// Kufiri i Solana-s për të dhënat e një llogarie.
@@ -129,7 +131,8 @@ pub struct IngestStats {
 }
 
 /// Lexon snapshot-in (`.tar.zst`) dhe i jep llogaritë `tree`-së. `sample` mbledh me reservoir
-/// sampling deri në `sample_n` `tree_key` llogarish ekzistuese. `limit` ndal pas kaq rekordesh (teste).
+/// sampling deri në `sample_n` pubkey llogarish ekzistuese (R9: pubkey, jo `tree_key`, që të
+/// pyeten edhe mbi RPC). `limit` ndal pas kaq rekordesh (teste).
 pub fn ingest(
     archive: &Path,
     tree: &mut dyn StateTree,
@@ -208,11 +211,11 @@ fn ingest_from<R: Read>(
             } else {
                 seen_live += 1;
                 if sample.len() < sample_n {
-                    sample.push(tk);
+                    sample.push(r.pubkey);
                 } else {
                     let j = rng.gen_range(0..seen_live);
                     if (j as usize) < sample_n {
-                        sample[j as usize] = tk;
+                        sample[j as usize] = r.pubkey;
                     }
                 }
                 Some(AccountMeta::from_account(r.lamports, &r.owner, r.executable, &r.data))
@@ -325,7 +328,7 @@ fn stats(mut v: Vec<f64>) -> Value {
     json!({"p50": pct(&mut v, 0.5), "p95": pct(&mut v, 0.95), "p99": pct(&mut v, 0.99), "max": max, "mean": mean, "n": v.len()})
 }
 
-const PHASES: [&str; 5] = ["staging", "finish", "slots", "proofs", "done"];
+const PHASES: [&str; 6] = ["staging", "finish", "slots", "proofs", "rpc", "done"];
 
 /// Një rresht në sekondë: koha, faza, RSS, CPU, I/O.
 fn timeline(path: PathBuf, phase: Arc<AtomicU8>, stop: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
@@ -370,11 +373,12 @@ struct Args {
     /// Sloti i snapshot-it, kur s'del nga emri i skedarit (p.sh. stdin).
     slot: Option<u64>,
     cold: Cold,
+    rpc: snapshot_rpc::RpcOpts,
 }
 
 fn parse_args() -> Result<Args, String> {
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "përdorimi: zilja-snapshot-bench <snapshot.tar.zst> <db_dir> [--out results.csv] [--cache-depth 20] [--slots 300] [--updates 5000,15000,30000] [--proofs 5000] [--sample 500000] [--limit N] [--ingest-only] [--seed 1] [--slot S] [--cold none|profile|slot]\n<snapshot.tar.zst> mund të jetë `-` (stdin): curl -sL URL | zilja-snapshot-bench - <db_dir> --limit 3000000 …";
+    let usage = "përdorimi: zilja-snapshot-bench <snapshot.tar.zst> <db_dir> [--out results.csv] [--cache-depth 20] [--slots 300] [--updates 5000,15000,30000] [--proofs 5000] [--sample 500000] [--limit N] [--ingest-only] [--seed 1] [--slot S] [--cold none|profile|slot] [--rpc-clients 1,8,32,128] [--rpc-seconds 30] [--rpc-slot-ms 400] [--rpc-slot-updates 5000] [--rpc-verify-every 100] [--rpc-multi-keys 10] [--rpc-one-ip]\n<snapshot.tar.zst> mund të jetë `-` (stdin): curl -sL URL | zilja-snapshot-bench - <db_dir> --limit 3000000 …";
     if a.len() < 2 {
         return Err(usage.into());
     }
@@ -392,6 +396,7 @@ fn parse_args() -> Result<Args, String> {
         seed: 1,
         slot: None,
         cold: Cold::None,
+        rpc: snapshot_rpc::RpcOpts { clients: vec![], seconds: 30, slot_ms: 400, slot_updates: 5_000, verify_every: 100, multi_keys: 10, one_ip: false },
     };
     let mut it = a[2..].iter();
     while let Some(k) = it.next() {
@@ -408,6 +413,13 @@ fn parse_args() -> Result<Args, String> {
             "--seed" => r.seed = num(v()?)?,
             "--slot" => r.slot = Some(num(v()?)?),
             "--ingest-only" => r.ingest_only = true,
+            "--rpc-clients" => r.rpc.clients = v()?.split(',').map(|x| x.trim().parse::<usize>().map_err(|e| format!("--rpc-clients: {e}"))).collect::<Result<_, _>>()?,
+            "--rpc-seconds" => r.rpc.seconds = v()?.parse().map_err(|e| format!("--rpc-seconds: {e}"))?,
+            "--rpc-slot-ms" => r.rpc.slot_ms = v()?.parse().map_err(|e| format!("--rpc-slot-ms: {e}"))?,
+            "--rpc-slot-updates" => r.rpc.slot_updates = v()?.parse().map_err(|e| format!("--rpc-slot-updates: {e}"))?,
+            "--rpc-verify-every" => r.rpc.verify_every = v()?.parse().map_err(|e| format!("--rpc-verify-every: {e}"))?,
+            "--rpc-multi-keys" => r.rpc.multi_keys = v()?.parse().map_err(|e| format!("--rpc-multi-keys: {e}"))?,
+            "--rpc-one-ip" => r.rpc.one_ip = true,
             "--cold" => {
                 r.cold = match v()?.as_str() {
                     "none" => Cold::None,
@@ -421,6 +433,9 @@ fn parse_args() -> Result<Args, String> {
     }
     if r.cache_depth % 4 != 0 {
         return Err("--cache-depth duhet shumëfish i 4".into());
+    }
+    if r.rpc.multi_keys == 0 || r.rpc.multi_keys > zilja_verifier::multi::MAX_MULTI_KEYS {
+        return Err(format!("--rpc-multi-keys: 1..={}", zilja_verifier::multi::MAX_MULTI_KEYS));
     }
     Ok(r)
 }
@@ -458,10 +473,11 @@ fn run() -> Result<(), String> {
     // 1. Staging.
     let t_stage = Instant::now();
     eprintln!("zilja-snapshot-bench: po lexon {} ...", a.archive.display());
-    let (ist, mut sample) = ingest(&a.archive, &mut tree, a.sample, &mut rng, a.limit, &|s| {
+    let (ist, pubs) = ingest(&a.archive, &mut tree, a.sample, &mut rng, a.limit, &|s| {
         eprintln!("  {} skedarë, {} rekorde, {:.1} GB të dhëna, RSS {:.0} MB", s.storages, s.records, s.data_bytes as f64 / 1e9, proc_status("VmRSS:"));
     })?;
     let stage_s = t_stage.elapsed().as_secs_f64();
+    let mut sample: Vec<Key> = pubs.iter().map(tree_key).collect();
     let snap_slot = a.slot.or_else(|| archive_slot(&a.archive)).unwrap_or(ist.max_slot);
     let hwm_stage = proc_status("VmHWM:");
 
@@ -687,7 +703,22 @@ fn run() -> Result<(), String> {
     if bad > 0 {
         return Err(format!("{bad} dëftesa NUK u verifikuan: pema ose bench-i ka gabim"));
     }
-    phase.store(4, Ordering::Relaxed);
+    // 5. Dëftesa nga shumë klientë njëkohësisht, mbi serverin e vërtetë, me slote në sfond (R9).
+    if !a.rpc.clients.is_empty() {
+        phase.store(4, Ordering::Relaxed);
+        let (complete, root_now) = (a.limit.is_none(), tree.root());
+        eprintln!("rpc: {:?} klientë × {} s, slot çdo {} ms me {} ndryshime …", a.rpc.clients, a.rpc.seconds, a.rpc.slot_ms, a.rpc.slot_updates);
+        let r = snapshot_rpc::run(Box::new(tree), complete, slot, root_now, pubs, sample, &a.rpc, a.seed, a.cold, &pages);
+        match r {
+            Ok(v) => summary["rpc"] = v,
+            Err(e) => {
+                summary["rpc_error"] = json!(e);
+                let _ = std::fs::write(out_dir.join("summary.json"), serde_json::to_string_pretty(&summary).unwrap());
+                return Err(e);
+            }
+        }
+    }
+    phase.store(5, Ordering::Relaxed);
     std::fs::write(out_dir.join("summary.json"), serde_json::to_string_pretty(&summary).unwrap()).map_err(|e| e.to_string())?;
     stop.store(true, Ordering::Relaxed);
     let _ = tl.join();
@@ -785,6 +816,23 @@ mod tests {
         assert_eq!(tree.len(), expect.len());
         assert_eq!(sample.len(), 50);
         assert_eq!(archive_slot(Path::new("/x/snapshot-123-abc.tar.zst")), Some(123));
+        // Mostra mban pubkey llogarish ekzistuese (R9: pyeten mbi RPC).
+        assert!(sample.iter().all(|k| expect.contains_key(k)));
+
+        // R9: faza RPC mbi të njëjtën pemë, me slote në sfond: çdo përgjigje verifikohet.
+        let tks: Vec<Key> = sample.iter().map(tree_key).collect();
+        let o = snapshot_rpc::RpcOpts { clients: vec![1, 4], seconds: 1, slot_ms: 50, slot_updates: 20, verify_every: 1, multi_keys: 5, one_ip: true };
+        let r = snapshot_rpc::run(Box::new(tree), true, 300, root, sample, tks, &o, 1, Cold::None, &dir.path().join("pages.dat")).unwrap();
+        let lv = r["levels"].as_array().unwrap();
+        assert_eq!(lv.len(), 3, "1, 4 dhe 4 nga një IP");
+        for l in lv {
+            assert_eq!(l["invalid"], 0);
+            assert!(l["verified"].as_u64().unwrap() > 0);
+            if !l["one_ip"].as_bool().unwrap() {
+                assert_eq!(l["error_pct"].as_f64().unwrap(), 0.0, "{l}");
+            }
+        }
+        assert!(lv[0]["writer"]["slots"].as_u64().unwrap() > 0, "slotet vazhdojnë gjatë ngarkesës");
     }
 
     /// Një rekord që s'përputhet me formatin ndal leximin (s'kapërcehet në heshtje).

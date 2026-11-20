@@ -124,6 +124,27 @@ def main():
         fig.tight_layout()
         fig.savefig(os.path.join(d, "phases.png"), dpi=130)
         names.append("phases.png")
+    # 5. RPC (R9): kërkesa/s dhe p99 sipas numrit të klientëve.
+    sp = os.path.join(d, "summary.json")
+    rpc = json.load(open(sp)).get("rpc") if os.path.isfile(sp) else None
+    if rpc:
+        lv = [l for l in rpc["levels"] if not l["one_ip"]]
+        if lv:
+            fig, ax = plt.subplots(figsize=(7, 3.8))
+            xs = [l["clients"] for l in lv]
+            ax.plot(xs, [l["proofs_per_second"] for l in lv], "o-", label="dëftesa/s")
+            ax.plot(xs, [l["requests_per_second"] for l in lv], "s--", label="kërkesa/s")
+            ax.set_xscale("log", base=2)
+            ax.set_xlabel("klientë njëkohësisht")
+            ax.set_ylabel("në sekondë")
+            ax2 = ax.twinx()
+            ax2.plot(xs, [l["latency_ms"]["p99"] for l in lv], "^:", color="tab:red", label="p99 ms")
+            ax2.set_ylabel("p99 ms", color="tab:red")
+            ax.legend(loc="upper left", fontsize=8)
+            ax.set_title(f"Dëftesa nga shumë klientë — {title}")
+            fig.tight_layout()
+            fig.savefig(os.path.join(d, "rpc.png"), dpi=130)
+            names.append("rpc.png")
     print("u shkruan:", ", ".join(os.path.join(d, n) for n in names))
 
 

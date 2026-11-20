@@ -30,6 +30,11 @@
 #   SLOTS=1024                    (≥ 4 checkpoint-e për profil: meta.ckpt shkruhet çdo 256 slote)
 #   SAMPLE=500000                 (ngrohtë) / COLD_SAMPLE=5000000 (ftohtë: mostër e madhe ngrohet më pak)
 #   PROOFS=20000
+#   RPC_CLIENTS=1,8,32,128        (R9: dëftesa nga shumë klientë njëkohësisht mbi HTTP, në çdo rast;
+#   RPC_SECONDS=30                 bosh = pa këtë fazë). Gjatë saj zilja zbaton një slot çdo
+#   RPC_SLOT_MS=400                RPC_SLOT_MS me RPC_SLOT_UPDATES ndryshime, si në Mainnet, dhe
+#   RPC_SLOT_UPDATES=5000          mat edhe një klient të madh nga NJË IP (kufiri i prodhimit:
+#   RPC_ONE_IP=1                   2 lidhje njëkohësisht). 1 në 100 përgjigje verifikohet plotësisht.
 #   BIN=target/release/zilja-snapshot-bench (ndërtohet nëse mungon)
 #
 # Çdo rast ndërton pemën nga e para. Me Mainnet të plotë kjo është disa orë për rast: zgjidh grupet,
@@ -98,6 +103,8 @@ if [ "${1:-}" = "check" ]; then
   la=$(cut -d' ' -f1 /proc/loadavg); n=$(nproc)
   ok "CPU: $n fije, $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
   awk -v l="$la" 'BEGIN{exit !(l>1.0)}' && warn "ngarkesa tani $la: mbyll programet e tjera (shfletues, lojëra, antivirus, Windows Update) gjatë matjes" || ok "ngarkesa tani: $la"
+  pr=$(cat /proc/sys/net/ipv4/ip_local_port_range 2>/dev/null | tr '\t' ' ')
+  [ -n "$pr" ] && echo "  INFO    porta të përkohshme për klientët e testit RPC: $pr (nëse tabela tregon 'porta' > 0, klientët e makinës mbaruan portat: sudo sysctl -w net.ipv4.ip_local_port_range=\"1024 65535\")"
   gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)
   [ -n "$gov" ] && { [ "$gov" = performance ] && ok "CPU governor: performance" || warn "CPU governor: $gov (për numra të qëndrueshëm: performance; në laptop: në prizë, modaliteti 'Best performance')"; }
   for t in cargo curl python3; do command -v $t >/dev/null && ok "$t" || bad "mungon $t"; done
@@ -143,6 +150,16 @@ SLOTS="${SLOTS:-1024}"
 SAMPLE="${SAMPLE:-500000}"
 COLD_SAMPLE="${COLD_SAMPLE:-5000000}"
 PROOFS="${PROOFS:-20000}"
+RPC_CLIENTS="${RPC_CLIENTS-1,8,32,128}"
+RPC_SECONDS="${RPC_SECONDS:-30}"
+RPC_SLOT_MS="${RPC_SLOT_MS:-400}"
+RPC_SLOT_UPDATES="${RPC_SLOT_UPDATES:-5000}"
+RPC_ONE_IP="${RPC_ONE_IP:-1}"
+RPC_ARGS=()
+if [ -n "$RPC_CLIENTS" ]; then
+  RPC_ARGS=(--rpc-clients "$RPC_CLIENTS" --rpc-seconds "$RPC_SECONDS" --rpc-slot-ms "$RPC_SLOT_MS" --rpc-slot-updates "$RPC_SLOT_UPDATES")
+  [ "$RPC_ONE_IP" = 1 ] && RPC_ARGS+=(--rpc-one-ip)
+fi
 for d in $CACHE_DEPTHS; do [ $((d % 4)) -eq 0 ] || { echo "CACHE_DEPTHS: $d s'është shumëfish i 4" >&2; exit 1; }; done
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
@@ -180,7 +197,7 @@ case "$SNAP" in *mainnet*) echo mainnet > "$OUT/network" ;; *testnet*) echo test
   echo "data: $(date -Is)"
   echo "git: $(cd "$ROOT" && git rev-parse --short HEAD 2>/dev/null) $(cd "$ROOT" && git status --porcelain 2>/dev/null | grep -q . && echo '(me ndryshime lokale)')"
   echo "snapshot: $(basename "$SNAP") ($(du -h "$SNAP" | cut -f1))"
-  echo "parametrat: BENCH_GROUPS='$BENCH_GROUPS' LIMITS='$LIMITS' CASE_LIMIT=$CASE_LIMIT COLD_LIMIT=$COLD_LIMIT COLD_MODES='$COLD_MODES' CACHE_DEPTHS='$CACHE_DEPTHS' SEEDS='$SEEDS' UPDATES=$UPDATES SLOTS=$SLOTS SAMPLE=$SAMPLE COLD_SAMPLE=$COLD_SAMPLE PROOFS=$PROOFS"
+  echo "parametrat: BENCH_GROUPS='$BENCH_GROUPS' LIMITS='$LIMITS' CASE_LIMIT=$CASE_LIMIT COLD_LIMIT=$COLD_LIMIT COLD_MODES='$COLD_MODES' CACHE_DEPTHS='$CACHE_DEPTHS' SEEDS='$SEEDS' UPDATES=$UPDATES SLOTS=$SLOTS SAMPLE=$SAMPLE COLD_SAMPLE=$COLD_SAMPLE PROOFS=$PROOFS RPC_CLIENTS=$RPC_CLIENTS RPC_SECONDS=$RPC_SECONDS RPC_SLOT_MS=$RPC_SLOT_MS RPC_SLOT_UPDATES=$RPC_SLOT_UPDATES RPC_ONE_IP=$RPC_ONE_IP"
   echo; uname -a
   echo; lscpu 2>/dev/null | grep -E 'Model name|^CPU\(s\)|Thread|Core|Socket|MHz|L3' || true
   echo; free -g 2>/dev/null || true
@@ -214,7 +231,7 @@ for c in "${CASES[@]}"; do
   t0=$(date +%s)
   # shellcheck disable=SC2086
   "$BIN" "$SNAP" "$db" --out "$dir/results.csv" $args \
-      --updates "$UPDATES" --slots "$SLOTS" --proofs "$PROOFS" \
+      --updates "$UPDATES" --slots "$SLOTS" --proofs "$PROOFS" "${RPC_ARGS[@]}" \
       > "$dir/stdout.json" 2> "$dir/bench.log"
   st=$?
   du -sh "$db" 2>/dev/null | cut -f1 > "$dir/db_size" || true

@@ -30,6 +30,11 @@ on:
         default: "300"
       proofs:
         default: "5000"
+      rpc_clients:
+        description: "dëftesa nga shumë klientë njëkohësisht (p.sh. 1,8,32,128; bosh = pa këtë fazë)"
+        default: "1,8,32"
+      rpc_seconds:
+        default: "20"
       cold:
         description: "cache-i i sistemit: none = ngrohtë · profile = bosh para çdo profili · slot = bosh para çdo sloti (rasti më i keq)"
         type: choice
@@ -63,13 +68,16 @@ jobs:
           SLOTS: ${{ inputs.slots || '300' }}
           PROOFS: ${{ inputs.proofs || '2000' }}
           COLD: ${{ inputs.cold || 'none' }}
+          RPC_CLIENTS: ${{ github.event_name == 'schedule' && '1,8,32' || inputs.rpc_clients }}
+          RPC_SECONDS: ${{ inputs.rpc_seconds || '20' }}
         run: |
+          RPC=(); [ -n "$RPC_CLIENTS" ] && RPC=(--rpc-clients "$RPC_CLIENTS" --rpc-seconds "$RPC_SECONDS" --rpc-one-ip)
           mkdir -p "$RUNNER_TEMP/out"
           echo "snapshot: $(curl -sIL -o /dev/null -w '%{url_effective}' "$URL")"
           # Bench-i ndalon pas LIMIT rekordesh; curl merr pastaj SIGPIPE: vlen statusi i bench-it.
           curl -fsSL --retry 3 "$URL" | ./target/release/zilja-snapshot-bench - "$RUNNER_TEMP/db" \
             --out "$RUNNER_TEMP/out/results.csv" --limit "$LIMIT" --cache-depth 20 \
-            --slots "$SLOTS" --updates "$UPDATES" --proofs "$PROOFS" --cold "$COLD" > "$RUNNER_TEMP/out/stdout.json"
+            --slots "$SLOTS" --updates "$UPDATES" --proofs "$PROOFS" --cold "$COLD" "${RPC[@]}" > "$RUNNER_TEMP/out/stdout.json"
           st=${PIPESTATUS[1]}
           [ "$st" = 0 ] || { echo "bench-i dështoi ($st)"; exit "$st"; }
       - name: grafikët dhe përmbledhja
@@ -86,6 +94,8 @@ jobs:
               t = v["total_ms"]; r = v.get("read_ms", {}); c = v.get("checkpoint_ms", {})
               print(f"- {int(k):,}/slot: p50 {t['p50']:.1f} ms, p99 {t['p99']:.1f} ms, max {t['max']:.1f} ms · leximi p50 {r.get('p50', 0):.1f} ms · {c.get('n', 0)} checkpoint-e (max {c.get('max', 0):.1f} ms) · cache {v.get('os_cache_hit_pct', 100):.0f}%")
           for x in s.get("warnings", []): print(f"- **KUJDES**: {x}")
+          for l in (s.get("rpc") or {}).get("levels", []):
+              print(f"- RPC {l['clients']} klientë{' nga 1 IP' if l['one_ip'] else ''}: {l['proofs_per_second']:,.0f} dëftesa/s, p99 {l['latency_ms'].get('p99', 0):.2f} ms, gabime {l['error_pct']:.2f}%, verifikuar {l['verified']} (të pavlefshme {l['invalid']})")
           p = s.get("proofs")
           if p: print(f"- dëftesa: {p['n']} (të pavlefshme: {p['invalid']}), {p['bytes']['p50']:.0f} B p50")
           PY
@@ -114,7 +124,7 @@ jobs:
           echo "W=$W" >> "$GITHUB_ENV"
           curl -fsSL --retry 3 "$URL" | ./target/release/zilja-snapshot-bench - "$W/db" \
             --out "$W/out/results.csv" --cache-depth 20 --slots "${{ inputs.slots }}" \
-            --updates "${{ inputs.updates }}" --proofs "${{ inputs.proofs }}" --cold "${{ inputs.cold }}" > "$W/out/stdout.json"
+            --updates "${{ inputs.updates }}" --proofs "${{ inputs.proofs }}" --cold "${{ inputs.cold }}" ${{ inputs.rpc_clients != '' && format('--rpc-clients {0} --rpc-seconds {1} --rpc-one-ip', inputs.rpc_clients, inputs.rpc_seconds) || '' }} > "$W/out/stdout.json"
           st=${PIPESTATUS[1]}
           [ "$st" = 0 ] || exit "$st"
           python3 scripts/plot-bench.py "$W/out/results.csv"

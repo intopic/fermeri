@@ -69,6 +69,20 @@ def main():
                 continue
             c, h = p.get("current_ms", {}), p.get("historic_ms", {})
             w(f"| {n} | {f(p['n'])} | {p['invalid']} | {f(c.get('p50'), 2)} | {f(c.get('p99'), 2)} | {f(h.get('p50'), 2)} | {f(h.get('p99'), 2)} | {f(p['bytes']['p50'], 0)} |")
+        if any(s.get("rpc") for _, s in cases):
+            w("\n## RPC: dëftesa nga shumë klientë njëkohësisht (me slote në sfond)\n")
+            w("| rasti | klientë | kërkesa/s | dëftesa/s | p50 ms | p99 ms | max ms | multi p99 ms | gabime % | busy | refuzuara | porta | slote vonë | slot p99 ms | kyçi p99 ms | CPU % | verifikuar | pavlefshme |")
+            w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+            for n, s in cases:
+                r = s.get("rpc")
+                if not r:
+                    continue
+                for l in r["levels"]:
+                    lat, wr = l["latency_ms"], l["writer"]
+                    w(f"| {n} | {l['clients']}{' (1 IP)' if l['one_ip'] else ''} | {f(l['requests_per_second'], 0)} | {f(l['proofs_per_second'], 0)} | "
+                      f"{f(lat.get('p50'), 2)} | {f(lat.get('p99'), 2)} | {f(lat.get('max'), 1)} | {f(l['by_kind']['multi'].get('p99'), 2)} | "
+                      f"{f(l['error_pct'], 2)} | {l['busy_503']} | {l.get('refused', 0)} | {l['client_out_of_ports']} | {wr['late']}/{wr['slots']} | "
+                      f"{f(wr['total_ms'].get('p99'), 1)} | {f(wr['write_hold_ms'].get('p99'), 2)} | {f(l['cpu_pct'], 0)} | {l['verified']} | {l['invalid']} |")
     warns = [(n, x) for n, s in cases for x in s.get("warnings", [])]
     if warns or failed:
         w("\n## Paralajmërime\n")
@@ -89,6 +103,14 @@ def main():
 - **faqe/slot**: faqe të kërkuara nga disku (`pread`); **MB/slot nga disku**: bajte të lexuara realisht nga
   pajisja. **cache %** ≈ 1 − MB / (faqe × 4 KB): afër 100% = nga RAM-i, afër 0% = nga NVMe. Është i përafërt
   (disa faqe ndajnë të njëjtin bllok 4 KB; readahead-i i kernelit e ul).
+- **RPC**: serveri i vërtetë i zilës (8 punëtorë, afati 5 s, pa keep-alive), me pemën e këtij rasti, ndërsa
+  zbatohet një slot çdo 400 ms me 5 000 ndryshime. Përzierja: 60% dëftesa për llogari ekzistuese, 10% që
+  s'ekzistojnë, 15% historike, 15% multi-proof me 10 llogari. **dëftesa/s** numëron çdo llogari të multi-proof-it.
+  **slote vonë**: slote që zgjatën më shumë se ritmi (zilja mbetet prapa nën ngarkesë). **kyçi p99**: sa i
+  mban sloti kërkesat në pritje (kyçi i shkrimit). **(1 IP)**: kufiri i prodhimit për një adresë (2 lidhje
+  njëkohësisht): kështu sillet sot një klient i madh pas një IP-je të vetme. **porta** > 0: klientët e testit
+  mbaruan portat e makinës (s'është faji i zilës). Klientët dhe serveri ndajnë CPU-në e së njëjtës makinë,
+  ndaj kërkesa/s është kufiri i poshtëm i asaj që jep zilja me klientë nga rrjeti.
 - Ndryshimet janë sintetike dhe uniforme mbi `mostra` llogari (75% ndryshime, 15% të reja, 10% fshirje), jo
   trafik real: në Mainnet disa llogari janë shumë të nxehta, kështu që rastet cold janë kufiri i sipërm.
 """)
