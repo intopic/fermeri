@@ -47,7 +47,7 @@ const PAGE_SLOTS: usize = (1 << PAGE_H) - 1;
 
 
 mod pagefile;
-pub use pagefile::{fuzz_decode_pages, fuzz_seeds_pages, PageOptions, PageStats, PageTree, SNAPSHOT_FLUSH_BLOCKS, BLOCK as PAGE_BLOCK, FORMAT_VERSION as PAGE_FORMAT_VERSION};
+pub use pagefile::{fuzz_decode_pages, fuzz_seeds_pages, PageOptions, PageStats, PageTree, SlotTiming, SNAPSHOT_FLUSH_BLOCKS, BLOCK as PAGE_BLOCK, FORMAT_VERSION as PAGE_FORMAT_VERSION};
 
 // ---------------------------------------------------------------- rruga
 

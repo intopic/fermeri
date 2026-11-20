@@ -802,3 +802,31 @@ fn snapshot_build_keeps_a_bounded_number_of_blocks_in_ram() {
         check_proof(&t, &mem, k, None);
     }
 }
+
+/// R8: `last_timing` jep fazat e slotit dhe shënon checkpoint-in (çdo `ckpt_every` slote).
+#[test]
+fn last_timing_reports_phases_and_checkpoints() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut t = PageTree::open(dir.path(), PageOptions { history: 4, cache_depth: 8, durable: true, ckpt_every: 16, ..Default::default() }).unwrap();
+    assert!(t.last_timing().is_none());
+    let mut rng = StdRng::seed_from_u64(7);
+    let mut keys = Vec::new();
+    let (mut ckpts, mut reads) = (Vec::new(), 0u64);
+    for slot in 1..=40u64 {
+        let ups = random_batch(&mut rng, &mut keys, 200);
+        let t0 = std::time::Instant::now();
+        let p = t.prepare_slot(slot, ups, None).unwrap();
+        t.commit_slot(slot, p).unwrap();
+        let wall = t0.elapsed();
+        let s = t.last_timing().expect("matjet pas commit-it");
+        assert!(s.read + s.tree + s.build + s.pwrite + s.fsync + s.commit <= wall, "fazat s'kalojnë kohën e slotit");
+        assert!(s.pages > 0);
+        reads += s.disk_reads;
+        if s.checkpoint {
+            ckpts.push(slot);
+            assert!(dir.path().join("meta.ckpt").exists());
+        }
+    }
+    assert_eq!(ckpts, vec![16, 32], "checkpoint çdo 16 slote");
+    assert!(reads > 0, "faqet e thella lexohen nga disku (cache_depth 8)");
+}

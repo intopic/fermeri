@@ -487,8 +487,17 @@ python3 scripts/plot-bench.py /nvme/zilja-bench-out/results.csv   # ms_slot.png,
 - **WSL2:** mbaj arkivin dhe `db_dir` brenda Linux-it (p.sh. `~/zilja`), jo te `/mnt/c`: aksesi në
   disqet e Windows-it është disa herë më i ngadaltë.
 - **Provë e shpejtë:** `--limit 2000000` lexon vetëm 2M rekordet e para (pema s'shënohet e plotë).
-- **Kujdes te checkpoint-i:** slotet 256, 512… bëjnë checkpoint; shihen si pika të kuqe te
-  `ms_slot.png`.
+- **Kujdes te checkpoint-i:** çdo 256 slote shkruhet `meta.ckpt`; shihen si pika të kuqe te
+  `ms_slot.png`. Me 300 slote për profil ka vetëm ~1 checkpoint, që s'del te p99 (p99 mbi 300
+  vlera = e 4-ta më e madhja): shiko `checkpoint_ms` dhe `max`, ose përdor `--slots 1024`.
+- **Cache-i i sistemit (R8):** pema sapo është shkruar, pra `pages.dat` qëndron në cache-in e Linux-it
+  sa kohë ka RAM; atëherë slotet matin lexime "të ngrohta" (CPU + fsync), jo NVMe. `--cold profile`
+  e nxjerr skedarin nga cache-i (`posix_fadvise`, pa root) pas ndërtimit, para çdo profili dhe para
+  dëftesave; `--cold slot` edhe para çdo sloti (rasti më i keq). `results.csv` ka për çdo slot fazat
+  (`read_ms` leximi i faqeve, `tree_ms`, `build_ms`, `pwrite_ms`, `fsync_ms`, `log_ms`), faqet e
+  kërkuara nga disku dhe MB të lexuara realisht nga pajisja; `summary.json` ka `os_cache_hit_pct`.
+  Grafiku `phases.png` tregon ku shkon koha. Ndryshimet bien 75% mbi `--sample` llogari: për lexime
+  vërtet të ftohta përdor mostër të madhe (p.sh. `--sample 5000000`).
 
 ### Në GitHub (`.github/workflows/snapshot-bench.yml`)
 
@@ -506,3 +515,58 @@ python3 scripts/plot-bench.py /nvme/zilja-bench-out/results.csv   # ms_slot.png,
 - URL-ja: një `.tar.zst` i plotë, ose `https://<rpc>/snapshot.tar.bz2`, që ridrejton te skedari i
   fundit. Nëse një RPC publik s'e shërben, përdor një burim tjetër snapshot-esh.
 - Me stdin, sloti merret nga skedarët e llogarive (ose jepet me `--slot`).
+- Input-i `cold` (none/profile/slot) jep të njëjtën mënyrë si `--cold` më sipër.
+
+### Seria e plotë në PC (`scripts/bench-matrix.sh`, R8)
+
+Një komandë që nis të gjitha rastet mbi të njëjtin snapshot (shkarkohet një herë) dhe në fund nxjerr
+një tabelë krahasuese. Pa GitHub: gjithçka në PC, rezultatet publikohen më pas me një PR.
+
+```bash
+scripts/bench-matrix.sh check ~/zilja-testnet           # 1. a është PC-ja gati (rreth 1 min)
+scripts/bench-matrix.sh https://api.testnet.solana.com/snapshot.tar.bz2 ~/zilja-testnet   # 2. rastet
+scripts/bench-matrix.sh publish ~/zilja-testnet          # 3. kopjon rezultatet te bench-results/
+```
+
+**1. `check`** kontrollon atë që i bën matjet të pasakta dhe del me gabim nëse gjen diçka të rëndë:
+
+- dosja s'është te disku i Windows-it (`/mnt/c`, 9p) dhe sistemi i skedarëve është ext4/xfs/btrfs;
+- disku (HDD apo jo), hapësira e lirë, RAM-i (në WSL2 si parazgjedhje 50% e RAM-it të PC-së;
+  ndryshohet te `%UserProfile%\.wslconfig` → `memory=`), swap-i, ngarkesa tani, CPU governor;
+- që `--cold` ka efekt: shkruan 256 MB, i nxjerr nga cache-i dhe kontrollon që leximi shkon vërtet
+  në pajisje;
+- ndërton bench-in dhe nis testet e tij (snapshot sintetik: root = pema në RAM).
+
+**2. Rastet.** Çdo rast ndërton pemën nga e para (DB e re), pastaj mat slotet dhe dëftesat:
+
+| grupi | çfarë mat | si |
+|---|---|---|
+| `size` | si rriten koha, RAM-i dhe disku me numrin e llogarive | `LIMITS` (1M, 10M, 50M, i plotë), ngrohtë |
+| `cold` | leximet reale nga NVMe | `COLD_LIMIT` (i plotë), `--cold profile` dhe `--cold slot`, mostër 5M |
+| `cache` | RAM ↔ lexime: `cache_depth` 16 dhe 24 (20 matet te `cold`) | ftohtë (`profile`): pa lexime nga disku s'ka dallim |
+| `seed` | qëndrueshmëria e numrave | e njëjta matje me farë 2 dhe 3, 10M, ngrohtë |
+
+Profilet: 1 000 – 100 000 ndryshime/slot, 1 024 slote secili (≥ 4 checkpoint-e), 20 000 dëftesa.
+Të gjitha ndryshohen me ndryshore, p.sh. vetëm Mainnet i plotë, ngrohtë dhe ftohtë:
+`BENCH_GROUPS="size cold" LIMITS=full scripts/bench-matrix.sh https://api.mainnet-beta.solana.com/snapshot.tar.bz2 ~/zilja-mainnet`.
+Komanda mund të niset sërish pas një ndërprerjeje: rastet e mbaruara kapërcehen.
+
+**Çfarë të shohësh te `RESULTS.md`:**
+
+- **pages/RAM**: mbi 1 do të thotë që pema s'nxë në RAM; atëherë edhe rasti ngrohtë lexon nga disku.
+- **leximi p50/p99** te rastet `cold`, kundrejt totalit: nëse leximi është pjesa e madhe e slotit,
+  io_uring ka kuptim; nëse është i vogël, jo. `cache16`/`cache24` tregojnë sa e ul leximin RAM-i
+  shtesë (RAM max).
+- **ckpt max** dhe **p99 pa ckpt**: kostoja e `meta.ckpt` ndaras nga slotet e zakonshme.
+- **cache %**: te rastet `cold` duhet të jetë i ulët (leximet nga NVMe). Nëse del afër 100%, cache-i
+  s'u zbraz (p.sh. Windows mban cache sipër diskut të WSL2): rasti s'mat NVMe, dhe bench-i shkruan
+  `KUJDES` në log dhe te tabela.
+- **Dëftesat**: `të pavlefshme` duhet të jetë 0 (përndryshe bench-i dështon vetë).
+
+**Kufizime që mbeten:** ndryshimet janë sintetike dhe uniforme (75% ndryshime, 15% të reja, 10%
+fshirje), jo trafik real; në Mainnet disa llogari janë shumë të nxehta, kështu që rastet `cold` janë
+kufiri i sipërm, jo rasti tipik. Gjatë matjes mbyll programet e tjera; laptopi në prizë.
+
+**3. `publish`** kopjon vetëm skedarët e vegjël (`RESULTS.md`, `machine.txt`, `summary.json`,
+grafikët, `timeline.csv.gz`) te `bench-results/<data>-<makina>-<rrjeti>/` dhe shkruan komandat për
+një PR. `results.csv` dhe DB-ja mbeten në PC.
