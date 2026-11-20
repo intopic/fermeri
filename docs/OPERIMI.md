@@ -547,6 +547,17 @@ scripts/bench-matrix.sh publish ~/zilja-testnet          # 3. kopjon rezultatet 
 | `seed` | qëndrueshmëria e numrave | e njëjta matje me farë 2 dhe 3, 10M, ngrohtë |
 
 Profilet: 1 000 – 100 000 ndryshime/slot, 1 024 slote secili (≥ 4 checkpoint-e), 20 000 dëftesa.
+
+Në fund të çdo rasti, **dëftesa nga shumë klientë njëkohësisht** (R9): pema e rastit i jepet serverit
+të vërtetë HTTP të zilës (8 punëtorë, afati 5 s, pa keep-alive, si në prodhim), dhe 1, 8, 32, 128
+klientë e pyesin për 30 s secili. Ndërkohë zilja zbaton një slot çdo 400 ms me 5 000 ndryshime, me
+të njëjtën rrugë si plugin-i, që të shihet edhe a mbetet prapa nën ngarkesë. Përzierja: 60% dëftesa
+për llogari ekzistuese (pubkey të vërteta nga snapshot-i), 10% që s'ekzistojnë, 15% historike, 15%
+multi-proof me 10 llogari. Një nga 100 përgjigje verifikohet plotësisht (dëftesa kundër root-it dhe
+root-i kundër atij që zilja llogariti për atë slot); një e pavlefshme e ndal bench-in. Në fund, një
+matje shtesë me kufirin e prodhimit për **një IP** (2 lidhje njëkohësisht), si një klient i madh pas
+një adrese të vetme. Ndryshoret: `RPC_CLIENTS`, `RPC_SECONDS`, `RPC_SLOT_MS`, `RPC_SLOT_UPDATES`,
+`RPC_ONE_IP`; `RPC_CLIENTS=` (bosh) e heq këtë fazë.
 Të gjitha ndryshohen me ndryshore, p.sh. vetëm Mainnet i plotë, ngrohtë dhe ftohtë:
 `BENCH_GROUPS="size cold" LIMITS=full scripts/bench-matrix.sh https://api.mainnet-beta.solana.com/snapshot.tar.bz2 ~/zilja-mainnet`.
 Komanda mund të niset sërish pas një ndërprerjeje: rastet e mbaruara kapërcehen.
@@ -562,6 +573,13 @@ Komanda mund të niset sërish pas një ndërprerjeje: rastet e mbaruara kapërc
   s'u zbraz (p.sh. Windows mban cache sipër diskut të WSL2): rasti s'mat NVMe, dhe bench-i shkruan
   `KUJDES` në log dhe te tabela.
 - **Dëftesat**: `të pavlefshme` duhet të jetë 0 (përndryshe bench-i dështon vetë).
+- **RPC** (`rpc.png`): **dëftesa/s** sipas numrit të klientëve tregon sa mban një makinë; aty ku
+  kurba rrafshohet dhe p99 ngrihet, serveri është i ngopur. **slote vonë** > 0 do të thotë që
+  kërkesat e ngadalësojnë zilën aq sa mbetet prapa Solana-s. **kyçi p99**: sa i mban sloti kërkesat
+  në pritje. Rreshti **(1 IP)** tregon çfarë merr sot një klient i madh nga një adresë e vetme
+  (pjesa më e madhe refuzohet nga kufiri për IP). **porta** > 0: makina e testit mbaroi portat
+  (`check` tregon si zgjerohen). Klientët dhe serveri ndajnë CPU-në, ndaj numrat janë kufiri i
+  poshtëm i asaj që zilja jep me klientë nga rrjeti.
 
 **Kufizime që mbeten:** ndryshimet janë sintetike dhe uniforme (75% ndryshime, 15% të reja, 10%
 fshirje), jo trafik real; në Mainnet disa llogari janë shumë të nxehta, kështu që rastet `cold` janë
