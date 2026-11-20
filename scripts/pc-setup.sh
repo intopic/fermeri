@@ -35,8 +35,23 @@ if ! command -v cargo >/dev/null; then
   # shellcheck disable=SC1091
   . "$HOME/.cargo/env"
 fi
-(cd "$ROOT" && rustc --version) || exit 1
-say "Rust: gati"
+# M1: versioni duhet të jetë ai i rust-toolchain.toml (si validatori). Një `cargo` nga `apt`, pa
+# rustup, e injoron atë skedar dhe kompilimi dështon me gabime të paqarta.
+want=$(sed -n 's/^channel *= *"\(.*\)"/\1/p' "$ROOT/rust-toolchain.toml")
+got=$(cd "$ROOT" && rustc --version 2>/dev/null | awk '{print $2}')
+if [ "$got" != "$want" ]; then
+  if ! command -v rustup >/dev/null; then
+    echo "Rust ${got:-?} vjen nga sistemi (pa rustup), ndërsa duhet $want."
+    echo "Hiqe dhe rinise këtë skript (instalon rustup te ~/.cargo, pa sudo):"
+    echo "  sudo apt remove -y rustc cargo && hash -r"
+    exit 1
+  fi
+  say "po instaloj Rust $want (rust-toolchain.toml)…"
+  (cd "$ROOT" && rustup toolchain install) || exit 1
+  got=$(cd "$ROOT" && rustc --version 2>/dev/null | awk '{print $2}')
+  [ "$got" = "$want" ] || { echo "rustc te $ROOT jep ${got:-?}, jo $want: shiko 'rustup show' (ndonjë override?)"; exit 1; }
+fi
+say "Rust $got: gati"
 
 # 3. Agave (si në CI: arkivi zyrtar nga GitHub releases), për testin me validator të vërtetë.
 AG="$TOOLS/agave-$AGAVE_VERSION/solana-release/bin"

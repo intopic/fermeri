@@ -35,6 +35,16 @@ jobs:
           git diff --exit-code sdk/js/test/wire-vectors.json
           node sdk/js/test/gen-policy-vectors.mjs > sdk/js/test/policy-vectors.json
           git diff --exit-code sdk/js/test/policy-vectors.json
+      - name: skriptet e PC-së (H1, M2, M4; server lokal, pa Solana)
+        run: bash scripts/test-pc-scripts.sh
+      - name: URL-të e vërteta të snapshot-eve (informative, s'ndalon CI-në)
+        continue-on-error: true
+        run: |
+          . scripts/snapshot-url.sh
+          for u in https://api.testnet.solana.com/snapshot.tar.bz2 https://api.mainnet-beta.solana.com/snapshot.tar.bz2; do
+            out=$(snapshot_resolve_retry "$u" 3 20); rc=$?
+            echo "$u → $out (kodi $rc)" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
       - name: SDK zilja-verify (npm test + pack)
         working-directory: sdk/js
         run: |
