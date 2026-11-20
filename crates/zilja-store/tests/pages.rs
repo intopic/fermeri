@@ -5,6 +5,7 @@
 //!   vetëm puna që s'u mbyll. Rihapja duhet të japë slotin e fundit të konfirmuar.
 //! - `unsynced_loss_*`: simulim i **ikjes së rrymës**: humbin bajtet që s'u bënë fsync (bishti i
 //!   log-ut, rekordet e fundit). Rihapja duhet të japë një slot të plotë para tyre.
+//!
 //! Dëmtimi i qëllimshëm (CRC, format, rend) testohet në `recovery.rs`.
 
 use rand::{rngs::StdRng, Rng, SeedableRng};

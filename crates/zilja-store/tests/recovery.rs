@@ -230,7 +230,7 @@ fn missing_checkpoint_with_existing_pages_is_refused() {
     assert_eq!(std::fs::metadata(d.path().join("meta.log")).unwrap().len(), 0);
     std::fs::remove_file(d.path().join("meta.ckpt")).unwrap();
     let before = files(d.path());
-    assert!(before["pages.dat"].len() > 0);
+    assert!(!before["pages.dat"].is_empty());
     let e = PageTree::open(d.path(), opts()).err().expect("faqet pa checkpoint u fshinë");
     assert!(e.contains("meta.ckpt"), "{e}");
     assert_eq!(files(d.path()), before, "pages.dat u zbraz");

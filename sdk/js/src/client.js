@@ -269,7 +269,7 @@ export class ZiljaClient {
     if (this.solanaRpc && this.compareData && verdict === "exists" && reqSlot == null) {
       try {
         const info = await this.rpc(this.solanaRpc, "getAccountInfo", [pubkey, { encoding: "base64", commitment: "finalized" }]);
-        const rpcSlot = info?.context?.slot;
+        const rpcSlot = Number.isSafeInteger(info?.context?.slot) ? info.context.slot : null;
         let same = false;
         let bytes = null;
         if (info?.value) {
@@ -374,7 +374,9 @@ export class ZiljaClient {
           const part = want.slice(c, c + 100);
           const info = await this.rpc(this.solanaRpc, "getMultipleAccounts", [part.map((i) => pubkeys[i]), { encoding: "base64", commitment: "finalized" }]);
           if (!Array.isArray(info?.value) || info.value.length !== part.length) throw new Error("getMultipleAccounts: përgjigje e pavlefshme");
-          rpcSlot = rpcSlot == null ? info?.context?.slot : Math.min(rpcSlot, info?.context?.slot);
+          // L5: një copë pa `context.slot` s'e prish slotin e të tjerave (Math.min me undefined = NaN).
+          const cs = info?.context?.slot;
+          if (Number.isSafeInteger(cs)) rpcSlot = rpcSlot == null ? cs : Math.min(rpcSlot, cs);
           values.push(...info.value);
         }
         for (const [j, i] of want.entries()) {

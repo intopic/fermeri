@@ -132,8 +132,35 @@ for (const bad of [2n ** 64n, -1n, -1, 2 ** 53, 1.5, "18446744073709551616"]) {
   }
 }
 
+// L1: çelës identitet (rend i vogël) + firma R = identitet, S = 0. WebCrypto e pranon për çdo mesazh;
+// Rust `verify_strict` jo. JS s'duhet të numërojë stake-un e tij.
+{
+  const { isSmallOrderEncoding } = await import("../src/attest.js");
+  const id = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"; // base58 i 01 00…00
+  const sig = "01" + "00".repeat(31) + "00".repeat(32);
+  const atts = [{ validator: id, signer: null, authorization: null, signature: sig }];
+  const r = await verifyQuorum("33".repeat(32), 1, 9, "44".repeat(32), atts, new Map([[id, 10n]]));
+  if (r.reached || r.attestedStake !== 0n) {
+    fail++;
+    console.error("❌ L1: firma me rend të vogël u pranua", r);
+  }
+  const enc = (hex, sign) => {
+    const b = Uint8Array.from(Buffer.from(hex, "hex"));
+    if (sign) b[31] |= 0x80;
+    return b;
+  };
+  const small = ["00".repeat(32), "01" + "00".repeat(31), "ec" + "ff".repeat(30) + "7f", "ed" + "ff".repeat(30) + "7f", "ee" + "ff".repeat(30) + "7f",
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a", "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"];
+  const { generateKeyPairSync } = await import("node:crypto");
+  const okKey = new Uint8Array(generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" }).subarray(-32));
+  if (!small.every((h) => isSmallOrderEncoding(enc(h, false)) && isSmallOrderEncoding(enc(h, true))) || isSmallOrderEncoding(okKey)) {
+    fail++;
+    console.error("❌ L1: lista e pikave me rend të vogël");
+  }
+}
+
 if (fail) {
   console.error(`${fail} gabime`);
   process.exit(1);
 }
-console.log(`✅ ${v.cases.length} vektorë firmash + 3 teste shtesë kaluan`);
+console.log(`✅ ${v.cases.length} vektorë firmash + 4 teste shtesë kaluan`);

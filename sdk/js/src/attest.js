@@ -4,7 +4,7 @@
 // from_epoch ≤ epoka < until_epoch, me maksimumi MAX_AUTH_EPOCHS (15) epoka. Autorizimi v1 (pa
 // afat) s'pranohet.
 // Përdor Ed25519 të WebCrypto (Node ≥ 22, Chrome/Edge ≥ 137, Firefox ≥ 129, Safari ≥ 17).
-import { b58decode, hexToBytes, toU64 } from "./verifier.js";
+import { b58decode, bytesToHex, hexToBytes, toU64 } from "./verifier.js";
 
 const enc = new TextEncoder();
 const ATTEST_DOMAIN = enc.encode("zilja/attest/v2");
@@ -82,7 +82,32 @@ function authCovers(au, epoch) {
   return until > from && until - from <= MAX_AUTH_EPOCHS && from <= e && e < until;
 }
 
+/**
+ * L1: kodimet (y, me bitin e shenjës të hequr) e pikave me rend të vogël (rendi i 8-torsionit), plus
+ * kodimet jo-kanonike y = p dhe y = p + 1. WebCrypto i pranon këto si `A` ose `R`; Rust
+ * `verify_strict` jo. I refuzojmë që JS dhe Rust të japin të njëjtin vendim (si libsodium).
+ */
+const SMALL_ORDER_Y = [
+  "0000000000000000000000000000000000000000000000000000000000000000", // y = 0
+  "0100000000000000000000000000000000000000000000000000000000000000", // y = 1 (identiteti)
+  "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // y = p - 1
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a", // rend 8
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05", // rend 8
+  "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // y = p (jo-kanonik)
+  "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // y = p + 1 (jo-kanonik)
+];
+
+/** A ka 32 bajtet e një pike me rend të vogël (pavarësisht bitit të shenjës)? */
+export function isSmallOrderEncoding(b) {
+  if (b.length !== 32) return true;
+  const y = Uint8Array.from(b);
+  y[31] &= 0x7f;
+  const hex = bytesToHex(y);
+  return SMALL_ORDER_Y.includes(hex);
+}
+
 async function ed25519Verify(pubkey, sig, msg) {
+  if (isSmallOrderEncoding(pubkey) || isSmallOrderEncoding(sig.subarray(0, 32))) return false;
   try {
     const key = await globalThis.crypto.subtle.importKey("raw", pubkey, { name: "Ed25519" }, false, ["verify"]);
     return await globalThis.crypto.subtle.verify({ name: "Ed25519" }, key, sig, msg);

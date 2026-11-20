@@ -229,6 +229,9 @@ pub struct Options {
     pub mid_run_load: bool,
     /// A18: buxheti i bankave dhe i ndryshimeve në pritje (`None` = parazgjedhja).
     pub limits: Option<crate::tracker::Limits>,
+    /// L2: thread-et e pool-it Rayon të pemës (`None` ose 0 = sa bërthama ka makina). Në një
+    /// validator, ku bërthamat i duhen edhe vetë validatorit, mund të kufizohet.
+    pub threads: Option<usize>,
 }
 
 pub struct Service {
@@ -248,8 +251,16 @@ pub struct Service {
 /// i Rayon brenda bibliotekës.
 type PoolThreads = Arc<Mutex<Vec<JoinHandle<()>>>>;
 
-fn build_pool(threads: &PoolThreads) -> std::io::Result<rayon::ThreadPool> {
-    let n = std::thread::available_parallelism().map_or(4, |n| n.get());
+/// L2: madhësia e pool-it: e kërkuara (1..=bërthamat), ose të gjitha bërthamat kur s'jepet ose është 0.
+fn pool_size(want: Option<usize>, cores: usize) -> usize {
+    match want {
+        Some(n) if n > 0 => n.min(cores.max(1)),
+        _ => cores.max(1),
+    }
+}
+
+fn build_pool(threads: &PoolThreads, want: Option<usize>) -> std::io::Result<rayon::ThreadPool> {
+    let n = pool_size(want, std::thread::available_parallelism().map_or(4, |n| n.get()));
     let th = threads.clone();
     rayon::ThreadPoolBuilder::new()
         .num_threads(n)
@@ -315,7 +326,7 @@ impl Service {
         let s3 = shared.clone();
         let signer = attester;
         let pool_threads: PoolThreads = Arc::default();
-        let pool = Arc::new(build_pool(&pool_threads)?);
+        let pool = Arc::new(build_pool(&pool_threads, opts.threads)?);
         let p2 = pool.clone();
         let worker = std::thread::Builder::new().name("zilja-worker".into()).stack_size(WORKER_STACK).spawn(move || {
             // P-10: një rënie e punëtorit (panic) ose një fund i papritur ndalon shërbimin.
@@ -589,7 +600,7 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
                             tracker.halt();
                             break;
                         }
-                        prepared.and_then(|p| st.tree.commit_slot(slot, p)).map(|root| {
+                        prepared.and_then(|p| st.tree.commit_slot(slot, p)).inspect(|&root| {
                             st.slot = slot;
                             st.ready = true;
                             sign_root(&mut st, &mut signer, m, slot, root);
@@ -600,7 +611,6 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
                             m.last_root_unix.store(now_unix(), Ordering::Relaxed);
                             m.ready.store(1, Ordering::Relaxed);
                             m.phase.store(PHASE_SERVING, Ordering::Relaxed);
-                            root
                         })
                     };
                     let root = match res {
@@ -690,5 +700,20 @@ fn write_root(log: &mut Option<RootsLog>, slot: Slot, root: &Hash) {
     }
     if l.file.write_all(line.as_bytes()).is_ok() {
         l.bytes += line.len() as u64;
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::pool_size;
+
+    /// L2: parazgjedhja mbetet sa bërthama; 0 = parazgjedhja; s'kalon numrin e bërthamave.
+    #[test]
+    fn pool_size_defaults_to_cores_and_is_capped() {
+        assert_eq!(pool_size(None, 16), 16);
+        assert_eq!(pool_size(Some(0), 16), 16);
+        assert_eq!(pool_size(Some(4), 16), 4);
+        assert_eq!(pool_size(Some(64), 16), 16);
+        assert_eq!(pool_size(None, 0), 1);
     }
 }

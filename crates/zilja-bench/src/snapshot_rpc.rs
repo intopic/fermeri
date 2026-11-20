@@ -190,7 +190,7 @@ fn client(i: usize, addr: String, end: Instant, pubs: Arc<Vec<Key>>, cur: Arc<At
                 out.lat[kind].push(ms);
                 out.bytes.push(b.len() as f64);
                 out.ok[kind] += 1;
-                if verify_every > 0 && n % verify_every == 0 {
+                if verify_every > 0 && n.is_multiple_of(verify_every) {
                     out.verified += 1;
                     if let Err(e) = verify(&v["result"], &pks, kind == 3, &shared) {
                         out.invalid.push(e);

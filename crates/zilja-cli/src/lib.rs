@@ -205,3 +205,14 @@ pub fn quorum_by_root(ziljas: &[String], epoch: u64, slot: u64, genesis: &[u8; 3
         .collect();
     QuorumResult { groups, skipped, revoked: revoked.len() }
 }
+
+#[cfg(test)]
+mod tests {
+    /// H2: RPC-të publike (Solana, zilet pas proxy-t TLS) janë `https://`. Pa backend TLS, `ureq`
+    /// refuzonte skemën para se të lidhej ("Unknown Scheme"); tani lidhja provohet vërtet.
+    #[test]
+    fn https_urls_are_supported() {
+        let e = super::rpc_timeout("https://127.0.0.1:1", "getSlot", serde_json::json!([]), std::time::Duration::from_secs(2)).unwrap_err();
+        assert!(!e.contains("Unknown Scheme") && !e.contains("no TLS backend"), "HTTPS s'mbështetet: {e}");
+    }
+}

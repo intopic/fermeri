@@ -47,8 +47,10 @@ fn main() {
         let genesis = genesis.ok_or("duhet --genesis <hash base58> (revokimet verifikohen me të)")?;
         let agg = Arc::new(Aggregator::new(ziljas, genesis, HttpFetch));
         let a2 = agg.clone();
+        // Në sfond: maja e zileve dhe revokimet (M5: jo brenda kërkesave).
         std::thread::spawn(move || loop {
             a2.learn_tip();
+            a2.refresh_revocations();
             std::thread::sleep(std::time::Duration::from_secs(2));
         });
         let _main = serve_handler(&bind, agg.clone(), Routes { jsonrpc: true, metrics: false, cors: true }, HttpLimits::default()).map_err(|e| format!("{bind}: {e}"))?;

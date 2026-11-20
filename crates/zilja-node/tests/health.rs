@@ -186,7 +186,7 @@ fn worker_death_stops_serving() {
     for s in 7..=2000 {
         slot(&svc, s, 1, s);
     }
-    assert_eq!(svc.shared.metrics.halted.load(Ordering::Relaxed), true);
+    assert!(svc.shared.metrics.halted.load(Ordering::Relaxed));
     srv.stop();
 }
 

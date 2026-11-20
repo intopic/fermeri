@@ -1,7 +1,7 @@
 // R5-4: VerifiableConnection (web3.js) dhe createVerifiedRpc (kit) kthejnë vetëm llogari të
 // verifikuara: dëftesa + root-i (2 zile dakord) + bajtet e RPC-së = dataHash i vulosur.
 import { readFileSync } from "node:fs";
-import { VerifiableConnection, createVerifiedRpc, VerificationError, parseTokenAccount, bytesToBase64 } from "../src/index.js";
+import { VerifiableConnection, createVerifiedRpc, VerificationError, parseTokenAccount, bytesToBase64, ZiljaClient } from "../src/index.js";
 
 const fx = JSON.parse(readFileSync(new URL("./vectors.json", import.meta.url), "utf8")).connection;
 let fail = 0;
@@ -14,7 +14,7 @@ const expect = (name, cond, extra = "") => {
 
 /** Dy zile (dëftesa të vërteta nga fixture) + një RPC Solana me bajtet; `tamper` e prish RPC-në. */
 const calls = [];
-function world({ tamper = null, ziljaRoot = fx.root } = {}) {
+function world({ tamper = null, ziljaRoot = fx.root, noContextSecond = false } = {}) {
   const ziles = ["http://z1", "http://z2"];
   const data = new Map(fx.data.map((d) => [d.pubkey, d]));
   const info = (pk) => {
@@ -37,7 +37,8 @@ function world({ tamper = null, ziljaRoot = fx.root } = {}) {
     } else if (method === "getAccountInfo") result = { context: { slot: 100 }, value: info(params[0]) };
     else if (method === "getMultipleAccounts") {
       calls.push(params[0].length);
-      result = params[0].length > 100 ? undefined : { context: { slot: 100 }, value: params[0].map(info) };
+      const second = calls.length === 2;
+      result = params[0].length > 100 ? undefined : { ...(noContextSecond && second ? {} : { context: { slot: 100 } }), value: params[0].map(info) };
     }
     else if (method === "getSlot") result = 100;
     if (result === undefined) return { json: async () => ({ error: { message: `s'ka ${method} ${JSON.stringify(params)}` } }) };
@@ -122,6 +123,15 @@ class FakePublicKey {
   let noBuffer;
   try { noBuffer = bytesToBase64(big); } finally { globalThis.Buffer = saved; }
   expect("bytesToBase64 pa Buffer, 3 MB, pa spread", noBuffer === withBuffer);
+}
+
+// L5: një copë e getMultipleAccounts pa `context.slot` s'e bën rpcSlot NaN.
+{
+  calls.length = 0;
+  const list = Array.from({ length: 150 }, (_, i) => (i % 2 ? fx.ata : fx.wallet));
+  const r = await new ZiljaClient({ ...world({ noContextSecond: true }), minTrust: "agreement" }).verifyAccounts(list);
+  const slots = r.map((x) => x.data && x.data.rpcSlot);
+  expect("L5: rpcSlot = 100 edhe kur një copë s'ka context", slots.every((s) => s === 100), JSON.stringify(slots.slice(0, 3)));
 }
 
 if (fail) {

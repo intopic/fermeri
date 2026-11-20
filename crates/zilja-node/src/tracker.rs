@@ -587,7 +587,7 @@ mod tests {
         Event::Status { slot, parent, bank_id, status: s }
     }
     fn sorted(mut u: Vec<Update>) -> Vec<Update> {
-        u.sort_by(|a, b| a.0.cmp(&b.0));
+        u.sort_by_key(|a| a.0);
         u
     }
 

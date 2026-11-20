@@ -62,7 +62,8 @@ fn parse_args() -> Result<Args, String> {
             "--root" => root_override = Some(v.ok_or("--root kërkon një vlerë")?.clone()),
             "--also" => also.push(v.ok_or("--also kërkon një URL")?.clone()),
             "--min-trust" => min_trust = v.ok_or("--min-trust kërkon një vlerë")?.clone(),
-            "--min-agree" => min_agree = num(v, "--min-agree")? as i64,
+            // L7: pa `as i64` (një u64 i madh do të bëhej negativ); vlerat < 2 i refuzon politika.
+            "--min-agree" => min_agree = i64::try_from(num(v, "--min-agree")?).map_err(|_| "--min-agree: numër shumë i madh".to_string())?,
             "--min-slot" => min_slot = Some(num(v, "--min-slot")?),
             "--root-slot" => root_slot = Some(num(v, "--root-slot")?),
             "--root-complete" => {

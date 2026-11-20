@@ -144,3 +144,41 @@ fn tip_does_not_creep_overflow_is_safe_and_revocations_are_verified() {
     // Vetëm revokimi i vlefshëm, një herë (i njëjti nga dy zile, i falsifikuar, genesis tjetër, i prishur).
     assert_eq!(b["revocations"].as_array().unwrap().len(), 1, "{}", b["revocations"]);
 }
+
+/// M5: me shumë zile të ngadalta, bundle-i kthehet brenda afatit të serverit HTTP (5 s), me firmat
+/// që erdhën në kohë; zilet e vonuara pyeten sërish më vonë. Revokimet s'merren brenda kërkesës pasi
+/// janë marrë një herë.
+#[test]
+fn many_slow_ziljas_do_not_exceed_the_request_deadline() {
+    use std::time::{Duration, Instant};
+    use zilja_aggregator::FANOUT_BUDGET;
+    let k = SigningKey::from_bytes(&[1; 32]);
+    let (_svc, srv) = zile(&k);
+    let good = zilja_cli::rpc(&format!("http://{}", srv.addr()), "getZiljaAttestation", json!([2])).unwrap();
+    struct Slow(Value);
+    impl Fetch for Slow {
+        fn call(&self, url: &str, m: &str, _: Value) -> Result<Value, String> {
+            match m {
+                "getZiljaRoot" => Ok(json!({"slot": 2})),
+                "getZiljaRevocations" => Ok(json!([])),
+                _ if url == "http://fast" => Ok(self.0.clone()),
+                _ => {
+                    std::thread::sleep(Duration::from_secs(3));
+                    Err("vonë".into())
+                }
+            }
+        }
+    }
+    // 200 zile: me fan-out-in e vjetër (copa 32 njëra pas tjetrës, 3 s secila) do të ishin ~21 s.
+    let mut urls: Vec<String> = (0..199).map(|i| format!("http://slow{i}")).collect();
+    urls.push("http://fast".into());
+    let agg = Aggregator::new(urls, G, Slow(good));
+    agg.learn_tip();
+    agg.refresh_revocations();
+    let t = Instant::now();
+    let b = agg.bundle(2).unwrap();
+    let took = t.elapsed();
+    assert!(took < FANOUT_BUDGET + Duration::from_millis(500), "bundle-i zgjati {took:?}");
+    assert!(took < zilja_node::rpc::REQUEST_DEADLINE, "mbi afatin e serverit: {took:?}");
+    assert_eq!((b["ziljas"].as_u64(), b["answered"].as_u64()), (Some(200), Some(1)), "{b}");
+}
