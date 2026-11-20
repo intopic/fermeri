@@ -26,7 +26,7 @@ ed25519-dalek = { workspace = true }
 serde_json = { workspace = true }
 bs58 = { workspace = true }
 hex = { workspace = true }
-ureq = { version = "2", default-features = false, features = ["json"] }
+ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 base64 = "0.22"
 
 [dev-dependencies]

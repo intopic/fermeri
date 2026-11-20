@@ -27,7 +27,7 @@ pub fn decode_hex_lower(s: &str) -> Option<Vec<u8>> {
         _ => None,
     };
     let b = s.as_bytes();
-    if b.len() % 2 != 0 {
+    if !b.len().is_multiple_of(2) {
         return None;
     }
     b.chunks_exact(2).map(|p| Some(nib(p[0])? << 4 | nib(p[1])?)).collect()

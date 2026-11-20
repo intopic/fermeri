@@ -61,7 +61,18 @@
     Formati: <code>docs/SPEC.md</code>.
   </footer>
 </main>
+<script>
+  // L6: me file:// shfletuesi s'ngarkon modulet; tregoje qartë në vend të një faqeje që s'bën asgjë.
+  if (location.protocol === "file:") {
+    const p = document.createElement("p");
+    p.style.cssText = "color:var(--bad);font-weight:600";
+    p.textContent = "Kjo faqe duhet shërbyer nga rrënja e repos (p.sh. python3 -m http.server 8000, pastaj http://127.0.0.1:8000/web/). Me file:// modulet s'ngarkohen.";
+    document.querySelector("main").prepend(p);
+  }
+</script>
 <script type="module">
+  // L6: check-core.js importon ../sdk/js/, ndaj faqja shërbehet nga rrënja e repos, p.sh.
+  // `python3 -m http.server 8000` te rrënja dhe hap http://127.0.0.1:8000/web/ (jo file://).
   import { checkAccount } from "./check-core.js";
   const $ = (id) => document.getElementById(id);
   const q = new URLSearchParams(location.search);

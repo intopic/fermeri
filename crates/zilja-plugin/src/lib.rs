@@ -83,6 +83,10 @@ pub struct Config {
     /// Më shumë = më shpejt dhe më shumë RAM: ~2^thellësia nyje. Parazgjedhja: 20.
     #[serde(default)]
     pub cache_depth: Option<u16>,
+    /// L2: thread-et e pool-it Rayon të pemës. Parazgjedhja (mungon ose 0): sa bërthama ka makina.
+    /// Vlera mbi numrin e bërthamave kufizohet te ai numër.
+    #[serde(default)]
+    pub threads: Option<usize>,
     /// Opsion i motorit RocksDB që u hoq. Mbahet vetëm që një konfigurim i vjetër të refuzohet me
     /// mesazh të qartë, jo të injorohet në heshtje.
     #[serde(default)]
@@ -368,7 +372,7 @@ impl GeyserPlugin for ZiljaPlugin {
             }
             None => None,
         };
-        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree, mid_run_load: is_reload, max_root_age_secs: Some(cfg.max_root_age_secs), limits: Some(zilja_node::tracker::Limits { max_pending_banks: cfg.max_pending_banks, max_pending_updates: cfg.max_pending_updates }) }).map_err(custom)?;
+        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree, mid_run_load: is_reload, max_root_age_secs: Some(cfg.max_root_age_secs), limits: Some(zilja_node::tracker::Limits { max_pending_banks: cfg.max_pending_banks, max_pending_updates: cfg.max_pending_updates }), threads: cfg.threads }).map_err(custom)?;
         self.resuming.store(service.resumed, Ordering::Relaxed);
         self.snapshot_on_resume.store(cfg.snapshot_on_resume, Ordering::Relaxed);
         let main = rpc::serve_routes(&cfg.bind, service.shared.clone(), rpc::Routes { jsonrpc: true, metrics: false, cors: cfg.cors })
@@ -427,14 +431,18 @@ impl GeyserPlugin for ZiljaPlugin {
     }
 
     fn update_slot_status(&self, slot: u64, parent: Option<u64>, s: &SlotStatus) -> PluginResult<()> {
-        probe::line(&format!("slot_status slot={slot} parent={parent:?} status={s:?}"));
+        if probe::enabled() {
+            probe::line(&format!("slot_status slot={slot} parent={parent:?} status={s:?}"));
+        }
         // Statuse pa bank (p.sh. Dead në këtë version të ndërfaqes).
         self.send(Event::Status { slot, parent, bank_id: None, status: status(s) });
         Ok(())
     }
 
     fn update_bank_status(&self, slot: u64, parent: Option<u64>, s: &SlotStatus, bank_id: u64) -> PluginResult<()> {
-        probe::line(&format!("bank_status slot={slot} parent={parent:?} bank={bank_id} status={s:?}"));
+        if probe::enabled() {
+            probe::line(&format!("bank_status slot={slot} parent={parent:?} bank={bank_id} status={s:?}"));
+        }
         self.send(Event::Status { slot, parent, bank_id: Some(bank_id), status: status(s) });
         Ok(())
     }

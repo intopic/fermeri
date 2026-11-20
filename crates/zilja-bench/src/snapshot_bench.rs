@@ -431,7 +431,7 @@ fn parse_args() -> Result<Args, String> {
             _ => return Err(format!("argument i panjohur {k:?}\n{usage}")),
         }
     }
-    if r.cache_depth % 4 != 0 {
+    if !r.cache_depth.is_multiple_of(4) {
         return Err("--cache-depth duhet shumëfish i 4".into());
     }
     if r.rpc.multi_keys == 0 || r.rpc.multi_keys > zilja_verifier::multi::MAX_MULTI_KEYS {
@@ -752,7 +752,7 @@ mod tests {
         out.extend_from_slice(&[0xee; 32]);
         out.extend_from_slice(data);
         if !last {
-            while out.len() % 8 != 0 {
+            while !out.len().is_multiple_of(8) {
                 out.push(0);
             }
         }

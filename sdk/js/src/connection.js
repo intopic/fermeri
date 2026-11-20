@@ -179,7 +179,8 @@ export class VerifiableConnection {
 
   /**
    * web3.js: `getTokenAccountBalance(publicKey)` → {value: {amount, decimals, uiAmountString}}.
-   * Verifikon me një multi-proof edhe llogarinë e tokenit edhe mint-in (decimals).
+   * Dy verifikime njëra pas tjetrës: llogaria e tokenit, pastaj mint-i i saj (decimals). S'mund të
+   * bëhen me një multi-proof, sepse adresa e mint-it dihet vetëm pasi lexohet llogaria e tokenit.
    */
   async getTokenAccountBalance(pubkey) {
     const ta = await this.getTokenAccount(pubkey);

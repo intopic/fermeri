@@ -13,6 +13,9 @@ use zilja_verifier::{AccountMeta, Key};
 
 const ROOT_LAG: u64 = 32;
 
+/// Ndryshimet e një sloti: (çelësi, llogaria; `None` = fshirë).
+type SlotChanges = Vec<(Key, Option<AccountMeta>)>;
+
 fn meta(rng: &mut StdRng) -> Option<AccountMeta> {
     Some(AccountMeta { lamports: rng.gen_range(1..1 << 40), data_len: 165, data_hash: rng.gen(), ..Default::default() })
 }
@@ -43,7 +46,7 @@ fn main() {
     let mut forks = 0;
     let mut deads = 0;
     // pending[slot] = ndryshimet kanonike, aplikohen në model kur rrënjosen.
-    let mut canonical: Vec<(u64, Vec<(Key, Option<AccountMeta>)>)> = Vec::new();
+    let mut canonical: Vec<(u64, SlotChanges)> = Vec::new();
     for slot in 1..=slots {
         // Ndonjëherë: një fork që do të braktiset, me ndryshime "helmuese".
         if rng.gen_bool(0.1) {
@@ -87,7 +90,7 @@ fn main() {
         if slot > ROOT_LAG {
             let r = slot - ROOT_LAG;
             // Rooted mund të kapërcejë slote (si "highest rooted"): ndonjëherë dërgo vetëm çdo të dytin.
-            if r % 2 == 0 || rng.gen_bool(0.5) {
+            if r.is_multiple_of(2) || rng.gen_bool(0.5) {
                 svc.send(Event::Status { slot: r, parent: Some(r - 1), bank_id: None, status: Status::Rooted });
             }
         }

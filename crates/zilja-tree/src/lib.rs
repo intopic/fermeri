@@ -165,7 +165,7 @@ fn apply(node: Node, depth: usize, ups: &[Update]) -> (Node, isize) {
 /// Renditet sipas çelësit; për çelësa të dyfishtë mbetet i fundit (sipas renditjes fillestare).
 pub fn normalize_updates(ups: &mut Vec<Update>) {
     // Renditje e qëndrueshme: dyfishimet ruajnë radhën e mbërritjes.
-    ups.sort_by(|a, b| a.0.cmp(&b.0));
+    ups.sort_by_key(|a| a.0);
     let mut out: Vec<Update> = Vec::with_capacity(ups.len());
     for u in ups.drain(..) {
         match out.last_mut() {
@@ -428,7 +428,7 @@ pub fn reference_root(accounts: &[(Key, AccountMeta)]) -> Hash {
         }
     }
     let mut v = accounts.to_vec();
-    v.sort_by(|a, b| a.0.cmp(&b.0));
+    v.sort_by_key(|a| a.0);
     go(0, &v)
 }
 

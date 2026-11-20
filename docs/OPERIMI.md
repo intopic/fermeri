@@ -343,6 +343,7 @@ nuk mjafton: `ok` / kodi 0 kërkon që të kalojnë katër kontrolle të ndara.
 - `cache_depth`: 12–24. Me ~2^thellësi nyje në RAM, 20 do të thotë ~1M nyje (~150 MB).
 - `history_slots`: ≤ 100 000.
 - `block_cache_mb`: s'ekziston më (RocksDB u hoq); refuzohet me mesazh.
+- `threads` (L2): thread-et e pool-it Rayon të pemës. Mungon ose 0 = sa bërthama ka makina (si më parë). Në një validator me bërthama të zëna mund të kufizohet, p.sh. `"threads": 8`; vlera mbi numrin e bërthamave kufizohet te ai numër.
 
 ## Metrikat kryesore
 

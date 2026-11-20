@@ -28,7 +28,7 @@ fn rooted(out: &[Output]) -> Option<(u64, usize, Vec<Update>)> {
     out.iter().find_map(|o| match o {
         Output::Rooted { slot, slots_in_batch, updates, .. } => {
             let mut u = updates.clone();
-            u.sort_by(|a, b| a.0.cmp(&b.0));
+            u.sort_by_key(|a| a.0);
             Some((*slot, *slots_in_batch, u))
         }
         _ => None,

@@ -10,10 +10,10 @@ fn meta(rng: &mut StdRng) -> AccountMeta {
     AccountMeta { lamports: rng.gen_range(1..1 << 40), data_len: 0, data_hash: rng.gen(), ..Default::default() }
 }
 
-/// F-04. A page that cannot be read or decoded is treated as "this subtree is empty".
-/// The next slot that touches it silently drops every other account under that page
-/// and commits a new root; the dropped accounts then get *valid exclusion proofs*.
-/// Expected: apply_slot refuses (error / halt). This test FAILS on f59be06.
+// F-04. A page that cannot be read or decoded is treated as "this subtree is empty".
+// The next slot that touches it silently drops every other account under that page
+// and commits a new root; the dropped accounts then get *valid exclusion proofs*.
+// Expected: apply_slot refuses (error / halt). This test FAILS on f59be06.
 // F-04 (faqe e palexueshme ≠ nënpemë bosh) testohet për motorin me faqe te `pages.rs`:
 // `injected_read_faults_never_produce_a_wrong_root` dhe `corrupted_page_is_an_error_not_a_wrong_proof`.
 

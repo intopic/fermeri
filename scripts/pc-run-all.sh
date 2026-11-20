@@ -105,9 +105,15 @@ p3() {
 p4() {
   local free; free=$(df -BG --output=avail "$R" | tail -1 | tr -dc 0-9)
   if [ "${free:-0}" -lt "$MAINNET_MIN_FREE_GB" ] && [ -z "$M_EXTRA" ]; then
-    # Snapshot-i i Testnet-it s'duhet më (rezultatet mbeten).
-    rm -f "$R"/testnet/snapshot-*.tar.zst "$R"/testnet/snapshot.part
-    free=$(df -BG --output=avail "$R" | tail -1 | tr -dc 0-9)
+    # L4: snapshot-i i Testnet-it fshihet vetëm kur faza 3 mbaroi (rezultatet mbeten). Përndryshe
+    # ripërdoret nga një rinisje e fazës 3 dhe s'duhet shkarkuar sërish (~100 GB, me kufi 429).
+    if [ -f "$R/phase3.done" ]; then
+      echo "Pak vend: fshij snapshot-in e Testnet-it (faza 3 mbaroi)."
+      rm -f "$R"/testnet/snapshot-*.tar.zst "$R"/testnet/snapshot.part
+      free=$(df -BG --output=avail "$R" | tail -1 | tr -dc 0-9)
+    else
+      echo "Pak vend, por faza 3 s'ka mbaruar: snapshot-i i Testnet-it mbetet për rinisjen e saj."
+    fi
   fi
   if [ "${free:-0}" -lt "$MAINNET_MIN_FREE_GB" ] && [ -z "$M_EXTRA" ]; then
     echo "Vetëm ${free} GB të lirë; Mainnet-i i plotë kërkon ≥ ${MAINNET_MIN_FREE_GB} GB (MAINNET_MIN_FREE_GB për ta ndryshuar)."

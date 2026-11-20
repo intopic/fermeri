@@ -27,6 +27,13 @@ fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
 }
 
+/// L3: sonda është e ndezur? Thirrësit e përdorin para `format!`, që pa `ZILJA_PROBE` rruga e
+/// nxehtë (`update_slot_status`, `update_bank_status`) të mos bëjë asnjë alokim.
+#[inline]
+pub fn enabled() -> bool {
+    probe().is_some()
+}
+
 pub fn line(s: &str) {
     if let Some(p) = probe() {
         let mut p = p.lock().unwrap();

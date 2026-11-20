@@ -258,7 +258,7 @@ impl Proof {
             return Err(ProofError::TooDeep);
         }
         let bitmap = r.take(depth.div_ceil(8))?.to_vec();
-        if depth % 8 != 0 && bitmap[depth / 8] & (0xFF >> (depth % 8)) != 0 {
+        if !depth.is_multiple_of(8) && bitmap[depth / 8] & (0xFF >> (depth % 8)) != 0 {
             return Err(ProofError::NonCanonical);
         }
         let mut siblings = Vec::with_capacity(depth);

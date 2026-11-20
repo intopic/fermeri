@@ -272,6 +272,23 @@ mod tests {
         }
     }
 
+    /// L1: çelësi identitet me firmën R = identitet, S = 0 kalon `verify` të thjeshtë (dhe WebCrypto),
+    /// por jo `verify_strict`. I njëjti vektor testohet në `sdk/js/test/attest.test.mjs`.
+    #[test]
+    fn small_order_key_and_r_are_rejected() {
+        let mut id = [0u8; 32];
+        id[0] = 1;
+        let mut sig = [0u8; 64];
+        sig[0] = 1;
+        let vk = VerifyingKey::from_bytes(&id).unwrap();
+        assert!(ed25519_dalek::Verifier::verify(&vk, b"x", &Signature::from_bytes(&sig)).is_ok(), "vektori duhet të kalojë verify të thjeshtë");
+        assert!(!ed_ok(&id, &attest_message(&G, 9, &[0x44; 32]), &sig));
+        let a = Attestation { validator: id, signer: None, authorization: None, signature: sig };
+        let table = StakeTable { entries: vec![(id, 10)] };
+        let r = verify_quorum_with(&G, 0, 9, &[0x44; 32], &[a], &table, &Revoked::default());
+        assert_eq!((r.valid_signatures, r.reached), (0, false));
+    }
+
     #[test]
     fn quorum_needs_more_than_two_thirds() {
         let (keys, table) = setup(10);

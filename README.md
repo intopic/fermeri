@@ -43,7 +43,8 @@ solana-test-validator --geyser-plugin-config zilja.json
 node web/check.mjs http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899 --min-trust single   # i njëjti vendim në JS
 #   --also <ZILJA_URL>  zile e dytë · --quorum  firmat e validatorëve · --max-lag <n>|none · --min-slot <n>
 #   Kodi i daljes: 0 vetëm kur kalon çdo kontroll (dëftesa, besimi, freskia, të dhënat).
-# ose hap web/index.html në shfletues
+# ose faqja në shfletues: shërbeje nga rrënja e repos (importon ../sdk/js/), jo me file://
+#   python3 -m http.server 8000   # pastaj hap http://127.0.0.1:8000/web/
 
 # Pema në disk në vend të RAM-it: shto te zilja.json
 #   "db_path": "/var/lib/zilja/db", "tree_engine": "pages", "genesis_path": "<ledger>/genesis.bin",
