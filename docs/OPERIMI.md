@@ -519,6 +519,9 @@ python3 scripts/plot-bench.py /nvme/zilja-bench-out/results.csv   # ms_slot.png,
 
 ### Seria e plotë në PC (`scripts/bench-matrix.sh`, R8)
 
+> Për një PC të ri, plani i plotë me një komandë (përgatitja, testet, e2e, Testnet, Mainnet,
+> publikimi) është te **docs/PC-TESTI.md** (`scripts/pc-setup.sh`, `scripts/pc-run-all.sh`).
+
 Një komandë që nis të gjitha rastet mbi të njëjtin snapshot (shkarkohet një herë) dhe në fund nxjerr
 një tabelë krahasuese. Pa GitHub: gjithçka në PC, rezultatet publikohen më pas me një PR.
 

@@ -160,6 +160,9 @@ if [ -n "$RPC_CLIENTS" ]; then
   RPC_ARGS=(--rpc-clients "$RPC_CLIENTS" --rpc-seconds "$RPC_SECONDS" --rpc-slot-ms "$RPC_SLOT_MS" --rpc-slot-updates "$RPC_SLOT_UPDATES")
   [ "$RPC_ONE_IP" = 1 ] && RPC_ARGS+=(--rpc-one-ip)
 fi
+# Listat pranojnë edhe presje (p.sh. LIMITS=1000000,full), që të kalojnë lehtë nëpër `env`.
+BENCH_GROUPS="${BENCH_GROUPS//,/ }"; LIMITS="${LIMITS//,/ }"; COLD_MODES="${COLD_MODES//,/ }"
+CACHE_DEPTHS="${CACHE_DEPTHS//,/ }"; SEEDS="${SEEDS//,/ }"
 for d in $CACHE_DEPTHS; do [ $((d % 4)) -eq 0 ] || { echo "CACHE_DEPTHS: $d s'është shumëfish i 4" >&2; exit 1; }; done
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
@@ -193,11 +196,15 @@ case "$SNAP" in *mainnet*) echo mainnet > "$OUT/network" ;; *testnet*) echo test
 [ -f "$OUT/network" ] || { [ -n "${NETWORK:-}" ] && echo "$NETWORK" > "$OUT/network"; }
 
 # ---- makina: që rezultatet të krahasohen drejt ----
+# Matrix-i mund të niset disa herë në të njëjtën dosje me parametra të ndryshëm (rastet e mbaruara
+# kapërcehen, snapshot-i ripërdoret): çdo nisje shtohet te runs.log; parametrat e çdo rasti janë te
+# <rasti>/summary.json.
+echo "$(date -Is) BENCH_GROUPS='$BENCH_GROUPS' LIMITS='$LIMITS' CASE_LIMIT=$CASE_LIMIT COLD_LIMIT=$COLD_LIMIT COLD_MODES='$COLD_MODES' CACHE_DEPTHS='$CACHE_DEPTHS' SEEDS='$SEEDS' UPDATES=$UPDATES SLOTS=$SLOTS SAMPLE=$SAMPLE COLD_SAMPLE=$COLD_SAMPLE PROOFS=$PROOFS RPC_CLIENTS=$RPC_CLIENTS RPC_SECONDS=$RPC_SECONDS RPC_SLOT_MS=$RPC_SLOT_MS RPC_SLOT_UPDATES=$RPC_SLOT_UPDATES RPC_ONE_IP=$RPC_ONE_IP" >> "$OUT/runs.log"
 {
   echo "data: $(date -Is)"
   echo "git: $(cd "$ROOT" && git rev-parse --short HEAD 2>/dev/null) $(cd "$ROOT" && git status --porcelain 2>/dev/null | grep -q . && echo '(me ndryshime lokale)')"
   echo "snapshot: $(basename "$SNAP") ($(du -h "$SNAP" | cut -f1))"
-  echo "parametrat: BENCH_GROUPS='$BENCH_GROUPS' LIMITS='$LIMITS' CASE_LIMIT=$CASE_LIMIT COLD_LIMIT=$COLD_LIMIT COLD_MODES='$COLD_MODES' CACHE_DEPTHS='$CACHE_DEPTHS' SEEDS='$SEEDS' UPDATES=$UPDATES SLOTS=$SLOTS SAMPLE=$SAMPLE COLD_SAMPLE=$COLD_SAMPLE PROOFS=$PROOFS RPC_CLIENTS=$RPC_CLIENTS RPC_SECONDS=$RPC_SECONDS RPC_SLOT_MS=$RPC_SLOT_MS RPC_SLOT_UPDATES=$RPC_SLOT_UPDATES RPC_ONE_IP=$RPC_ONE_IP"
+  echo "nisjet e matrix-it (runs.log):"; sed 's/^/  /' "$OUT/runs.log"
   echo; uname -a
   echo; lscpu 2>/dev/null | grep -E 'Model name|^CPU\(s\)|Thread|Core|Socket|MHz|L3' || true
   echo; free -g 2>/dev/null || true
