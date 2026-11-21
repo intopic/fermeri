@@ -269,6 +269,15 @@ async function web(opts, ziles) {
   expect("A14: slot tjetër nga referenca → invalid", !r14c.ok && r14c.errors.includes("anchor_slot_mismatch"), JSON.stringify(r14c.errors));
 }
 
+// G23: web/check.mjs refuzon flamurët e panjohur dhe argumentet e tepërta (kodi 2), para çdo kërkese.
+{
+  const { spawnSync } = await import("node:child_process");
+  const run = (...a) => spawnSync(process.execPath, [new URL("../../../web/check.mjs", import.meta.url).pathname, ...a], { encoding: "utf8" });
+  const bad = [["http://x", "pk", "--min-turst", "single"], ["http://x", "pk", "sol", "extra"], ["http://x", "pk", "--root"], ["http://x", "pk", "--min-trust", "low"]];
+  const res = bad.map((a) => run(...a));
+  expect("G23: check.mjs → kodi 2 për argumente të gabuara", res.every((r) => r.status === 2), JSON.stringify(res.map((r) => [r.status, r.stderr.split("\n")[0]])));
+}
+
 // G20: slot-i dhe root-i i rezultatit janë numër/tekst ose null, kurrë undefined apo vlera e papastër e zilës.
 {
   const a = uniq();
