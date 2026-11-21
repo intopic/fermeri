@@ -30,6 +30,8 @@ def main():
             cases.append((n, json.load(open(p))))
     failed = sorted(n for n in os.listdir(root)
                     if os.path.isfile(os.path.join(root, n, "bench.log")) and not os.path.isfile(os.path.join(root, n, "summary.json")))
+    # G15: summary.json me rpc_error = ndërtimi mbaroi, por faza RPC dështoi: rasti s'është i mbaruar.
+    rpc_failed = [(n, s["rpc_error"]) for n, s in cases if s.get("rpc_error")]
     out = []
     w = out.append
     w(f"# Rezultatet e bench-it: {os.path.basename(os.path.abspath(root))}\n")
@@ -84,12 +86,14 @@ def main():
                       f"{f(l['error_pct'], 2)} | {l['busy_503']} | {l.get('refused', 0)} | {l['client_out_of_ports']} | {wr['late']}/{wr['slots']} | "
                       f"{f(wr['total_ms'].get('p99'), 1)} | {f(wr['write_hold_ms'].get('p99'), 2)} | {f(l['cpu_pct'], 0)} | {l['verified']} | {l['invalid']} |")
     warns = [(n, x) for n, s in cases for x in s.get("warnings", [])]
-    if warns or failed:
+    if warns or failed or rpc_failed:
         w("\n## Paralajmërime\n")
         for n, x in warns:
             w(f"- **{n}**: {x}")
         for n in failed:
             w(f"- **{n}**: DËSHTOI ose s'mbaroi (shiko {n}/bench.log)")
+        for n, e in rpc_failed:
+            w(f"- **{n}**: faza RPC DËSHTOI ({e}); numrat e ndërtimit dhe sloteve vlejnë, ata të RPC-së mungojnë")
     w("""
 ## Si lexohen kolonat
 

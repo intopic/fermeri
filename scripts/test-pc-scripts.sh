@@ -83,6 +83,23 @@ check "G04: \$OUT/db i paprekur, pa mbetje .db-*" '[ -f "$W/b/db/keep" ] && [ -z
 ( flock 9; mx "$W/b"; echo $? > "$W/lockrc" ) 9>"$W/b/.matrix.lock"
 check "G04: dy nisje në të njëjtën dosje → e dyta ndalet" '[ "$(cat "$W/lockrc")" = 1 ] && grep -q "Një tjetër bench-matrix" "$W/b.log"'
 
+# G15: një rast me faza RPC të dështuar (summary.json me rpc_error, kodi 2) riniset herën tjetër;
+# një rast i suksesshëm (shënuesi ok) kapërcehet.
+cat > "$W/fakebench" <<'SH'
+#!/bin/bash
+out=""; while [ $# -gt 0 ]; do [ "$1" = --out ] && out="$2"; shift; done
+d=$(dirname "$out")
+if [ -f "$FAKE_FAIL" ]; then echo '{"accounts":1,"rpc_error":"x"}' > "$d/summary.json"; echo "gabim: x" >&2; exit 2; fi
+echo '{"accounts":1}' > "$d/summary.json"; echo "pema: ok" >&2
+SH
+chmod +x "$W/fakebench"
+fx() { FAKE_FAIL="$W/fail" BIN="$W/fakebench" BENCH_GROUPS=size LIMITS=1 RPC_CLIENTS='' bash "$ROOT/scripts/bench-matrix.sh" "$U/snapshot.tar.bz2" "$W/b" > "$W/b.log" 2>&1; }
+rm -rf "$W/b/size-1"; touch "$W/fail"; fx; st1=$?
+rm -f "$W/fail"; fx; st2=$?
+check "G15: faza RPC e dështuar → riniset, pastaj ok" '[ $st1 = 4 ] && [ $st2 = 0 ] && grep -q "size-1: fillon" "$W/b.log" && [ -f "$W/b/size-1/ok" ]'
+fx
+check "G15: rast me ok → kapërcehet" 'grep -q "size-1: ka mbaruar më parë" "$W/b.log"'
+
 # M2: pc-run-all vazhdon pas fazës 3 të pjesshme dhe kryen tri nisjet e fazës 4.
 RESULTS="$W/res" TOOLS="$W/tools" PHASES="3 4" TESTNET_URL="$U/snapshot.tar.bz2" MAINNET_URL="$U/snapshot.tar.bz2" \
   T_EXTRA="BIN=/bin/false RPC_CLIENTS= BENCH_GROUPS=size LIMITS=1" M_EXTRA="BIN=/bin/false RPC_CLIENTS=" \

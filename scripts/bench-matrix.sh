@@ -9,7 +9,7 @@
 #
 # Snapshot-i shkarkohet NJË herë (nëse jepet URL) dhe përdoret për çdo rast. Çdo rast
 # ndërton pemën nga e para në një DB të re, pastaj mat slotet dhe dëftesat.
-# Rastet që kanë mbaruar (kanë summary.json) kapërcehen: komanda mund të niset sërish
+# Rastet që kanë mbaruar (kanë shënuesin ok, G15) kapërcehen: komanda mund të niset sërish
 # pas një ndërprerjeje dhe vazhdon aty ku mbeti.
 #
 # Rastet (grupet). "Ngrohtë" = pages.dat në cache-in e sistemit (siç del vetë pas ndërtimit);
@@ -260,8 +260,13 @@ FAILED=()
 for c in "${CASES[@]}"; do
   name="${c%%|*}"; args="${c#*|}"
   dir="$OUT/$name"
-  if [ -f "$dir/summary.json" ]; then say "$name: ka mbaruar më parë, e kapërcej"; continue; fi
+  # G15: i mbaruar = shënuesi `ok` (shkruhet vetëm kur bench-i del me 0), ose një summary.json i vjetër
+  # pa rpc_error (nisjet para shënuesit). Një summary.json me rpc_error është rast i dështuar: riniset.
+  if [ -f "$dir/ok" ] || { [ -f "$dir/summary.json" ] && ! grep -q '"rpc_error"' "$dir/summary.json"; }; then
+    say "$name: ka mbaruar më parë, e kapërcej"; continue
+  fi
   mkdir -p "$dir"
+  rm -f "$dir/summary.json"
   # G04: një dosje e re për çdo rast (mktemp), që kjo nisje e krijoi vetë; fshihet vetëm ajo.
   # Kurrë një rrugë fikse si "$OUT/db", që mund të jetë e dikujt tjetër.
   db=$(mktemp -d "$OUT/.db-$name.XXXXXX") || { say "$name: s'u krijua dosja e DB-së"; exit 1; }
@@ -278,6 +283,7 @@ for c in "${CASES[@]}"; do
     say "$name: DËSHTOI (kodi $st): $(tail -1 "$dir/bench.log")"
     FAILED+=("$name"); continue
   fi
+  touch "$dir/ok"
   say "$name: gati për $(( ($(date +%s) - t0) / 60 )) min — $(grep '^pema:' "$dir/bench.log" | cut -c1-120)"
   grep '^KUJDES' "$dir/bench.log" | while read -r w; do say "$name: $w"; done
   python3 "$ROOT/scripts/plot-bench.py" "$dir" >> "$dir/bench.log" 2>&1 || say "$name: grafikët s'u bënë (pip install matplotlib)"
