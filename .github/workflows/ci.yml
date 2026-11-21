@@ -25,6 +25,8 @@ jobs:
         run: cargo run -q --release -p zilja-bench --bin zilja-crash-test -- 6
       - name: vrasje gjatë ndërtimit nga snapshot-i (Safer-6)
         run: cargo run -q --release -p zilja-bench --bin zilja-crash-test -- --snapshot 6
+      - name: bench-i RPC kontrollon vetveten (G13, i vogël)
+        run: cargo run -q --release -p zilja-bench --bin zilja-rpc-bench -- 20000 400
       - name: fuzz diferencial i motorit me faqe (3 min)
         run: cargo run -q --release -p zilja-bench --bin zilja-fuzz -- 180
       - name: vektorët në repo = vektorët që gjeneron Rust
