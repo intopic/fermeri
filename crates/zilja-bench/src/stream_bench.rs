@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 use zilja_node::{Event, Service, Status};
 use zilja_tree::{reference_root, Tree};
-use zilja_verifier::{AccountMeta, Key};
+use zilja_verifier::{tree_key, AccountMeta, Key};
 
 const ROOT_LAG: u64 = 32;
 
@@ -18,6 +18,13 @@ type SlotChanges = Vec<(Key, Option<AccountMeta>)>;
 
 fn meta(rng: &mut StdRng) -> Option<AccountMeta> {
     Some(AccountMeta { lamports: rng.gen_range(1..1 << 40), data_len: 165, data_hash: rng.gen(), ..Default::default() })
+}
+
+/// Hash-i (i rremë, por unik) i bankës kanonike të një sloti.
+fn bank_hash(slot: u64) -> [u8; 32] {
+    let mut h = [0xAB; 32];
+    h[..8].copy_from_slice(&slot.to_le_bytes());
+    h
 }
 
 fn main() {
@@ -47,12 +54,21 @@ fn main() {
     let mut deads = 0;
     // pending[slot] = ndryshimet kanonike, aplikohen në model kur rrënjosen.
     let mut canonical: Vec<(u64, SlotChanges)> = Vec::new();
+    // G14: zinxhiri kanonik (slot → bankë) dhe slotet e tij me radhë, për SlotHashes dhe Rooted.
+    let mut canon_bank: std::collections::BTreeMap<u64, u64> = std::collections::BTreeMap::new();
+    let mut chain: Vec<u64> = vec![0];
+    let hashes = |chain: &[u64]| -> Vec<(u64, [u8; 32])> { chain.iter().rev().take(64).map(|s| (*s, bank_hash(*s))).collect() };
     for slot in 1..=slots {
-        // Ndonjëherë: një fork që do të braktiset, me ndryshime "helmuese".
-        if rng.gen_bool(0.1) {
+        let prev = *chain.last().unwrap();
+        // Ndonjëherë: një fork që do të braktiset, me ndryshime "helmuese". G14: zinxhiri kanonik e
+        // kapërcen këtë slot (si në Solana: blloku i një udhëheqësi s'u pranua), ndaj fork-u s'ndan
+        // slot me asnjë bankë kanonike; tracker-i ndalon (P-07/A24) kur dy banka të gjalla ndajnë një
+        // slot të rrënjosur, sepse SlotHashes s'i dallon. Sloti i fundit mbetet gjithmonë kanonik.
+        if slot < slots && rng.gen_bool(0.1) {
             bank_id += 1;
             forks += 1;
-            svc.send(Event::Status { slot, parent: Some(slot - 1), bank_id: Some(bank_id), status: Status::CreatedBank });
+            svc.send(Event::SlotHashes { slot, bank_id, entries: hashes(&chain) });
+            svc.send(Event::Status { slot, parent: Some(prev), bank_id: Some(bank_id), status: Status::CreatedBank });
             for _ in 0..per_slot / 10 {
                 wv += 1;
                 let k = keys[rng.gen_range(0..keys.len())];
@@ -64,10 +80,14 @@ fn main() {
                 deads += 1;
                 svc.send(Event::Status { slot, parent: None, bank_id: Some(bank_id), status: Status::Dead });
             }
+            continue;
         }
         bank_id += 1;
         let b = bank_id;
-        svc.send(Event::Status { slot, parent: Some(slot - 1), bank_id: Some(b), status: Status::CreatedBank });
+        canon_bank.insert(slot, b);
+        svc.send(Event::SlotHashes { slot, bank_id: b, entries: hashes(&chain) });
+        chain.push(slot);
+        svc.send(Event::Status { slot, parent: Some(prev), bank_id: Some(b), status: Status::CreatedBank });
         let mut ups = Vec::with_capacity(per_slot);
         for _ in 0..per_slot {
             wv += 1;
@@ -86,17 +106,20 @@ fn main() {
             events += 1;
         }
         canonical.push((slot, ups));
-        svc.send(Event::Status { slot, parent: Some(slot - 1), bank_id: Some(b), status: Status::Confirmed });
-        if slot > ROOT_LAG {
-            let r = slot - ROOT_LAG;
-            // Rooted mund të kapërcejë slote (si "highest rooted"): ndonjëherë dërgo vetëm çdo të dytin.
-            if r.is_multiple_of(2) || rng.gen_bool(0.5) {
-                svc.send(Event::Status { slot: r, parent: Some(r - 1), bank_id: None, status: Status::Rooted });
+        svc.send(Event::Status { slot, parent: Some(prev), bank_id: Some(b), status: Status::Confirmed });
+        // Rrënjoset sloti kanonik ROOT_LAG pas majës. Rooted mund të kapërcejë slote (si "highest
+        // rooted"): ndonjëherë dërgohet vetëm çdo i dyti.
+        if chain.len() > ROOT_LAG as usize + 1 {
+            let i = chain.len() - 1 - ROOT_LAG as usize;
+            let r = chain[i];
+            if i.is_multiple_of(2) || rng.gen_bool(0.5) {
+                svc.send(Event::Status { slot: r, parent: Some(chain[i - 1]), bank_id: canon_bank.get(&r).copied(), status: Status::Rooted });
             }
         }
     }
-    // Rrënjos deri në fund.
-    svc.send(Event::Status { slot: slots, parent: Some(slots - 1), bank_id: None, status: Status::Rooted });
+    // Rrënjos deri në fund (sloti i fundit është gjithmonë kanonik).
+    let n_chain = chain.len();
+    svc.send(Event::Status { slot: slots, parent: Some(chain[n_chain - 2]), bank_id: canon_bank.get(&slots).copied(), status: Status::Rooted });
     let shared = svc.shared.clone();
     svc.shutdown();
     let secs = t0.elapsed().as_secs_f64();
@@ -114,10 +137,12 @@ fn main() {
         }
     }
     let st = shared.state.read().unwrap();
+    // G14: modeli mban pubkey-t; pema e shërbimit mban tree_key(pubkey). Root-i i pritur llogaritet mbi
+    // të njëjtët çelësa që përdor pema, përndryshe krahasimi dështon (ose kalon) pa kuptim.
     let expected = if n <= 200_000 {
-        reference_root(&model.iter().map(|(k, m)| (*k, m.clone())).collect::<Vec<_>>())
+        reference_root(&model.iter().map(|(k, m)| (tree_key(k), m.clone())).collect::<Vec<_>>())
     } else {
-        Tree::from_accounts(model.iter().map(|(k, m)| (*k, Some(m.clone()))).collect()).root()
+        Tree::from_accounts(model.iter().map(|(k, m)| (tree_key(k), Some(m.clone()))).collect()).root()
     };
     let ok = st.tree.root() == expected && st.slot == slots;
     let m = &shared.metrics;
@@ -138,6 +163,7 @@ fn main() {
             "max_apply_ms": m.max_apply_us.load(Ordering::Relaxed) as f64 / 1000.0,
             "mean_apply_ms": m.total_apply_us.load(Ordering::Relaxed) as f64 / 1000.0 / m.batches.load(Ordering::Relaxed).max(1) as f64,
             "final_slot": st.slot,
+            "broken": st.broken,
             "root_matches_canonical_model": ok,
         }))
         .unwrap()

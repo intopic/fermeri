@@ -27,6 +27,8 @@ jobs:
         run: cargo run -q --release -p zilja-bench --bin zilja-crash-test -- --snapshot 6
       - name: bench-i RPC kontrollon vetveten (G13, i vogël)
         run: cargo run -q --release -p zilja-bench --bin zilja-rpc-bench -- 20000 400
+      - name: bench-i i rrymës krahason root-in me modelin (G14, i vogël)
+        run: cargo run -q --release -p zilja-bench --bin zilja-stream-bench -- 5000 300 200
       - name: fuzz diferencial i motorit me faqe (3 min)
         run: cargo run -q --release -p zilja-bench --bin zilja-fuzz -- 180
       - name: vektorët në repo = vektorët që gjeneron Rust
