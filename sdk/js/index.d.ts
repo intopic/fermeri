@@ -214,14 +214,27 @@ interface KitAccount {
   data: [string, "base64"];
   space: bigint;
 }
+/**
+ * G24: konfigurimi i kit-it që respektohet; çdo çelës tjetër (p.sh. `dataSlice`) hedh gabim.
+ * `commitment`: çdo nivel pranohet (zilja jep gjendjen e një sloti të rrënjosur).
+ * `minContextSlot`: përgjigjja duhet të jetë të paktën në atë slot, përndryshe gabim.
+ */
+interface KitConfig {
+  commitment?: "processed" | "confirmed" | "finalized";
+  minContextSlot?: bigint | number;
+}
+interface KitAccountConfig extends KitConfig {
+  /** Vetëm "base64" (forma që kthehet). */
+  encoding?: "base64";
+}
 /** Për @solana/kit: të njëjtat metoda si `rpc`, me `.send()`, vetëm me llogari të verifikuara. */
 export function createVerifiedRpc(
   zilja: ZiljaClient | ZiljaClientOptions,
   o?: { onUnverified?: "throw" | "null" },
 ): {
-  getAccountInfo(address: string): { send(): Promise<{ context: { slot: bigint }; value: KitAccount | null }> };
+  getAccountInfo(address: string, config?: KitAccountConfig): { send(): Promise<{ context: { slot: bigint }; value: KitAccount | null }> };
   /** ≤ 256 adresa (një multi-proof, një `context.slot`); më shumë hedh gabim (G02). */
-  getMultipleAccounts(addresses: string[]): { send(): Promise<{ context: { slot: bigint }; value: (KitAccount | null)[] }> };
+  getMultipleAccounts(addresses: string[], config?: KitAccountConfig): { send(): Promise<{ context: { slot: bigint }; value: (KitAccount | null)[] }> };
   /** `value`: lamports; `0n` vetëm kur mungesa provohet; `null` kur verifikimi dështoi (me `onUnverified: "null"`). */
-  getBalance(address: string): { send(): Promise<{ context: { slot: bigint }; value: bigint | null }> };
+  getBalance(address: string, config?: KitConfig): { send(): Promise<{ context: { slot: bigint }; value: bigint | null }> };
 };

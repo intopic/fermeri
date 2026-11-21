@@ -104,6 +104,14 @@ class FakePublicKey {
   expect("kit getMultipleAccounts", m.value.length === 2 && m.value[1].space === 82n);
   const b = await rpc.getBalance(fx.missing).send();
   expect("kit getBalance i llogarisë që s'ekziston → 0n", b.value === 0n);
+  // G24: konfigurimi respektohet: opsionet e panjohura dhe minContextSlot mbi slotin hedhin gabim.
+  const rejects = async (p) => { try { await p; return false; } catch { return true; } };
+  const ok = await rpc.getAccountInfo(fx.ata, { commitment: "confirmed", encoding: "base64", minContextSlot: a.context.slot }).send();
+  expect("G24: konfigurim i pranuar (commitment, base64, minContextSlot = sloti)", ok.value.lamports === 2_039_280n);
+  expect("G24: dataSlice → gabim", await rejects(rpc.getAccountInfo(fx.ata, { dataSlice: { offset: 0, length: 8 } }).send()));
+  expect("G24: encoding jsonParsed → gabim", await rejects(rpc.getMultipleAccounts([fx.ata], { encoding: "jsonParsed" }).send()));
+  expect("G24: minContextSlot mbi slotin → gabim", await rejects(rpc.getBalance(fx.ata, { minContextSlot: a.context.slot + 1n }).send()));
+  expect("G24: getBalance me encoding → gabim", await rejects(rpc.getBalance(fx.ata, { encoding: "base64" }).send()));
 }
 
 // R5 (rishikimi): copa ≤ 100 te getMultipleAccounts; lista bosh; base64 pa Buffer dhe për të dhëna të mëdha.

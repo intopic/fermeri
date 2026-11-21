@@ -234,6 +234,40 @@ export class VerifiableConnection {
  * `getMultipleAccounts`, `getBalance`), që kthen vetëm llogari të verifikuara (lamports si bigint,
  * data si [base64, "base64"]).
  */
+/**
+ * G24: konfigurimi i kit-it që respektohet. `commitment`: çdo vlerë e kit-it pranohet, sepse zilja jep
+ * gjendjen e një sloti të rrënjosur (≥ çdo nivel). `encoding`: vetëm "base64" (ose pa të), sepse kjo
+ * është forma që kthehet. `minContextSlot`: përgjigja duhet të jetë të paktën në atë slot. Çdo çelës
+ * tjetër (p.sh. `dataSlice`) hedh gabim, në vend që të injorohet pa zë.
+ */
+function kitConfig(method, cfg, { encoding }) {
+  if (cfg == null) return {};
+  if (typeof cfg !== "object") throw new Error(`${method}: konfigurimi duhet objekt`);
+  const allowed = encoding ? ["commitment", "encoding", "minContextSlot"] : ["commitment", "minContextSlot"];
+  for (const k of Object.keys(cfg)) {
+    if (cfg[k] === undefined) continue;
+    if (!allowed.includes(k)) throw new Error(`${method}: opsioni "${k}" s'mbështetet nga leximi i verifikuar`);
+  }
+  if (cfg.commitment !== undefined && !["processed", "confirmed", "finalized"].includes(cfg.commitment)) {
+    throw new Error(`${method}: commitment i panjohur "${cfg.commitment}"`);
+  }
+  if (cfg.encoding !== undefined && cfg.encoding !== "base64") throw new Error(`${method}: vetëm encoding "base64" mbështetet`);
+  let min = null;
+  if (cfg.minContextSlot !== undefined) {
+    const m = cfg.minContextSlot;
+    if (typeof m === "bigint" ? m < 0n : !Number.isSafeInteger(m) || m < 0) throw new Error(`${method}: minContextSlot duhet numër i plotë jo negativ`);
+    min = BigInt(m);
+  }
+  return { min };
+}
+
+/** G24: si RPC-ja e Solana-s (-32016): përgjigjja nën `minContextSlot` s'kthehet. */
+function checkMinSlot(method, min, slot) {
+  if (min != null && (slot == null || BigInt(slot) < min)) {
+    throw new Error(`${method}: sloti minimal i kontekstit (${min}) s'është arritur (zilja: ${slot ?? "pa slot"})`);
+  }
+}
+
 export function createVerifiedRpc(zilja, { onUnverified = "throw" } = {}) {
   const conn = new VerifiableConnection({ zilja, onUnverified });
   const b64 = bytesToBase64;
@@ -243,13 +277,16 @@ export function createVerifiedRpc(zilja, { onUnverified = "throw" } = {}) {
       : { lamports: v.account.lamports, owner: v.account.owner, executable: v.account.executable, data: [b64(v.bytes), "base64"], space: BigInt(v.bytes.length) };
   const wrap = (fn) => ({ send: fn });
   return {
-    getAccountInfo: (address) =>
+    getAccountInfo: (address, config) =>
       wrap(async () => {
+        const { min } = kitConfig("getAccountInfo", config, { encoding: true });
         const [v] = await conn.verified([address]);
+        checkMinSlot("getAccountInfo", min, v.slot);
         return { context: { slot: BigInt(v.slot ?? 0) }, value: kitInfo(v) };
       }),
-    getMultipleAccounts: (addresses) =>
+    getMultipleAccounts: (addresses, config) =>
       wrap(async () => {
+        const { min } = kitConfig("getMultipleAccounts", config, { encoding: true });
         if (addresses.length === 0) return { context: { slot: 0n }, value: [] };
         // G02: një `context.slot` i vetëm pohon një pamje të vetme. Mbi një multi-proof (256), copat
         // do të ishin në slote të ndryshme dhe pamja e bashkuar mund të mos ketë ekzistuar kurrë.
@@ -260,11 +297,14 @@ export function createVerifiedRpc(zilja, { onUnverified = "throw" } = {}) {
         const vs = await conn.verified(addresses);
         const slots = new Set(vs.map((v) => v.slot));
         if (slots.size > 1) throw new Error("getMultipleAccounts: multi-proof-i ktheu slote të ndryshme");
+        checkMinSlot("getMultipleAccounts", min, vs[0]?.slot);
         return { context: { slot: BigInt(vs[0]?.slot ?? 0) }, value: vs.map(kitInfo) };
       }),
-    getBalance: (address) =>
+    getBalance: (address, config) =>
       wrap(async () => {
+        const { min } = kitConfig("getBalance", config, { encoding: false });
         const [v] = await conn.verified([address]);
+        checkMinSlot("getBalance", min, v.slot);
         // G01: 0n vetëm për mungesë të provuar; një verifikim i dështuar (onUnverified: "null")
         // kthen null, si getBalance i web3.js, që kuleta të mos shfaqë "0" për diçka të paverifikuar.
         if (!v.ok) return { context: { slot: BigInt(v.slot ?? 0) }, value: null };
