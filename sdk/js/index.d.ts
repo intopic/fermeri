@@ -214,5 +214,6 @@ export function createVerifiedRpc(
 ): {
   getAccountInfo(address: string): { send(): Promise<{ context: { slot: bigint }; value: KitAccount | null }> };
   getMultipleAccounts(addresses: string[]): { send(): Promise<{ context: { slot: bigint }; value: (KitAccount | null)[] }> };
-  getBalance(address: string): { send(): Promise<{ context: { slot: bigint }; value: bigint }> };
+  /** `value`: lamports; `0n` vetëm kur mungesa provohet; `null` kur verifikimi dështoi (me `onUnverified: "null"`). */
+  getBalance(address: string): { send(): Promise<{ context: { slot: bigint }; value: bigint | null }> };
 };

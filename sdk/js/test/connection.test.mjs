@@ -125,6 +125,14 @@ class FakePublicKey {
   expect("bytesToBase64 pa Buffer, 3 MB, pa spread", noBuffer === withBuffer);
 }
 
+// G01: kit getBalance me onUnverified "null": dështimi → null, mungesa e provuar → 0n.
+{
+  const bad = await createVerifiedRpc(world({ ziljaRoot: "ab".repeat(32) }), { onUnverified: "null" }).getBalance(fx.wallet).send();
+  expect("G01: kit getBalance i paverifikuar → null (jo 0n)", bad.value === null, String(bad.value));
+  const gone = await createVerifiedRpc(world(), { onUnverified: "null" }).getBalance(fx.missing).send();
+  expect("G01: kit getBalance i llogarisë që s'ekziston → 0n", gone.value === 0n, String(gone.value));
+}
+
 // L5: një copë e getMultipleAccounts pa `context.slot` s'e bën rpcSlot NaN.
 {
   calls.length = 0;

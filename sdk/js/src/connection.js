@@ -223,6 +223,9 @@ export function createVerifiedRpc(zilja, { onUnverified = "throw" } = {}) {
     getBalance: (address) =>
       wrap(async () => {
         const [v] = await conn.verified([address]);
+        // G01: 0n vetëm për mungesë të provuar; një verifikim i dështuar (onUnverified: "null")
+        // kthen null, si getBalance i web3.js, që kuleta të mos shfaqë "0" për diçka të paverifikuar.
+        if (!v.ok) return { context: { slot: BigInt(v.slot ?? 0) }, value: null };
         return { context: { slot: BigInt(v.slot ?? 0) }, value: v.exists ? v.account.lamports : 0n };
       }),
   };
