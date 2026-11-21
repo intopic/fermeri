@@ -441,7 +441,10 @@ pa të, zilja s'e di më çfarë ka firmosur.
   dhe versionin e `agave-geyser-plugin-interface`. Një paketë e ndërtuar me kompilator tjetër
   shënohet `"official": false` dhe s'duhet shpërndarë.
 - **Riprodhueshmëria:** skripti ndërton dy herë në dosje target të ndara dhe kërkon hash-e identike.
-- **Verifikimi nga operatori:** `sha256sum` i çdo skedari duhet të përputhet me `MANIFEST.json`.
+- **Verifikimi nga operatori:** `sha256sum` i çdo skedari duhet të përputhet me `MANIFEST.json`
+  (`artifacts` mban çdo skedar të paketës me rrugën relative, edhe `docs/SPEC.md` dhe `docs/OPERIMI.md`;
+  vetëm `MANIFEST.json` jo, sepse s'mund të mbajë hash-in e vet). P.sh. nga dosja e paketës:
+  `python3 -c 'import json,hashlib;m=json.load(open("MANIFEST.json"))["artifacts"];print(all(hashlib.sha256(open(f,"rb").read()).hexdigest()==v["sha256"] for f,v in m.items()))'`.
   Plugin-i duhet të ndërtohet me të njëjtin target, kompilator, varësi dhe feature si binari i
   validatorit që e ngarkon (Agave 4.3.2 nga release-i zyrtar).
 - **Formatet** e shkruara në manifest: `zilja-pages` v1, dëftesa v2, ditari i firmave v2.

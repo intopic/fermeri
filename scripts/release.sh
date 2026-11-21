@@ -91,8 +91,10 @@ m = {
         "attest_log": grab("crates/zilja-node/src/attester.rs", r'const HEADER: &str = "# ([^"]+)"'),
         "attest_message": "zilja/attest/v2",
     },
+    # G29: çdo skedar i paketës, edhe në nëndosje (docs/), me rrugë relative; vetë MANIFEST.json jo.
     "artifacts": {f: {"sha256": sha(os.path.join(pkg, f)), "bytes": os.path.getsize(os.path.join(pkg, f))}
-                  for f in sorted(os.listdir(pkg)) if os.path.isfile(os.path.join(pkg, f))},
+                  for f in sorted(os.path.relpath(os.path.join(d, n), pkg) for d, _, ns in os.walk(pkg) for n in ns)
+                  if f != "MANIFEST.json"},
     "reproducible": "dy ndërtime në dosje target të ndara dhanë hash-e identike",
     "sdk_js": {
         "npm_tarball_bytes": npm["size"], "npm_unpacked_bytes": npm["unpackedSize"],
@@ -102,6 +104,7 @@ m = {
         "measured_with": "npm pack --dry-run; esbuild@0.24 --bundle --minify --format=esm (src/index.js / vetëm verifyAccount)",
     },
 }
+assert "docs/SPEC.md" in m["artifacts"] and "docs/OPERIMI.md" in m["artifacts"], "G29: docs/ mungon nga MANIFEST"
 assert "LICENSE" in m["artifacts"] and "LICENSE" in m["sdk_js"]["npm_files"], "A23: LICENSE mungon"
 json.dump(m, open(os.path.join(pkg, "MANIFEST.json"), "w"), indent=1, ensure_ascii=False)
 print(json.dumps({k: m[k] for k in ("commit", "agave", "formats", "sdk_js")}, indent=1, ensure_ascii=False))
