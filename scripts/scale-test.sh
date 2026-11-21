@@ -73,31 +73,36 @@ echo "Do të matet:$RUN_SIZES llogari (motori pages)"
 
 # ------------------------------------------------------------------ 2. mjetet
 say "2/4 Mjetet dhe ndërtimi"
-need_pkgs=""
-for c in gcc clang pkg-config git curl python3; do command -v "$c" >/dev/null || need_pkgs="$need_pkgs $c"; done
-if [ -n "$need_pkgs" ] || ! ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1; then
-  echo "Po instalohen: build-essential clang libclang-dev pkg-config git curl python3 (kërkon fjalëkalimin e sudo)"
-  sudo apt-get update -q
-  sudo apt-get install -y -q build-essential clang libclang-dev pkg-config git curl python3
-fi
-if ! command -v cargo >/dev/null; then
-  echo "Po instalohet Rust (rustup)…"
-  curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-fi
-# shellcheck disable=SC1091
-source "$HOME/.cargo/env" 2>/dev/null || true
-# A22: kodi fshihet në fund vetëm nëse e kloni ky skript; një checkout ekzistues s'preket kurrë.
 CLONED=0
-if [ -d "$SRC_DIR/.git" ]; then
-  git -C "$SRC_DIR" pull -q
+if [ -n "${ZILJA_SCALE_BENCH:-}" ]; then
+  # Për testet e skriptit (scripts/test-pc-scripts.sh): një bench i gatshëm, pa instalime dhe pa ndërtim.
+  BENCH=$ZILJA_SCALE_BENCH; COMMIT=test
 else
-  [ ! -e "$SRC_DIR" ] || die "$SRC_DIR ekziston dhe s'është checkout git: s'e përdor dhe s'e fshij"
-  git clone -q "$REPO" "$SRC_DIR"
-  CLONED=1
+  need_pkgs=""
+  for c in gcc clang pkg-config git curl python3; do command -v "$c" >/dev/null || need_pkgs="$need_pkgs $c"; done
+  if [ -n "$need_pkgs" ] || ! ls /usr/lib/llvm-*/lib/libclang*.so* >/dev/null 2>&1; then
+    echo "Po instalohen: build-essential clang libclang-dev pkg-config git curl python3 (kërkon fjalëkalimin e sudo)"
+    sudo apt-get update -q
+    sudo apt-get install -y -q build-essential clang libclang-dev pkg-config git curl python3
+  fi
+  if ! command -v cargo >/dev/null; then
+    echo "Po instalohet Rust (rustup)…"
+    curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+  fi
+  # shellcheck disable=SC1091
+  source "$HOME/.cargo/env" 2>/dev/null || true
+  # A22: kodi fshihet në fund vetëm nëse e kloni ky skript; një checkout ekzistues s'preket kurrë.
+  if [ -d "$SRC_DIR/.git" ]; then
+    git -C "$SRC_DIR" pull -q
+  else
+    [ ! -e "$SRC_DIR" ] || die "$SRC_DIR ekziston dhe s'është checkout git: s'e përdor dhe s'e fshij"
+    git clone -q "$REPO" "$SRC_DIR"
+    CLONED=1
+  fi
+  (cd "$SRC_DIR" && cargo build -q --release -p zilja-bench --bin zilja-disk-bench)
+  BENCH="$SRC_DIR/target/release/zilja-disk-bench"
+  COMMIT=$(git -C "$SRC_DIR" rev-parse --short HEAD)
 fi
-(cd "$SRC_DIR" && cargo build -q --release -p zilja-bench --bin zilja-disk-bench)
-BENCH="$SRC_DIR/target/release/zilja-disk-bench"
-COMMIT=$(git -C "$SRC_DIR" rev-parse --short HEAD)
 echo "Gati (kodi: $COMMIT)."
 
 # ------------------------------------------------------------------ 3. matjet
@@ -112,6 +117,8 @@ mkdir -p "$RES"
   echo "}"
 } > "$RES/machine.json"
 
+# G17: matjet që dështojnë numërohen; skripti s'thotë "Mbaroi" si të kishin kaluar të gjitha.
+FAILED=()
 run_one() { # motori, llogari
   local eng=$1 n=$2
   local out="$RES/$eng-$n.json"
@@ -130,6 +137,7 @@ PY
   else
     echo "  ✗ dështoi; shih $RES/$eng-$n.log"
     rm -f "$out.tmp"
+    FAILED+=("$eng-$n")
   fi
   rm -rf -- "$run"
   echo "  ($(( (SECONDS - t0) / 60 )) min)"
@@ -143,9 +151,10 @@ done
 
 # ------------------------------------------------------------------ 4. raporti
 say "4/4 Raporti"
-python3 - "$RES" <<'PY'
+python3 - "$RES" "${FAILED[@]}" <<'PY'
 import json, glob, os, sys
 res = sys.argv[1]
+failed = sys.argv[2:]
 m = json.load(open(os.path.join(res, "machine.json")))
 rows = []
 for f in sorted(glob.glob(os.path.join(res, "*-*.json")), key=lambda p: (int(p.rsplit("-", 1)[1][:-5]), p)):
@@ -167,7 +176,10 @@ for r in rows:
         f"{r['device_write_mb_per_slot']:.1f} MB | {r['prove_ms_p50']*1000:.1f} µs | ~{r['proof_bytes_approx']:.0f} B | "
         f"{r['disk_bytes_per_account']:.0f} B | {r['process_rss_mb']:.0f} MB | {(r['snapshot_stage_seconds']+r['snapshot_build_seconds'])/60:.1f} min |"
     )
-lines += ["", "Të gjitha dëftesat e kontrolluara u verifikuan: " + ", ".join(r["proofs_verified"] for r in rows) + "."]
+if rows:
+    lines += ["", "Të gjitha dëftesat e kontrolluara u verifikuan: " + ", ".join(r["proofs_verified"] for r in rows) + "."]
+if failed:
+    lines += ["", "**DËSHTUAN:** " + ", ".join(failed) + " (shih <rasti>.log). Këto mungojnë nga tabela."]
 txt = "\n".join(lines) + "\n"
 open(os.path.join(res, "RAPORTI.md"), "w").write(txt)
 print(txt)
@@ -179,4 +191,14 @@ if [ "$KEEP_TOOLS" != 1 ] && [ "$CLONED" = 1 ]; then
 fi
 rmdir "$DATA_DIR" 2>/dev/null || true
 echo
-echo "✅ Mbaroi. Dërgoje këtë dosje: $RES  (RAPORTI.md + skedarët .json)"
+n_sizes=$(wc -w <<< "$RUN_SIZES")
+if [ ${#FAILED[@]} -eq 0 ]; then
+  echo "✅ Mbaroi. Dërgoje këtë dosje: $RES  (RAPORTI.md + skedarët .json)"
+elif [ ${#FAILED[@]} -lt "$n_sizes" ]; then
+  # G17: kodi 4 = disa matje dështuan, të tjerat mbaruan (si bench-matrix, M2).
+  echo "⚠ Mbaroi PJESËRISHT: dështuan ${FAILED[*]}. Dërgoje gjithsesi dosjen $RES (me skedarët .log)."
+  exit 4
+else
+  echo "✗ Asnjë matje s'mbaroi: ${FAILED[*]}. Shih skedarët .log në $RES."
+  exit 1
+fi

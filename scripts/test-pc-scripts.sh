@@ -100,6 +100,20 @@ check "G15: faza RPC e dështuar → riniset, pastaj ok" '[ $st1 = 4 ] && [ $st2
 fx
 check "G15: rast me ok → kapërcehet" 'grep -q "size-1: ka mbaruar më parë" "$W/b.log"'
 
+# G17: scale-test numëron matjet e dështuara: një nga dy → kodi 4, asnjë → kodi 1, të gjitha → 0.
+cat > "$W/fakedisk" <<'SH'
+#!/bin/bash
+[ "$1" = "$FAIL_N" ] && { echo "gabim" >&2; exit 2; }
+echo '{"engine":"pages","accounts_final":'"$1"',"apply_ms_p50":1,"apply_ms_p99":2,"device_write_mb_per_slot":1,"prove_ms_p50":0.001,"proof_bytes_approx":500,"disk_bytes_per_account":100,"process_rss_mb":10,"snapshot_stage_seconds":1,"snapshot_build_seconds":1,"proofs_verified":"10/10"}'
+SH
+chmod +x "$W/fakedisk"
+sc() { FAIL_N="$1" ZILJA_SCALE_BENCH="$W/fakedisk" SIZES="1000 2000" MIN_RAM_GB=0 DATA_DIR="$W/scd" OUT_DIR="$W/sco" bash "$ROOT/scripts/scale-test.sh" > "$W/sc.log" 2>&1; }
+sc none; a=$?; sc 2000; b=$?
+check "G17: scale-test → 0, ose 4 me një dështim" '[ $a = 0 ] && [ $b = 4 ] && grep -q "PJESËRISHT" "$W/sc.log" && grep -rq "DËSHTUAN:\*\* pages-2000" "$W/sco"'
+printf '#!/bin/bash\nexit 2\n' > "$W/fakedisk"
+sc none; c=$?
+check "G17: scale-test pa asnjë matje të mbaruar → kodi 1" '[ $c = 1 ] && grep -q "Asnjë matje" "$W/sc.log"'
+
 # M2: pc-run-all vazhdon pas fazës 3 të pjesshme dhe kryen tri nisjet e fazës 4.
 RESULTS="$W/res" TOOLS="$W/tools" PHASES="3 4" TESTNET_URL="$U/snapshot.tar.bz2" MAINNET_URL="$U/snapshot.tar.bz2" \
   T_EXTRA="BIN=/bin/false RPC_CLIENTS= BENCH_GROUPS=size LIMITS=1" M_EXTRA="BIN=/bin/false RPC_CLIENTS=" \
