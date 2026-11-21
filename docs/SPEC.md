@@ -155,7 +155,9 @@ gabuar kthejnë `-32602` (L-04). Shih `docs/OPERIMI.md` për portet dhe proxy-n.
 ```
 
 Me pemën në disk, `slot` mund të jetë çdo slot brenda kujtesës (`provableFrom` deri te sloti
-i fundit; parazgjedhja 32 slote). Dëftesa jep gjendjen pas slotit të fundit të rrënjosur
+i fundit; parazgjedhja 32 slote). `provableFrom` është prerja e dy kufijve: historia e pemës
+(`history_slots`) dhe root-et që zilja mban në RAM (1024 slotet e fundit, dhe pas rinisjes vetëm
+ato që nga rinisja), ndaj `history_slots` mbi 1024 s'e zgjat dot (G06). Dëftesa jep gjendjen pas slotit të fundit të rrënjosur
 ≤ `slot`, dhe **`slot` në përgjigje është ai slot i rrënjosur** (L-05). Kontrata (A19):
 - `slot` nën kujtesë → `-32007` (jashtë historisë);
 - `slot` mbi slotin e fundit të rrënjosur → `-32008` (s'është rrënjosur ende), jo sloti i fundit,

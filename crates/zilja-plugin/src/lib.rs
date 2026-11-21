@@ -76,7 +76,8 @@ pub struct Config {
     /// gjithmonë pages. RocksDB u hoq; `"rocksdb"` refuzohet me udhëzim.
     #[serde(default)]
     pub tree_engine: Option<String>,
-    /// Sa slote pas jepen dëftesa (vetëm me `db_path`). Parazgjedhja: 32.
+    /// Sa slote pas jepen dëftesa (vetëm me `db_path`). Parazgjedhja: 32. G06: mbi `ROOT_HISTORY` (1024) s'e zgjat
+    /// dritaren, sepse zilja s'ka root-et e sloteve më të vjetra; `provableFrom` jep kufirin e vërtetë.
     #[serde(default)]
     pub history_slots: Option<u64>,
     /// Sa nivele të pemës mbahen në RAM (vetëm me `db_path`, kur krijohet disku).

@@ -472,8 +472,17 @@ pub fn read_solana_keypair(path: &std::path::Path) -> std::io::Result<SigningKey
     Ok(key)
 }
 
+/// G06: sloti më i vjetër për të cilin `getAccountProof {slot}` jep vërtet një dëftesë. Kërkon dy gjëra:
+/// pema e mban atë gjendje (`history_slots`) dhe zilja ka root-in e tij në RAM (`ROOT_HISTORY`, dhe pas
+/// rinisjes vetëm slotet që nga rinisja). Jepet prerja e të dyjave, jo vetëm ajo e pemës.
+pub fn provable_from(st: &State) -> Option<Slot> {
+    let (lo, _) = st.tree.provable_range()?;
+    let first_root = st.roots.keys().next().copied().unwrap_or(st.slot);
+    Some(lo.max(first_root.min(st.slot)))
+}
+
 fn update_range(st: &State, m: &Metrics) {
-    if let Some((lo, _)) = st.tree.provable_range() {
+    if let Some(lo) = provable_from(st) {
         m.provable_from_slot.store(lo, Ordering::Relaxed);
     }
 }

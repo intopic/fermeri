@@ -166,3 +166,34 @@ fn unknown_state_version_is_refused_not_wiped() {
     assert!(open(dir.path()).is_err(), "gjendja duhet të jetë ende aty");
     assert_eq!(snapshot(dir.path()), before, "asnjë skedar s'duhet ndryshuar");
 }
+
+/// G06: `provableFrom` premton vetëm slote për të cilat dëftesa jepet vërtet. Pema mban
+/// `history_slots` (deri 100000), por zilja mban vetëm `ROOT_HISTORY` root-e në RAM.
+#[test]
+fn provable_from_is_what_proofs_deliver() {
+    use zilja_node::service::ROOT_HISTORY;
+    let dir = tempfile::tempdir().unwrap();
+    let hist = ROOT_HISTORY as u64 + 200;
+    let tree = PageTree::open(dir.path(), PageOptions { cache_depth: 8, history: hist, durable: false, ..Default::default() }).unwrap();
+    let mut svc = Service::start_opts(Options { tree: Some(Box::new(tree)), ..Default::default() }).unwrap();
+    svc.send(Event::Snapshot { slot: 10, pubkey: [1; 32], meta: m(100) });
+    svc.send(Event::EndOfStartup);
+    let last = 10 + ROOT_HISTORY as u64 + 100;
+    for s in 11..=last {
+        slot(&svc, s, 2, s * 10);
+    }
+    let sh = svc.shared.clone();
+    svc.shutdown();
+    let st = sh.state.read().unwrap();
+    let tree_lo = st.tree.provable_range().unwrap().0;
+    let first_root = *st.roots.keys().next().unwrap();
+    drop(st);
+    assert!(tree_lo < first_root, "rasti i testit: pema mban më shumë se root-et ({tree_lo} < {first_root})");
+    let from = rpc(&sh, r#"{"id":1,"method":"getZiljaRoot"}"#)["result"]["provableFrom"].as_u64().unwrap();
+    assert_eq!(from, first_root);
+    assert_eq!(proof_ok(&sh, 2, Some(from)), (from, from * 10));
+    assert_eq!(sh.metrics.provable_from_slot.load(std::sync::atomic::Ordering::Relaxed), from);
+    let pk = bs58::encode([2u8; 32]).into_string();
+    let r = rpc(&sh, &format!(r#"{{"id":1,"method":"getAccountProof","params":["{pk}",{{"slot":{}}}]}}"#, from - 1));
+    assert_eq!(r["error"]["code"], -32007, "{r}");
+}

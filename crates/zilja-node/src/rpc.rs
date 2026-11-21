@@ -255,7 +255,7 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
             // A19: `accounts` është i pemës aktuale: jepet vetëm kur përgjigja është për slotin aktual.
             let mut res = json!({
                 "slot": slot, "root": hex::encode(root), "complete": st.complete,
-                "provableFrom": st.tree.provable_range().map(|r| r.0),
+                "provableFrom": crate::service::provable_from(&st),
             });
             if slot == st.slot {
                 res["accounts"] = json!(st.tree.len());
