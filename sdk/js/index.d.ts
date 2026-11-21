@@ -134,8 +134,10 @@ export interface VerifyResult {
   /** `true` vetëm kur çdo kontroll kaloi: dëftesa, besimi ≥ `minTrust`, freskia dhe të dhënat (kur u kontrolluan). */
   ok: boolean;
   verdict: ClientVerdict;
-  slot: number;
-  root: string;
+  /** Sloti i dëftesës; `null` kur zilja s'u përgjigj ose dha një slot të pavlefshëm (G20). */
+  slot: number | null;
+  /** Root-i hex kundrejt të cilit u kontrollua; `null` kur s'ka (G20). */
+  root: string | null;
   /** Vlerat e kontrolluara (jo përgjigja e papërpunuar); `null` kur verdikti s'është "exists". */
   account: { lamports: bigint; owner: string; executable: boolean; dataLen: bigint; dataHash: string } | null;
   trust: RootTrust;

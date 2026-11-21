@@ -346,8 +346,9 @@ export class ZiljaClient {
     return {
       ok: d.ok,
       verdict: d.verdict,
-      slot: r?.slot,
-      root: rootHex,
+      // G20: si te tipet: numër i plotë ose null, kurrë undefined apo një vlerë e papastër nga zilja.
+      slot,
+      root: typeof rootHex === "string" ? rootHex : null,
       account: d.checks.proof === "valid" && verdict === "exists" ? account : null,
       trust: d.trust,
       agreeing: d.agreeing,
@@ -463,8 +464,9 @@ export class ZiljaClient {
       results.push({
         ok: d.ok,
         verdict: d.verdict,
-        slot: r?.slot,
-        root: rootHex,
+        // G20: si te tipet: numër i plotë ose null, kurrë undefined apo një vlerë e papastër nga zilja.
+        slot,
+        root: typeof rootHex === "string" ? rootHex : null,
         account: d.checks.proof === "valid" && verdicts[i] === "exists" ? accounts[i] : null,
         trust: d.trust,
         agreeing: d.agreeing,

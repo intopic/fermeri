@@ -269,6 +269,13 @@ async function web(opts, ziles) {
   expect("A14: slot tjetër nga referenca → invalid", !r14c.ok && r14c.errors.includes("anchor_slot_mismatch"), JSON.stringify(r14c.errors));
 }
 
+// G20: slot-i dhe root-i i rezultatit janë numër/tekst ose null, kurrë undefined apo vlera e papastër e zilës.
+{
+  const a = uniq();
+  const r = await new ZiljaClient({ endpoints: [a], minTrust: "single", fetch: mock({ ziles: { [a]: { proof: { ...proofAt(100), slot: "100", root: 7 } } } }) }).verifyAccount(inc.pubkey);
+  expect("G20: slot jo-numër → null, root jo-tekst → null", r.slot === null && r.root === null && !r.ok, JSON.stringify({ slot: r.slot, root: r.root }));
+}
+
 // G19: faqja shpjegon çdo vlerë të freskisë dhe e mban mbrojtjen nga kthimi pas veç për çdo kontekst.
 {
   const a = uniq();
