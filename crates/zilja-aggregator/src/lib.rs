@@ -36,6 +36,9 @@ pub const REVOCATIONS_TTL: Duration = Duration::from_secs(30);
 pub const FANOUT: usize = 64;
 /// Sa larg nga sloti më i lartë i njohur mund të jetë një kërkesë (poshtë; lart lejohen 4).
 pub const MAX_BEHIND: u64 = 4096;
+/// G09: sa kohë vlen maja e raportuar nga një zile. Më e vjetër s'merret parasysh (dhe /health jep 503
+/// kur s'ka asnjë të freskët).
+pub const TIP_FRESH: Duration = Duration::from_secs(30);
 /// Sa revokime mbahen më së shumti (një zile keqdashëse s'e mbush kujtesën).
 pub const MAX_REVOCATIONS: usize = 10_000;
 
@@ -63,7 +66,12 @@ struct Entry {
 
 struct Inner {
     cache: BTreeMap<u64, Arc<Mutex<Entry>>>,
-    highest: u64,
+    /// G09: maja e fundit e çdo zileje dhe kur u mor. Maja e aggregator-it është mediana e atyre të
+    /// freskëta, ndaj një zile që raporton një slot shumë të lartë (gabim ose keqdashje) s'e zhvendos
+    /// dritaren për të gjithë, dhe maja mund edhe të bjerë kur zilet e korrigjojnë.
+    tips: HashMap<String, (u64, Instant)>,
+    /// Sloti më i lartë që të paktën një zile ka firmosur (nga bundle-t); lejohet vetëm deri 4 mbi medianën.
+    seen: u64,
     window_start: Instant,
     new_in_window: u32,
     revocations: Vec<Value>,
@@ -91,7 +99,8 @@ impl<F: Fetch> Aggregator<F> {
             rev_refresh: Mutex::new(()),
             inner: Mutex::new(Inner {
                 cache: BTreeMap::new(),
-                highest: 0,
+                tips: HashMap::new(),
+                seen: 0,
                 window_start: Instant::now(),
                 new_in_window: 0,
                 revocations: Vec::new(),
@@ -154,10 +163,32 @@ impl<F: Fetch> Aggregator<F> {
     /// Sloti më i lartë që njohin zilet (nga firmat e fundit), për kufirin e kërkesave.
     pub fn learn_tip(&self) {
         let got = self.fan_out(&self.ziljas, "getZiljaRoot", &json!([]));
-        let tip = got.iter().filter_map(|(_, r)| r.as_ref().ok()?.get("slot")?.as_u64()).max();
-        if let Some(t) = tip {
-            let mut g = self.inner.lock().unwrap();
-            g.highest = g.highest.max(t);
+        let now = Instant::now();
+        let mut g = self.inner.lock().unwrap();
+        for (url, r) in got {
+            if let Some(t) = r.as_ref().ok().and_then(|v| v.get("slot")?.as_u64()) {
+                g.tips.insert(url, (t, now));
+            }
+        }
+    }
+
+    /// G09: mediana (e sipërme) e majave të freskëta; pa asnjë të freskët, e majave të fundit të njohura.
+    /// 0 = s'dihet ende asnjë.
+    fn tip(g: &Inner) -> (u64, usize) {
+        let mut fresh: Vec<u64> = g.tips.values().filter(|(_, at)| at.elapsed() < TIP_FRESH).map(|(t, _)| *t).collect();
+        let n = fresh.len();
+        if fresh.is_empty() {
+            fresh = g.tips.values().map(|(t, _)| *t).collect();
+        }
+        fresh.sort_unstable();
+        (fresh.get(fresh.len() / 2).copied().unwrap_or(0), n)
+    }
+
+    /// Maja që kufizon kërkesat: mediana e zileve, plus slotet e firmosura deri 4 mbi të.
+    fn highest(g: &Inner) -> u64 {
+        match Self::tip(g).0 {
+            0 => g.seen,
+            t => t.max(g.seen.min(t.saturating_add(4))),
         }
     }
 
@@ -211,8 +242,9 @@ impl<F: Fetch> Aggregator<F> {
     pub fn bundle(&self, slot: u64) -> Result<Value, (i64, String)> {
         let entry = {
             let mut g = self.inner.lock().unwrap();
-            if g.highest > 0 && (slot.saturating_add(MAX_BEHIND) < g.highest || slot > g.highest.saturating_add(4)) {
-                return Err((-32007, format!("sloti {slot} është larg majës së njohur ({})", g.highest)));
+            let highest = Self::highest(&g);
+            if highest > 0 && (slot.saturating_add(MAX_BEHIND) < highest || slot > highest.saturating_add(4)) {
+                return Err((-32007, format!("sloti {slot} është larg majës së njohur ({highest})")));
             }
             match g.cache.get(&slot) {
                 Some(e) => e.clone(),
@@ -252,7 +284,7 @@ impl<F: Fetch> Aggregator<F> {
             // largët që askush s'e ka firmosur s'e zhvendos dritaren e kërkesave të pranuara.
             if !e.got.is_empty() {
                 let mut g = self.inner.lock().unwrap();
-                g.highest = g.highest.max(slot);
+                g.seen = g.seen.max(slot);
             }
         }
         let mut atts: Vec<Value> = e.got.values().cloned().collect();
@@ -298,16 +330,24 @@ impl<F: Fetch> HttpHandler for Aggregator<F> {
             _ => err(id, -32601, "metodë e panjohur"),
         }
     }
+    /// G09: 200 vetëm kur të paktën një zile ka raportuar majën brenda `TIP_FRESH`; përndryshe
+    /// aggregator-i s'arrin asnjë zile dhe s'jep dot bundle të dobishme.
     fn health(&self) -> (u16, &'static str) {
-        (200, "ok")
+        let g = self.inner.lock().unwrap();
+        if Self::tip(&g).1 > 0 {
+            (200, "ok")
+        } else {
+            (503, "asnjë zile s'u përgjigj së fundi")
+        }
     }
     fn metrics(&self) -> String {
         let g = self.inner.lock().unwrap();
         format!(
-            "zilja_aggregator_ziljas {}\nzilja_aggregator_cached_slots {}\nzilja_aggregator_highest_slot {}\nzilja_aggregator_bundles_served_total {}\n",
+            "zilja_aggregator_ziljas {}\nzilja_aggregator_fresh_tips {}\nzilja_aggregator_cached_slots {}\nzilja_aggregator_highest_slot {}\nzilja_aggregator_bundles_served_total {}\n",
             self.ziljas.len(),
+            Self::tip(&g).1,
             g.cache.len(),
-            g.highest,
+            Self::highest(&g),
             self.served.load(std::sync::atomic::Ordering::Relaxed)
         )
     }

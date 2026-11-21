@@ -182,3 +182,27 @@ fn many_slow_ziljas_do_not_exceed_the_request_deadline() {
     assert!(took < zilja_node::rpc::REQUEST_DEADLINE, "mbi afatin e serverit: {took:?}");
     assert_eq!((b["ziljas"].as_u64(), b["answered"].as_u64()), (Some(200), Some(1)), "{b}");
 }
+
+/// G09: maja është mediana e zileve, jo maksimumi që s'bie kurrë: një zile që raporton një slot
+/// shumë të lartë s'i bllokon kërkesat e të tjerave. /health jep
+/// 503 derisa ndonjë zile të përgjigjet.
+#[test]
+fn tip_is_the_median_and_health_reports_readiness() {
+    struct Tips;
+    impl Fetch for Tips {
+        fn call(&self, url: &str, m: &str, _: Value) -> Result<Value, String> {
+            match (m, url) {
+                ("getZiljaRoot", "http://liar") => Ok(json!({"slot": 1_000_000_000})),
+                ("getZiljaRoot", _) => Ok(json!({"slot": 10_000})),
+                _ => Err("s'ka".into()),
+            }
+        }
+    }
+    let agg = Aggregator::new(vec!["http://a".into(), "http://b".into(), "http://liar".into()], G, Tips);
+    assert_eq!(agg.health().0, 503, "asnjë majë ende");
+    agg.learn_tip();
+    assert_eq!(agg.health().0, 200);
+    assert!(agg.bundle(10_000).is_ok(), "një zile me majë të rreme s'e zhvendos dritaren");
+    assert_eq!(agg.bundle(1_000_000_000).unwrap_err().0, -32007);
+    assert!(agg.metrics().contains("zilja_aggregator_highest_slot 10000\n"), "{}", agg.metrics());
+}
