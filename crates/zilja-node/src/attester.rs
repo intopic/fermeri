@@ -71,9 +71,15 @@ pub struct AttesterInfo {
 /// R5-1: lexon skedarin e revokimeve: një objekt `{validator, signer, signature}` ose një listë
 /// e tyre. Kthen vetëm ato të vlefshme për `genesis` dhe numrin e të hedhurave.
 pub fn read_revocations_file(path: &Path, genesis: &Hash) -> Result<(Vec<Revocation>, usize), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    parse_revocations(path, &bytes, genesis)
+}
+
+/// G08: revokimet nga bajtet që u lexuan një herë (të njëjtat që ruhen për krahasim).
+fn parse_revocations(path: &Path, bytes: &[u8], genesis: &Hash) -> Result<(Vec<Revocation>, usize), String> {
     let at = |e: String| format!("{}: {e}", path.display());
-    let text = std::fs::read_to_string(path).map_err(|e| at(e.to_string()))?;
-    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| at(e.to_string()))?;
+    let text = std::str::from_utf8(bytes).map_err(|e| at(e.to_string()))?;
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| at(e.to_string()))?;
     let list = match v {
         serde_json::Value::Array(a) => a,
         o @ serde_json::Value::Object(_) => vec![o],
@@ -101,9 +107,15 @@ pub fn read_revocations_file(path: &Path, genesis: &Hash) -> Result<(Vec<Revocat
 /// Kthen identitetin dhe autorizimin; firma kontrollohet nga `Attester`. Një skedar v1 (pa afat)
 /// refuzohet me udhëzimin për ta rikrijuar.
 pub fn read_authorization_file(path: &Path) -> Result<([u8; 32], Authorization), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    parse_authorization(path, &bytes)
+}
+
+/// G08: autorizimi nga bajtet që u lexuan një herë.
+fn parse_authorization(path: &Path, bytes: &[u8]) -> Result<([u8; 32], Authorization), String> {
     let at = |e: String| format!("{}: {e}", path.display());
-    let text = std::fs::read_to_string(path).map_err(|e| at(e.to_string()))?;
-    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| at(e.to_string()))?;
+    let text = std::str::from_utf8(bytes).map_err(|e| at(e.to_string()))?;
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| at(e.to_string()))?;
     if v.get("version").and_then(|x| x.as_u64()) != Some(2) {
         return Err(at("autorizim i vjetër (v1, pa afat) ose i panjohur: s'pranohet më. Rikrijoje me `zilja-authorize ... <from_epoch>` (v2, maksimumi 15 epoka)".into()));
     }
@@ -188,10 +200,14 @@ impl Attester {
             return Err("një çelës i veçantë firmosjeje kërkon autorizim nga identiteti".into());
         }
         // R5-1: revokimet; një çelës i revokuar nga identiteti i vet s'ngarkohet.
+        // G08: skedari lexohet një herë; po këto bajte ruhen për krahasimin e rilexuar.
+        let mut rev_seen = None;
         let revocations = match &opts.revocations_file {
             None => Vec::new(),
             Some(p) => {
-                let (r, bad) = read_revocations_file(p, &opts.genesis)?;
+                let bytes = std::fs::read(p).map_err(|e| format!("{}: {e}", p.display()))?;
+                let (r, bad) = parse_revocations(p, &bytes, &opts.genesis)?;
+                rev_seen = Some(bytes);
                 if bad > 0 {
                     log::warn!("zilja: {}: {bad} revokime të pavlefshme u injoruan", p.display());
                 }
@@ -207,9 +223,10 @@ impl Attester {
             Some(p) => Some(lock_exclusive(&lock_path(p))?),
             None => None,
         };
+        // G08: autorizimi erdhi nga thirrësi (i lexuar më herët). `auth_seen = None` e detyron rilexuarjen e
+        // parë ta krahasojë me skedarin e tanishëm, ndaj një ndryshim mes dy leximeve s'humbet.
+        let auth_seen = None;
         let Some(p) = opts.log.clone() else {
-            let auth_seen = auth_bytes(&opts);
-            let rev_seen = rev_bytes(&opts);
             return Ok(Attester { opts, _lock: lock, signed: BTreeMap::new(), floor: 0, file: None, lines: 0, refused: 0, auth_seen, auth_checked: None, revocations, rev_seen, rev_checked: None, self_revoked: false });
         };
         let ctx = context_line(&opts);
@@ -306,8 +323,6 @@ impl Attester {
             Some(h) => return Err(bad(format!("format i panjohur i log-ut të firmave: {h:?} (pritej {HEADER:?})"))),
         };
         let file = Some(OpenOptions::new().append(true).open(&p).map_err(|e| e.to_string())?);
-        let auth_seen = auth_bytes(&opts);
-        let rev_seen = rev_bytes(&opts);
         Ok(Attester { opts, _lock: lock, signed, floor, file, lines, refused: 0, auth_seen, auth_checked: None, revocations, rev_seen, rev_checked: None, self_revoked: false })
     }
 
@@ -327,8 +342,14 @@ impl Attester {
         if m == self.rev_seen {
             return false;
         }
+        let Some(bytes) = m.clone() else {
+            self.rev_seen = None;
+            log::error!("zilja: {} s'u lexua; mbeten revokimet e mëparshme", path.display());
+            return false;
+        };
         self.rev_seen = m;
-        match read_revocations_file(&path, &self.opts.genesis) {
+        // G08: nga po këto bajte, jo nga një lexim i dytë i skedarit.
+        match parse_revocations(&path, &bytes, &self.opts.genesis) {
             Ok((r, bad)) => {
                 if bad > 0 {
                     log::warn!("zilja: {}: {bad} revokime të pavlefshme u injoruan", path.display());
@@ -369,9 +390,15 @@ impl Attester {
         if m == self.auth_seen {
             return false;
         }
+        let Some(bytes) = m.clone() else {
+            self.auth_seen = None;
+            log::error!("zilja: {} s'u lexua; mbetet autorizimi i vjetër", path.display());
+            return false;
+        };
         self.auth_seen = m;
         let signer = self.opts.key.verifying_key().to_bytes();
-        match read_authorization_file(&path) {
+        // G08: nga po këto bajte, jo nga një lexim i dytë i skedarit.
+        match parse_authorization(&path, &bytes) {
             Ok((id, a)) if Some(id) == self.opts.identity && a.signed_by(&id, &self.opts.genesis, &signer) => {
                 if self.opts.authorization == Some(a) {
                     return false;
@@ -627,6 +654,49 @@ mod tests {
         File::options().write(true).open(&f).unwrap().set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(9999)).unwrap();
         assert!(!refresh(&mut at));
         assert_eq!(now(&at), Some((813, 828)));
+    }
+
+    /// G08: skedari ndryshoi mes leximit nga thirrësi dhe hapjes: rilexuarja e parë e merr të riun,
+    /// nuk e ngatërron me atë që u lexua tashmë.
+    #[test]
+    fn authorization_changed_before_open_is_picked_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("auth.json");
+        let id = SigningKey::from_bytes(&[9; 32]);
+        let key = SigningKey::from_bytes(&[3; 32]);
+        let g = [1u8; 32];
+        let body = |from: u64, until: u64| {
+            serde_json::json!({
+                "version": 2,
+                "identity": bs58::encode(id.verifying_key().to_bytes()).into_string(),
+                "signer": bs58::encode(key.verifying_key().to_bytes()).into_string(),
+                "genesis": bs58::encode(g).into_string(),
+                "fromEpoch": from, "untilEpoch": until,
+                "authorization": hex::encode(auth(&id, &g, &key, from, until).signature),
+            })
+            .to_string()
+        };
+        std::fs::write(&f, body(0, 15)).unwrap();
+        let (_, a0) = read_authorization_file(&f).unwrap();
+        std::fs::write(&f, body(10, 25)).unwrap();
+        let mut o = dedicated(&id, &key, g, Some(a0));
+        o.authorization_file = Some(f.clone());
+        let mut at = Attester::open(o).unwrap();
+        assert!(at.refresh_authorization());
+        assert_eq!(at.info().authorization.unwrap().from_epoch, 10);
+    }
+
+    /// G08: revokimet lexohen një herë në hapje; një rilexim pa ndryshim s'raporton ndryshim.
+    #[test]
+    fn revocations_read_once_at_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("rev.json");
+        std::fs::write(&f, "[]").unwrap();
+        let mut o = opts(None);
+        o.revocations_file = Some(f.clone());
+        let mut at = Attester::open(o).unwrap();
+        assert_eq!(at.rev_seen.as_deref(), Some(&b"[]"[..]));
+        assert!(!at.refresh_revocations());
     }
 
     /// Rinovimi me `cp` + `mv` (si në OPERIMI.md): edhe një skedar me mtime më të vjetër se i
