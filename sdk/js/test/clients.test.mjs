@@ -150,6 +150,19 @@ const att = (x, slot, root) => ({ slot, root, validator: x.b58, signer: null, au
   expect("R5-1: pa revokim → kuorum", ok.ok === true && ok.trust === "quorum", JSON.stringify({ ok: ok.ok, trust: ok.trust, errors: ok.errors }));
   expect("R5-1: revokim nga një zile tjetër → s'ka kuorum", revoked.trust !== "quorum", JSON.stringify({ ok: revoked.ok, trust: revoked.trust }));
   expect("R5-1: revokim i falsifikuar → kuorum", forged.ok === true && forged.trust === "quorum", JSON.stringify({ ok: forged.ok, trust: forged.trust }));
+  // G03: e njëjta instancë s'e harron revokimin kur burimi s'e jep më herën tjetër.
+  {
+    const [a, b, c] = [uniq(), uniq(), uniq()];
+    const ziles = { [a]: { proof: proofAt(100), attest: ded }, [b]: { proof: proofAt(100), attest: att(vals[1], 100, inc.root) }, [c]: { proof: proofAt(100), revocations: [real] } };
+    const f = mock({ ziles, sol: { getVoteAccounts: voteAccounts, getSlot: 100, getEpochInfo: { absoluteSlot: 100, slotIndex: 100, slotsInEpoch: 432000, epoch: 0 } } });
+    const client = new ZiljaClient({ endpoints: [a, b, c], solanaRpc: "http://sol", quorum: true, minTrust: "quorum", genesisHash: GEN, compareData: false, fetch: f });
+    const first = await client.verifyAccount(inc.pubkey);
+    ziles[c].revocations = [];
+    const second = await client.verifyAccount(inc.pubkey);
+    expect("G03: revokimi mbetet në instancë kur burimi mungon", first.trust !== "quorum" && second.trust !== "quorum", JSON.stringify({ first: first.trust, second: second.trust }));
+    const learned = client.learnedRevocations(GEN);
+    expect("G03: learnedRevocations jep revokimin e verifikuar", learned.length === 1 && learned[0].signer === s0.b58, JSON.stringify(learned));
+  }
 }
 
 // R5-3: aggregator-i i pabesuar: firmat e shumë zileve me një thirrje. Firmat e vërteta numërohen;

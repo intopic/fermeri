@@ -1,7 +1,7 @@
 // ZiljaClient: një thirrje e vetme për kuletat: verifyAccount(pubkey). Vendimi merret nga
 // politika e përbashkët (policy.js), e njëjta me web-in dhe CLI-në (P-11).
 import { verifyAccount, verifyMultiProof, dataMatches, normalizeAccount, b58decode, bytesToHex, toU64, MAX_MULTI_KEYS } from "./verifier.js";
-import { verifyQuorum, stakeTableFromVoteAccounts } from "./attest.js";
+import { verifyQuorum, stakeTableFromVoteAccounts, verifyRevocation } from "./attest.js";
 import { decide, configErrors, DEFAULTS, TRUST } from "./policy.js";
 import { parseJsonExact } from "./json.js";
 
@@ -87,6 +87,13 @@ export class ZiljaClient {
     this.genesisHash = o.genesisHash;
     /** R5-1: revokime shtesë (p.sh. të publikuara nga validatori); bashkohen me ato të zileve. */
     this.revocations = o.revocations ?? [];
+    /**
+     * G03: revokimet e verifikuara që kjo instancë ka parë nga rrjeti, sipas genesis-it:
+     * Map<genesisHex, Map<"validator:signer", Revocation>>. Vetëm rriten (një revokim s'harrohet
+     * kur burimi mungon herën tjetër). Kuleta mund t'i ruajë me `learnedRevocations()` dhe t'i japë
+     * sërish te `revocations` pas rinisjes.
+     */
+    this._learnedRevs = new Map();
     /** R5-3: aggregator-ë të pabesuar për firmat (`getZiljaQuorumBundle`), për kuorumin. */
     this.aggregators = o.aggregators ?? [];
     this.minTrust = o.minTrust ?? DEFAULTS.minTrust;
@@ -199,6 +206,14 @@ export class ZiljaClient {
         for (const x of await Promise.allSettled(this.endpoints.map((ep) => this.rpc(ep, "getZiljaRevocations", [])))) {
           if (x.status === "fulfilled" && Array.isArray(x.value)) revs.push(...x.value.filter((r) => r && typeof r === "object"));
         }
+        // G03: bashkimi monoton: revokimet e verifikuara të kërkesave të mëparshme mbeten.
+        let learned = this._learnedRevs.get(genesisHex);
+        if (!learned) this._learnedRevs.set(genesisHex, (learned = new Map()));
+        for (const r of revs) {
+          const k = `${r.validator}:${r.signer}`;
+          if (!learned.has(k) && (await verifyRevocation(genesisHex, r))) learned.set(k, { validator: r.validator, signer: r.signer, signature: r.signature });
+        }
+        revs.push(...learned.values());
         const byRoot = new Map();
         for (const a of got) {
           const x = a.status === "fulfilled" ? a.value : null;
@@ -333,6 +348,11 @@ export class ZiljaClient {
    * @param {string[]} pubkeys base58, 1..=256
    * @param {{slot?: number}} [opts]
    */
+  /** G03: revokimet e verifikuara të mësuara nga rrjeti për këtë genesis (hex), për t'i ruajtur. */
+  learnedRevocations(genesisHex) {
+    return [...(this._learnedRevs.get(String(genesisHex).toLowerCase())?.values() ?? [])];
+  }
+
   async verifyAccounts(pubkeys, opts = {}) {
     if (!Array.isArray(pubkeys) || pubkeys.length === 0 || pubkeys.length > MAX_MULTI_KEYS) {
       throw new Error(`duhen 1..=${MAX_MULTI_KEYS} pubkey`);

@@ -158,6 +158,8 @@ export class ZiljaClient {
   /** Sloti më i lartë i pranuar në këtë instancë: një përgjigje më e vjetër jep "rollback". */
   highestSeen: number | null;
   verifyAccount(pubkey: string, opts?: { slot?: number }): Promise<VerifyResult>;
+  /** G03: revokimet e verifikuara që kjo instancë ka mësuar nga rrjeti (vetëm rriten); ruaji dhe jepi te `revocations` pas rinisjes. */
+  learnedRevocations(genesisHex: string): Revocation[];
   /** R5-2: shumë llogari me një multi-proof (`getMultipleAccountProofs`); një rezultat për çdo pubkey, në radhën e kërkesës. */
   verifyAccounts(pubkeys: string[], opts?: { slot?: number }): Promise<VerifyResult[]>;
 }
