@@ -125,6 +125,13 @@ class FakePublicKey {
   expect("bytesToBase64 pa Buffer, 3 MB, pa spread", noBuffer === withBuffer);
 }
 
+// G02: kit getMultipleAccounts mbi 256 adresa s'pohon një slot të përbashkët që s'e ka.
+{
+  let threw = false;
+  try { await createVerifiedRpc(world()).getMultipleAccounts(Array.from({ length: 257 }, () => fx.wallet)).send(); } catch (e) { threw = /256/.test(e.message); }
+  expect("G02: kit getMultipleAccounts(257) → gabim i qartë", threw);
+}
+
 // G01: kit getBalance me onUnverified "null": dështimi → null, mungesa e provuar → 0n.
 {
   const bad = await createVerifiedRpc(world({ ziljaRoot: "ab".repeat(32) }), { onUnverified: "null" }).getBalance(fx.wallet).send();

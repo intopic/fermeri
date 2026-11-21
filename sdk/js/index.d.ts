@@ -213,6 +213,7 @@ export function createVerifiedRpc(
   o?: { onUnverified?: "throw" | "null" },
 ): {
   getAccountInfo(address: string): { send(): Promise<{ context: { slot: bigint }; value: KitAccount | null }> };
+  /** ≤ 256 adresa (një multi-proof, një `context.slot`); më shumë hedh gabim (G02). */
   getMultipleAccounts(addresses: string[]): { send(): Promise<{ context: { slot: bigint }; value: (KitAccount | null)[] }> };
   /** `value`: lamports; `0n` vetëm kur mungesa provohet; `null` kur verifikimi dështoi (me `onUnverified: "null"`). */
   getBalance(address: string): { send(): Promise<{ context: { slot: bigint }; value: bigint | null }> };

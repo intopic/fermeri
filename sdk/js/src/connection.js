@@ -3,7 +3,7 @@
 // kundër Ziles: dëftesa (një multi-proof për shumë llogari), besimi te root-i (minTrust), freskia, dhe
 // bajtet e RPC-së të krahasuara me `dataHash` të vulosur. Pa varësi: s'importon web3.js ose kit.
 import { ZiljaClient } from "./client.js";
-import { b58decode } from "./verifier.js";
+import { b58decode, MAX_MULTI_KEYS } from "./verifier.js";
 
 export const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 export const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
@@ -108,7 +108,10 @@ export class VerifiableConnection {
     this.onUnverified = onUnverified;
   }
 
-  /** Verifikon të gjitha me një multi-proof; kthen [{ok, exists, account, bytes, slot}] ose hedh. */
+  /**
+   * Verifikon të gjitha me një multi-proof (≤ 256; listat më të gjata ndahen në copa, secila me
+   * slotin e vet: `slot` i çdo elementi është i copës së tij); kthen [{ok, exists, account, bytes, slot}] ose hedh.
+   */
   async verified(pubkeys) {
     const keys = pubkeys.map(addr);
     // Multi-proof-i mban ≤ 256 llogari: listat më të gjata ndahen.
@@ -217,7 +220,15 @@ export function createVerifiedRpc(zilja, { onUnverified = "throw" } = {}) {
     getMultipleAccounts: (addresses) =>
       wrap(async () => {
         if (addresses.length === 0) return { context: { slot: 0n }, value: [] };
+        // G02: një `context.slot` i vetëm pohon një pamje të vetme. Mbi një multi-proof (256), copat
+        // do të ishin në slote të ndryshme dhe pamja e bashkuar mund të mos ketë ekzistuar kurrë.
+        // (Edhe RPC-ja e Solana-s pranon vetëm ≤ 100 adresa për kërkesë.)
+        if (addresses.length > MAX_MULTI_KEYS) {
+          throw new Error(`getMultipleAccounts: ≤ ${MAX_MULTI_KEYS} adresa për kërkesë (një multi-proof, një slot); ndaje listën`);
+        }
         const vs = await conn.verified(addresses);
+        const slots = new Set(vs.map((v) => v.slot));
+        if (slots.size > 1) throw new Error("getMultipleAccounts: multi-proof-i ktheu slote të ndryshme");
         return { context: { slot: BigInt(vs[0]?.slot ?? 0) }, value: vs.map(kitInfo) };
       }),
     getBalance: (address) =>
