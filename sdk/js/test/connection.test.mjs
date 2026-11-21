@@ -1,7 +1,7 @@
 // R5-4: VerifiableConnection (web3.js) dhe createVerifiedRpc (kit) kthejnë vetëm llogari të
 // verifikuara: dëftesa + root-i (2 zile dakord) + bajtet e RPC-së = dataHash i vulosur.
 import { readFileSync } from "node:fs";
-import { VerifiableConnection, createVerifiedRpc, VerificationError, parseTokenAccount, bytesToBase64, ZiljaClient } from "../src/index.js";
+import { VerifiableConnection, createVerifiedRpc, VerificationError, parseTokenAccount, parseMint, bytesToBase64, ZiljaClient } from "../src/index.js";
 
 const fx = JSON.parse(readFileSync(new URL("./vectors.json", import.meta.url), "utf8")).connection;
 let fail = 0;
@@ -147,6 +147,42 @@ class FakePublicKey {
   const r = await new ZiljaClient({ ...world({ noContextSecond: true }), minTrust: "agreement" }).verifyAccounts(list);
   const slots = r.map((x) => x.data && x.data.rpcSlot);
   expect("L5: rpcSlot = 100 edhe kur një copë s'ka context", slots.every((s) => s === 100), JSON.stringify(slots.slice(0, 3)));
+}
+
+// G12: vetëm llogari tokeni / mint të vërteta lexohen si të tilla.
+{
+  const acct = (len, kind) => {
+    const d = new Uint8Array(len);
+    d.fill(7, 0, 64);
+    d[64] = 5; // amount = 5
+    d[108] = 1; // initialized
+    if (len > 165) d[165] = kind;
+    return d;
+  };
+  const mint = (len, kind) => {
+    const d = new Uint8Array(len);
+    d[36] = 9; // supply = 9
+    d[44] = 6; // decimals
+    d[45] = 1;
+    if (len > 165) d[165] = kind;
+    return d;
+  };
+  const throws = (f) => { try { f(); return false; } catch { return true; } };
+  expect("G12: llogari 165 bajte", parseTokenAccount(acct(165)).amount === 5n);
+  expect("G12: Token-2022 me zgjerime (AccountType 2)", parseTokenAccount(acct(200, 2)).amount === 5n);
+  expect("G12: 200 bajte me AccountType 1 (mint) ≠ llogari", throws(() => parseTokenAccount(acct(200, 1))));
+  expect("G12: Multisig (355 bajte) ≠ llogari", throws(() => parseTokenAccount(acct(355, 2))));
+  expect("G12: 170 bajte pa AccountType ≠ llogari", throws(() => parseTokenAccount(acct(170, 0))));
+  const badState = acct(165); badState[108] = 3;
+  expect("G12: gjendje e panjohur → gabim", throws(() => parseTokenAccount(badState)));
+  const badTag = acct(165); badTag[72] = 2;
+  expect("G12: etiketë COption 2 → gabim", throws(() => parseTokenAccount(badTag)));
+  expect("G12: mint 82 bajte", parseMint(mint(82)).decimals === 6 && parseMint(mint(82)).supply === 9n);
+  expect("G12: mint Token-2022 (AccountType 1)", parseMint(mint(250, 1)).decimals === 6);
+  expect("G12: llogari 165 bajte ≠ mint", throws(() => parseMint(acct(165))));
+  expect("G12: 100 bajte ≠ mint", throws(() => parseMint(mint(100))));
+  const badInit = mint(82); badInit[45] = 2;
+  expect("G12: is_initialized 2 → gabim", throws(() => parseMint(badInit)));
 }
 
 if (fail) {

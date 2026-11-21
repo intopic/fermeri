@@ -46,31 +46,62 @@ const u64le = (b, o) => {
   return v;
 };
 
+/** G12: Multisig i SPL Token ka po këtë gjatësi; Token-2022 s'krijon kurrë llogari me zgjerime me këtë gjatësi. */
+const MULTISIG_LEN = 355;
+const ACCOUNT_LEN = 165;
+const MINT_LEN = 82;
+
+/** COption<T>: etiketa u32 LE duhet 0 ose 1; çdo vlerë tjetër = të dhëna që s'janë të këtij lloji. */
+function coptionAt(data, o) {
+  const tag = (data[o] | (data[o + 1] << 8) | (data[o + 2] << 16)) + data[o + 3] * 2 ** 24;
+  if (tag !== 0 && tag !== 1) throw new Error(`etiketë COption e pavlefshme (${tag}) te bajti ${o}`);
+  return tag === 1;
+}
+
 /**
- * SPL Token / Token-2022: pjesa bazë e llogarisë (165 bajtet e para). Hedh gabim për gjatësi
- * të pavlefshme. Mban vetëm fushat; programin pronar e kontrollon thirrësi.
+ * G12: lloji i llogarisë sipas gjatësisë: ekzaktësisht 165 (Account) / 82 (Mint), ose Token-2022
+ * me zgjerime: > 165 bajte, jo 355 (Multisig), me AccountType te bajti 165 (1 = Mint, 2 = Account).
+ */
+function tokenKind(data) {
+  if (!(data instanceof Uint8Array)) return null;
+  if (data.length === ACCOUNT_LEN) return "account";
+  if (data.length === MINT_LEN) return "mint";
+  if (data.length > ACCOUNT_LEN && data.length !== MULTISIG_LEN) return data[ACCOUNT_LEN] === 2 ? "account" : data[ACCOUNT_LEN] === 1 ? "mint" : null;
+  return null;
+}
+
+/**
+ * SPL Token / Token-2022: pjesa bazë e llogarisë (165 bajtet e para). Hedh gabim kur bajtet s'janë
+ * një llogari tokeni (G12: gjatësi, Multisig, AccountType, gjendje ose COption të pavlefshme). Mban
+ * vetëm fushat; programin pronar e kontrollon thirrësi.
  */
 export function parseTokenAccount(data) {
-  if (!(data instanceof Uint8Array) || data.length < 165) throw new Error("s'është llogari tokeni (< 165 bajte)");
-  const coption = (o) => (data[o] | (data[o + 1] << 8) | (data[o + 2] << 16) | (data[o + 3] << 24)) === 1;
+  if (tokenKind(data) !== "account") throw new Error("s'është llogari tokeni (gjatësia ose AccountType)");
   const state = data[108];
   if (state === 0) throw new Error("llogari tokeni e painicializuar");
+  if (state !== 1 && state !== 2) throw new Error(`gjendje e panjohur e llogarisë së tokenit (${state})`);
+  const hasDelegate = coptionAt(data, 72);
+  const native = coptionAt(data, 109);
+  const hasClose = coptionAt(data, 129);
   return {
     mint: b58encode(data.subarray(0, 32)),
     owner: b58encode(data.subarray(32, 64)),
     amount: u64le(data, 64),
-    delegate: coption(72) ? b58encode(data.subarray(76, 108)) : null,
-    state: state === 1 ? "initialized" : state === 2 ? "frozen" : "unknown",
-    isNative: coption(109) ? u64le(data, 113) : null,
+    delegate: hasDelegate ? b58encode(data.subarray(76, 108)) : null,
+    state: state === 1 ? "initialized" : "frozen",
+    isNative: native ? u64le(data, 113) : null,
     delegatedAmount: u64le(data, 121),
-    closeAuthority: coption(129) ? b58encode(data.subarray(133, 165)) : null,
+    closeAuthority: hasClose ? b58encode(data.subarray(133, 165)) : null,
   };
 }
 
-/** SPL Mint: `decimals` dhe `supply` (82 bajtet e para). */
+/** SPL Mint: `decimals` dhe `supply` (82 bajtet e para). G12: vetëm një mint i vërtetë (gjatësia, AccountType, COption). */
 export function parseMint(data) {
-  if (!(data instanceof Uint8Array) || data.length < 82) throw new Error("s'është mint (< 82 bajte)");
-  if (data[45] !== 1) throw new Error("mint i painicializuar");
+  if (tokenKind(data) !== "mint") throw new Error("s'është mint (gjatësia ose AccountType)");
+  if (data[45] === 0) throw new Error("mint i painicializuar");
+  if (data[45] !== 1) throw new Error(`fushë is_initialized e pavlefshme (${data[45]})`);
+  coptionAt(data, 0);
+  coptionAt(data, 46);
   return { supply: u64le(data, 36), decimals: data[44] };
 }
 
