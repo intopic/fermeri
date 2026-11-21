@@ -423,8 +423,14 @@ impl LogRec {
         r.0.is_empty().then_some(LogRec { history, slack, seq, st, root_id, blocks, freed })
     }
 
-    fn framed(&self) -> Vec<u8> {
-        frame(LOG_MAGIC, &self.payload())
+    /// G18: një rekord mbi `MAX_RECORD` s'shkruhet: hapja do ta refuzonte si të dëmtuar, ndaj sloti s'do
+    /// të rikthehej dot pas rinisjes. Gabimi del para shkrimit, pra para se sloti të konfirmohet.
+    fn framed(&self) -> Result<Vec<u8>, String> {
+        let p = self.payload();
+        if p.len() as u64 > MAX_RECORD {
+            return Err(format!("rekordi i log-ut për slotin {} ka {} B, mbi kufirin {MAX_RECORD} B", self.st.version, p.len()));
+        }
+        Ok(frame(LOG_MAGIC, &p))
     }
 }
 
@@ -1286,7 +1292,7 @@ impl PageTree {
     }
 
     fn append_log(&mut self, rec: &LogRec, sync: bool) -> Result<(), String> {
-        let b = rec.framed();
+        let b = rec.framed()?;
         self.log.seek(SeekFrom::Start(self.log_len)).map_err(|e| e.to_string())?;
         self.log.write_all(&b).map_err(io("shkrimi i log-ut"))?;
         if sync {
@@ -1317,7 +1323,12 @@ impl PageTree {
         let tmp = self.dir.join("meta.ckpt.tmp");
         {
             let mut f = File::create(&tmp).map_err(io("krijimi i checkpoint-it"))?;
-            f.write_all(&frame(CKPT_MAGIC, &c.payload())).map_err(io("shkrimi i checkpoint-it"))?;
+            // G18: si te log-u, një checkpoint që hapja s'do ta pranonte s'shkruhet.
+            let payload = c.payload();
+            if payload.len() as u64 > MAX_CKPT {
+                return Err(format!("checkpoint-i ka {} B, mbi kufirin {MAX_CKPT} B", payload.len()));
+            }
+            f.write_all(&frame(CKPT_MAGIC, &payload)).map_err(io("shkrimi i checkpoint-it"))?;
             if self.o.durable {
                 f.sync_all().map_err(io("fsync i checkpoint-it"))?;
             }
@@ -2247,6 +2258,18 @@ impl StateTree for PageTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// G18: një rekord log-u mbi 64 MB refuzohet para shkrimit (hapja do ta quante të dëmtuar).
+    #[test]
+    fn oversized_log_record_is_refused_before_write() {
+        let st = State { version: 9, root: EMPTY_REF, len: 0, complete: true, base: 1, cache_depth: 20, fingerprint: None };
+        let small = LogRec { history: 32, slack: 8, seq: 2, st: st.clone(), root_id: None, blocks: vec![], freed: vec![pid(0, 1, 10)] };
+        assert!(small.framed().is_ok());
+        let n = (MAX_RECORD / 8) as usize + 1;
+        let big = LogRec { history: 32, slack: 8, seq: 2, st, root_id: None, blocks: vec![], freed: vec![pid(0, 1, 10); n] };
+        let e = big.framed().unwrap_err();
+        assert!(e.contains("mbi kufirin"), "{e}");
+    }
 
     #[test]
     fn kid_paths_and_indices_agree() {
