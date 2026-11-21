@@ -31,9 +31,13 @@ use zilja_verifier::attest::{authorize_message, revoke_message, MAX_AUTH_EPOCHS}
 fn keypair(path: &str) -> Result<SigningKey, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
     let bytes: Vec<u8> = serde_json::from_str(&text).map_err(|e| format!("{path}: {e}"))?;
-    let secret: [u8; 32] = bytes.get(..32).and_then(|b| b.try_into().ok()).ok_or("keypair i pavlefshëm")?;
+    // G22: ekzaktësisht 64 bajt (sekreti + çelësi publik), si `solana-keygen`; pjesa e dytë kontrollohet gjithmonë.
+    if bytes.len() != 64 {
+        return Err(format!("{path}: keypair i pavlefshëm: {} bajt (duhen 64)", bytes.len()));
+    }
+    let secret: [u8; 32] = bytes[..32].try_into().unwrap();
     let key = SigningKey::from_bytes(&secret);
-    if bytes.len() == 64 && bytes[32..] != key.verifying_key().to_bytes() {
+    if bytes[32..] != key.verifying_key().to_bytes() {
         return Err(format!("{path}: çelësi publik nuk përputhet me sekretin"));
     }
     Ok(key)

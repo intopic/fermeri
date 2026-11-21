@@ -201,3 +201,26 @@ fn slot_ahead_of_finalized_reference_is_not_fresh() {
     let sol = serve(HashMap::from([("getSlot", json!(99)), ("getAccountInfo", info)]));
     assert_eq!(check(&[&zile(true, true, PK), &pk(), &sol, "--min-trust", "single"]), 1, "slot mbi referencën u shpall i freskët");
 }
+
+/// G22: zilja-authorize pranon vetëm keypair 64 bajt me çelësin publik të saktë.
+#[test]
+fn authorize_refuses_short_or_mismatched_keypairs() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+    let signer = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+    let write = |name: &str, bytes: &[u8]| {
+        let p = dir.path().join(name);
+        std::fs::write(&p, serde_json::to_string(bytes).unwrap()).unwrap();
+        p
+    };
+    let full = |k: &ed25519_dalek::SigningKey| [k.to_bytes().to_vec(), k.verifying_key().to_bytes().to_vec()].concat();
+    let s = write("signer.json", &full(&signer));
+    let g = bs58::encode([0x33u8; 32]).into_string();
+    let run = |idp: &std::path::Path| Command::new(env!("CARGO_BIN_EXE_zilja-authorize")).args([idp.to_str().unwrap(), s.to_str().unwrap(), &g, "10"]).output().unwrap();
+    assert!(run(&write("id.json", &full(&id))).status.success());
+    let short = run(&write("id32.json", &id.to_bytes()));
+    assert!(!short.status.success() && String::from_utf8_lossy(&short.stderr).contains("duhen 64"), "{short:?}");
+    let mut bad = full(&id);
+    bad[40] ^= 1;
+    assert!(!run(&write("idbad.json", &bad)).status.success());
+}

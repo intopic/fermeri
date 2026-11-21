@@ -4762,6 +4762,7 @@ dependencies = [
  "ed25519-dalek",
  "hex",
  "serde_json",
+ "tempfile",
  "ureq",
  "zilja-tree",
  "zilja-verifier",

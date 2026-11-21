@@ -468,10 +468,14 @@ fn sign_root(st: &mut State, signer: &mut Option<Attester>, m: &Metrics, slot: S
 pub fn read_solana_keypair(path: &std::path::Path) -> std::io::Result<SigningKey> {
     let text = std::fs::read_to_string(path)?;
     let bytes: Vec<u8> = serde_json::from_str(&text).map_err(std::io::Error::other)?;
-    let secret: [u8; 32] =
-        bytes.get(..32).and_then(|b| b.try_into().ok()).ok_or_else(|| std::io::Error::other("keypair i pavlefshëm"))?;
+    // G22: ekzaktësisht 64 bajt (sekreti + çelësi publik), si `solana-keygen`. Një listë më e shkurtër ose
+    // më e gjatë s'është keypair: më parë merreshin 32 të parët dhe pjesa tjetër s'kontrollohej.
+    if bytes.len() != 64 {
+        return Err(std::io::Error::other(format!("keypair i pavlefshëm: {} bajt (duhen 64)", bytes.len())));
+    }
+    let secret: [u8; 32] = bytes[..32].try_into().unwrap();
     let key = SigningKey::from_bytes(&secret);
-    if bytes.len() == 64 && bytes[32..] != key.verifying_key().to_bytes() {
+    if bytes[32..] != key.verifying_key().to_bytes() {
         return Err(std::io::Error::other("çelësi publik nuk përputhet me sekretin"));
     }
     Ok(key)
@@ -729,6 +733,29 @@ mod pool_tests {
         assert_eq!(pool_size(Some(4), 16), 4);
         assert_eq!(pool_size(Some(64), 16), 16);
         assert_eq!(pool_size(None, 0), 1);
+    }
+}
+
+#[cfg(test)]
+mod g22_tests {
+    /// G22: vetëm 64 bajt me çelësin publik të saktë pranohen.
+    #[test]
+    fn keypair_must_be_exactly_64_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let full: Vec<u8> = [key.to_bytes().to_vec(), key.verifying_key().to_bytes().to_vec()].concat();
+        let try_read = |bytes: &[u8]| {
+            let p = dir.path().join("k.json");
+            std::fs::write(&p, serde_json::to_string(bytes).unwrap()).unwrap();
+            super::read_solana_keypair(&p)
+        };
+        assert_eq!(try_read(&full).unwrap().to_bytes(), key.to_bytes());
+        assert!(try_read(&full[..32]).is_err(), "vetëm sekreti");
+        assert!(try_read(&full[..40]).is_err(), "40 bajt");
+        assert!(try_read(&[full.clone(), vec![0]].concat()).is_err(), "65 bajt");
+        let mut wrong = full.clone();
+        wrong[63] ^= 1;
+        assert!(try_read(&wrong).is_err(), "çelës publik tjetër");
     }
 }
 

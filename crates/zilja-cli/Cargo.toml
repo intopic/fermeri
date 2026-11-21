@@ -31,3 +31,4 @@ base64 = "0.22"
 
 [dev-dependencies]
 zilja-tree = { workspace = true }
+tempfile = "3"
