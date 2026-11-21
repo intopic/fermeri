@@ -247,7 +247,8 @@ fn run() -> Result<bool, String> {
                 let same = match v["data"][0].as_str() {
                     Some(b64) => base64::engine::general_purpose::STANDARD.decode(b64).is_ok_and(|d| {
                         data_matches(m, &d)
-                            && u64_field(&v["lamports"]) == Some(m.lamports)
+                            // G11: numri i RPC-së së Solana-s, deri 2^64 - 1 (jo kufiri 2^53 i zilës).
+                            && zilja_cli::solana_u64(&v["lamports"]) == Some(m.lamports)
                             && v["owner"].as_str().and_then(|o| b58_32(o).ok()) == Some(m.owner)
                             && v["executable"].as_bool() == Some(m.executable)
                     }),

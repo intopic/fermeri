@@ -84,6 +84,17 @@ pub fn u64_field(v: &Value) -> Option<u64> {
     }
 }
 
+/// G11: u64 nga RPC-ja e Solana-s. Ajo jep numra JSON të plotë deri 2^64 - 1 (p.sh. `lamports` mbi
+/// 2^53 te llogaritë e mëdha); serde_json i lexon saktë, ndaj këtu s'vlen kufiri 2^53 i `u64_field`
+/// (që është për formatin e zilës, F-08).
+pub fn solana_u64(v: &Value) -> Option<u64> {
+    match v {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => zilja_verifier::wire::parse_u64_dec(s),
+        _ => None,
+    }
+}
+
 /// Tabela e stake-ut nga `getVoteAccounts` (current + delinquent), sipas identitetit (nodePubkey).
 ///
 /// A10: kjo është pamja e RPC-së (`bank.vote_accounts()`), jo tabela e konsensusit e epokës; i
@@ -237,6 +248,17 @@ pub fn quorum_by_root(ziljas: &[String], epoch: u64, slot: u64, genesis: &[u8; 3
 
 #[cfg(test)]
 mod tests {
+    /// G11: lamports të RPC-së mbi 2^53 lexohen saktë (u64_field i refuzon, me të drejtë, për zilën).
+    #[test]
+    fn solana_u64_reads_full_range() {
+        let v: serde_json::Value = serde_json::from_str(r#"{"a": 9007199254740993, "b": 18446744073709551615, "c": -1, "d": 1.5}"#).unwrap();
+        assert_eq!(super::solana_u64(&v["a"]), Some(9_007_199_254_740_993));
+        assert_eq!(super::solana_u64(&v["b"]), Some(u64::MAX));
+        assert_eq!(super::solana_u64(&v["c"]), None);
+        assert_eq!(super::solana_u64(&v["d"]), None);
+        assert_eq!(super::u64_field(&v["a"]), None);
+    }
+
     /// G10: e njëjta zile e shkruar ndryshe → e njëjta formë.
     #[test]
     fn canonical_endpoint_merges_spellings() {
