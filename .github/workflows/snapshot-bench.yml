@@ -129,6 +129,7 @@ jobs:
           RPC_CLIENTS: ${{ inputs.rpc_clients }}
           RPC_SECONDS: ${{ inputs.rpc_seconds }}
           RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           bad() { echo "input i pavlefshëm: $1='$2'" >&2; exit 2; }
           [[ $URL =~ ^https?://[A-Za-z0-9._~:/?#@%+=,\&-]+$ ]] || bad snapshot_url "$URL"
@@ -143,7 +144,9 @@ jobs:
             RPC=(--rpc-clients "$RPC_CLIENTS" --rpc-seconds "$RPC_SECONDS" --rpc-one-ip)
           fi
           # Dosje e re për çdo ekzekutim (bench-i s'fshin asgjë që s'e krijoi).
-          W="${ZILJA_BENCH_DIR:-$HOME/zilja-bench}/run-$RUN_ID"
+          # G27: edhe numri i përpjekjes: "Re-run" i të njëjtit ekzekutim merr një dosje të re, pasi bench-i
+          # refuzon një dosje DB jo bosh.
+          W="${ZILJA_BENCH_DIR:-$HOME/zilja-bench}/run-$RUN_ID-$RUN_ATTEMPT"
           mkdir -p "$W/out"
           echo "W=$W" >> "$GITHUB_ENV"
           curl -fsSL --retry 3 "$URL" | ./target/release/zilja-snapshot-bench - "$W/db" \
