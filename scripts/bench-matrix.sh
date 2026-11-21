@@ -171,6 +171,9 @@ for d in $CACHE_DEPTHS; do [ $((d % 4)) -eq 0 ] || { echo "CACHE_DEPTHS: $d s'ë
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 LOG="$OUT/matrix.log"
+# G04: dy nisje në të njëjtën dosje do të shkruanin të njëjtat raste njëkohësisht.
+exec 8>"$OUT/.matrix.lock"
+flock -n 8 || { echo "Një tjetër bench-matrix po punon me $OUT." >&2; exit 1; }
 say() { echo "[$(date +%T)] $*" | tee -a "$LOG"; }
 
 if [ ! -x "$BIN" ]; then
@@ -259,7 +262,9 @@ for c in "${CASES[@]}"; do
   dir="$OUT/$name"
   if [ -f "$dir/summary.json" ]; then say "$name: ka mbaruar më parë, e kapërcej"; continue; fi
   mkdir -p "$dir"
-  db="$OUT/db"; rm -rf "$db"
+  # G04: një dosje e re për çdo rast (mktemp), që kjo nisje e krijoi vetë; fshihet vetëm ajo.
+  # Kurrë një rrugë fikse si "$OUT/db", që mund të jetë e dikujt tjetër.
+  db=$(mktemp -d "$OUT/.db-$name.XXXXXX") || { say "$name: s'u krijua dosja e DB-së"; exit 1; }
   say "$name: fillon ($args)  [disk i lirë: $(df -h --output=avail "$OUT" | tail -1 | tr -d ' ')]"
   t0=$(date +%s)
   # shellcheck disable=SC2086

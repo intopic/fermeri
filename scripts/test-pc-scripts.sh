@@ -77,6 +77,12 @@ rm -f "$W/srv/ranges"
 partial "$W/c" snapshot-200-bbb.tar.zst; mx "$W/c"
 check "H1: server pa Range → nis nga e para, skedari i saktë" 'cmp -s "$W/c/snapshot-200-bbb.tar.zst" "$W/srv/snapshot-200-bbb.tar.zst" && grep -q "kodi 33" "$W/c.log"'
 
+# G04: dosja "db" e dikujt tjetër në OUT s'preket; asnjë dosje e përkohshme s'mbetet; nisja e dytë ndalet.
+mkdir -p "$W/b/db"; echo mos-me-fshi > "$W/b/db/keep"; mx "$W/b"
+check "G04: \$OUT/db i paprekur, pa mbetje .db-*" '[ -f "$W/b/db/keep" ] && [ -z "$(ls -A "$W/b" | grep "^\.db-")" ]'
+( flock 9; mx "$W/b"; echo $? > "$W/lockrc" ) 9>"$W/b/.matrix.lock"
+check "G04: dy nisje në të njëjtën dosje → e dyta ndalet" '[ "$(cat "$W/lockrc")" = 1 ] && grep -q "Një tjetër bench-matrix" "$W/b.log"'
+
 # M2: pc-run-all vazhdon pas fazës 3 të pjesshme dhe kryen tri nisjet e fazës 4.
 RESULTS="$W/res" TOOLS="$W/tools" PHASES="3 4" TESTNET_URL="$U/snapshot.tar.bz2" MAINNET_URL="$U/snapshot.tar.bz2" \
   T_EXTRA="BIN=/bin/false RPC_CLIENTS= BENCH_GROUPS=size LIMITS=1" M_EXTRA="BIN=/bin/false RPC_CLIENTS=" \
