@@ -269,6 +269,20 @@ async function web(opts, ziles) {
   expect("A14: slot tjetër nga referenca → invalid", !r14c.ok && r14c.errors.includes("anchor_slot_mismatch"), JSON.stringify(r14c.errors));
 }
 
+// G19: faqja shpjegon çdo vlerë të freskisë dhe e mban mbrojtjen nga kthimi pas veç për çdo kontekst.
+{
+  const a = uniq();
+  const w = await web({ ziljaUrl: a, pubkey: exc.pubkey, rootOverride: exc.root }, { [a]: { proof: proofAt(100, exc) } });
+  const fresh = w.steps.find((x) => x.text.startsWith("Freskia"));
+  expect("G19: freskia 'unverifiable' ka tekst", w.checks?.freshness === "unverifiable" && !fresh.text.includes("undefined"), fresh?.text);
+  const b = uniq(), c = uniq();
+  const w1 = await web({ ziljaUrl: b, pubkey: inc.pubkey, minTrust: "single" }, { [b]: { proof: proofAt(100) } });
+  const w2 = await web({ ziljaUrl: c, pubkey: inc.pubkey, minTrust: "single" }, { [c]: { proof: proofAt(50) } });
+  expect("G19: zile tjetër me slot më të ulët ≠ kthim pas", w1.ok && w2.ok && w2.checks.freshness !== "rollback", JSON.stringify(w2.checks));
+  const w3 = await web({ ziljaUrl: b, pubkey: inc.pubkey, minTrust: "single" }, { [b]: { proof: proofAt(60) } });
+  expect("G19: e njëjta zile më pas → kthim pas", !w3.ok && w3.checks.freshness === "rollback", JSON.stringify(w3.checks));
+}
+
 if (fail) {
   console.error(`${fail} teste dështuan`);
   process.exit(1);
