@@ -397,10 +397,6 @@ impl Service {
         &self.shared.metrics
     }
 
-    pub fn sender(&self) -> Option<Sender<Event>> {
-        self.tx.clone()
-    }
-
     /// Mbyll kanalin dhe pret që punëtori të mbarojë gjithçka në radhë.
     pub fn shutdown(&mut self) {
         self.shared.metrics.stopping.store(true, Ordering::Relaxed);
