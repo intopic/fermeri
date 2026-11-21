@@ -669,6 +669,12 @@ fn handle_conn<H: HttpHandler + ?Sized>(mut s: TcpStream, shared: &H, routes: Ro
                 body.extend_from_slice(&chunk[..k.min(n - body.len())]);
             }
             let v = shared.jsonrpc(&String::from_utf8_lossy(&body));
+            // G16: puna e metodës s'ndërpritet në mes (p.sh. një multi-proof mbi disk të ftohtë). Kur mbaron
+            // pas afatit, klienti merr një 503 të qartë, jo një lidhje të mbyllur pa përgjigje.
+            if Instant::now() >= until {
+                let _ = s.set_write_timeout(Some(Duration::from_millis(200)));
+                return write_resp(&mut s, 503, "text/plain", b"timeout", cors);
+            }
             budget(&s, until)?;
             write_resp(&mut s, 200, "application/json", v.to_string().as_bytes(), cors)
         }

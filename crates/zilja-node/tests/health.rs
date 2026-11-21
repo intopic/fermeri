@@ -439,3 +439,31 @@ fn multiple_account_proofs_match_single_proofs_and_contract() {
     assert_eq!(code(&rpc_call(&svc.shared, r#"{"id":1,"method":"getMultipleAccountProofs","params":["x"]}"#)), Some(-32602));
     assert_eq!(code(&call(&[1], r#",{"slot":1,"x":2}"#)), Some(-32602));
 }
+
+/// G16: një metodë që mbaron pas afatit kthen `503 timeout`, jo një lidhje të mbyllur pa përgjigje.
+#[test]
+fn late_method_answers_503_timeout() {
+    struct Slow;
+    impl rpc::HttpHandler for Slow {
+        fn jsonrpc(&self, _: &str) -> serde_json::Value {
+            std::thread::sleep(Duration::from_millis(600));
+            serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": 1})
+        }
+        fn health(&self) -> (u16, &'static str) {
+            (200, "ok")
+        }
+        fn metrics(&self) -> String {
+            String::new()
+        }
+    }
+    let limits = rpc::HttpLimits { deadline: Duration::from_millis(300), per_ip: 2, exempt_loopback: true };
+    let mut srv = rpc::serve_handler("127.0.0.1:0", std::sync::Arc::new(Slow), rpc::Routes { jsonrpc: true, metrics: false, cors: false }, limits).unwrap();
+    let mut s = std::net::TcpStream::connect(srv.addr()).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let body = r#"{"id":1,"method":"x"}"#;
+    s.write_all(format!("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).unwrap();
+    let mut out = String::new();
+    let _ = s.read_to_string(&mut out);
+    assert!(out.starts_with("HTTP/1.1 503") && out.ends_with("timeout"), "{out:?}");
+    srv.stop();
+}

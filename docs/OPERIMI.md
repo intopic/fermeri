@@ -17,7 +17,11 @@ të pemës dhe `503 halted` pasi ka ndaluar (F-12). Load balancer-i duhet ta pë
 
 Serveri i Ziles ka kufij të vetët:
 - trupi i kërkesës deri në 64 KB;
-- 5 sekonda afat i plotë për kërkesë, që nga pranimi (radha, kokat, trupi, përgjigja; A17), dhe ≤ 5 s për çdo operacion leximi/shkrimi; prandaj edhe `on_unload` pret serverin ≤ ~5 s;
+- 5 sekonda afat për kërkesë, që nga pranimi: radha, kokat, trupi dhe përgjigja (A17), me ≤ 5 s për çdo
+  operacion leximi/shkrimi. G16: puna e vetë metodës (llogaritja e dëftesës) s'ndërpritet në mes; afati
+  kontrollohet para dhe pas saj. Një metodë që mbaron pas afatit (p.sh. `getMultipleAccountsProof` me 256
+  çelësa mbi disk të ftohtë) kthen `503 timeout`, ndaj klienti s'pret kurrë më shumë se afati + koha e asaj
+  metode. Edhe `on_unload` pret kështu: ≤ ~5 s plus kërkesa më e gjatë që po punohet;
 - 8 punëtorë, ndaj një klient i ngadaltë zë vetëm një punëtor për pak sekonda;
 - R4-3: maksimumi **2 lidhje njëkohësisht për IP** në çdo port; e treta merr menjëherë `503 too many
   connections from this address`. Pra një sulmues duhet ≥ 4 IP për t'i zënë të gjithë punëtorët e
