@@ -37,11 +37,12 @@ cat > zilja.json <<EOF
 EOF
 solana-test-validator --geyser-plugin-config zilja.json
 
-# 3. Verifiko një llogari si banor
-# Parazgjedhja kërkon ≥ 2 zile që pajtohen (--also); me një zile të vetme: --min-trust single.
-./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899 --min-trust single
-node web/check.mjs http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899 --min-trust single   # i njëjti vendim në JS
-#   --also <ZILJA_URL>  zile e dytë · --quorum  firmat e validatorëve · --max-lag <n>|none · --min-slot <n>
+# 3. Verifiko një llogari si banor: një zile mjafton (parazgjedhja "single")
+./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY>
+./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899   # + freskia dhe të dhënat nga RPC-ja
+node web/check.mjs http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899             # i njëjti vendim në JS
+#   Më shumë besim (opsionale): --also <ZILJA_URL> --min-trust agreement · --quorum --min-trust quorum
+#   · --max-lag <n>|none · --min-slot <n>
 #   Kodi i daljes: 0 vetëm kur kalon çdo kontroll (dëftesa, besimi, freskia, të dhënat).
 # ose faqja në shfletues: shërbeje nga rrënja e repos (importon ../sdk/js/), jo me file://
 #   python3 -m http.server 8000   # pastaj hap http://127.0.0.1:8000/web/
@@ -49,9 +50,9 @@ node web/check.mjs http://127.0.0.1:7799 <PUBKEY> http://127.0.0.1:8899 --min-tr
 # Pema në disk në vend të RAM-it: shto te zilja.json
 #   "db_path": "/var/lib/zilja/db", "tree_engine": "pages", "genesis_path": "<ledger>/genesis.bin",
 #   "history_slots": 32, "cache_depth": 20       (motori i vetëm: pages; RocksDB u hoq)
-./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> --min-trust single --slot <SLOT>   # dëftesë historike
+./target/release/zilja-check http://127.0.0.1:7799 <PUBKEY> --slot <SLOT>   # dëftesë historike
 
-# 4. A e kanë firmosur pleqtë? Shto te zilja.json:
+# 4. (Opsionale, më shumë besim) A e kanë firmosur pleqtë? Shto te zilja.json:
 #   "attest_keypair": "<çelësi>", "attest_authorization": "<nga zilja-authorize>",
 #   "genesis_path": "<ledger>/genesis.bin"          (shih docs/OPERIMI.md)
 ./target/release/zilja-quorum http://127.0.0.1:8899 http://127.0.0.1:7799
@@ -89,10 +90,14 @@ Numrat e plotë janë te [`docs/RAPORTI.md`](docs/RAPORTI.md).
 ## Për kuletat: `zilja-verify`
 
 ```js
-import { ZiljaClient } from "zilja-verify";
-const zilja = new ZiljaClient({ endpoints: ["https://zilja-1.example", "https://zilja-2.example"], minTrust: "agreement" });
+import { Zilja } from "zilja-verify";
+const zilja = new Zilja("https://zilja.example");
 const r = await zilja.verifyAccount(pubkey);   // r.ok, r.verdict, r.account.lamports, r.trust
 ```
+
+Një zile mjafton: dëftesa verifikohet gjithmonë, root-i i besohet asaj zileje (`single`). Për më
+shumë besim (disa zile që pajtohen, firmat e validatorëve, aggregator-i) shih "Më shumë besim" te
+[`sdk/js/README.md`](sdk/js/README.md#më-shumë-besim).
 
 Pa varësi, me tipe TypeScript. Madhësia (A25, `5b079ed`, e matur nga `scripts/release.sh`): tarball-i npm 21.0 kB; bundle i minifikuar 6.3 KB gzip i gjithë SDK-ja, 1.7 KB gzip vetëm `verifyAccount`. Shifrat e çdo commit-i janë te `MANIFEST.json` i release-it. Shih [`sdk/js/README.md`](sdk/js/README.md).
 

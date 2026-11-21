@@ -19,7 +19,8 @@ pub fn trust_rank(t: &str) -> Option<u8> {
     }
 }
 
-pub const DEFAULT_MIN_TRUST: &str = "agreement";
+/// Parazgjedhja "single": një zile mjafton (dëftesa verifikohet gjithmonë); si SDK-ja.
+pub const DEFAULT_MIN_TRUST: &str = "single";
 pub const DEFAULT_MIN_AGREE: u64 = 2;
 pub const DEFAULT_MAX_SLOT_LAG_WITH_RPC: u64 = 150;
 

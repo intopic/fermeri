@@ -14,7 +14,9 @@
 export const TRUST = Object.freeze({ single: 0, agreement: 1, quorum: 2, user: 3 });
 
 /** Parazgjedhjet e përbashkëta. */
-export const DEFAULTS = Object.freeze({ minTrust: "agreement", minAgree: 2, maxSlotLagWithRpc: 150 });
+// Parazgjedhja "single": një zile mjafton (dëftesa verifikohet gjithmonë). "agreement" dhe "quorum"
+// janë zgjedhje për më shumë besim te root-i.
+export const DEFAULTS = Object.freeze({ minTrust: "single", minAgree: 2, maxSlotLagWithRpc: 150 });
 
 /**
  * Gabimet e konfigurimit (para çdo kërkese). Kthen listën e kodeve; bosh = në rregull.

@@ -15,23 +15,30 @@ npm install zilja-verify
 Kërkon Node ≥ 22 ose një shfletues modern. Për `quorum` duhet Ed25519 në WebCrypto
 (Chrome/Edge ≥ 137, Firefox ≥ 129, Safari ≥ 17).
 
-## Përdorimi
+## Fillo këtu
+
+Një zile mjafton:
 
 ```js
-import { ZiljaClient } from "zilja-verify";
+import { Zilja } from "zilja-verify";
 
-const zilja = new ZiljaClient({
-  endpoints: ["https://zilja-1.example", "https://zilja-2.example"],
-  solanaRpc: "https://api.mainnet-beta.solana.com", // opsionale
-  minTrust: "agreement",
-});
-
+const zilja = new Zilja("https://zilja.example");
 const r = await zilja.verifyAccount("PUBKEY...");
 if (r.ok && r.verdict === "exists") {
   console.log("Balanca e verifikuar:", r.account.lamports, "lamports, slot", r.slot);
 } else {
-  console.log("Mos i beso:", r.verdict, r.errors); // p.sh. ["stale"] ose ["root_conflict"]
+  console.log("Mos i beso:", r.verdict, r.errors);
 }
+```
+
+Dëftesa verifikohet gjithmonë matematikisht: një zile që gënjen për një llogari kapet
+(`verdict: "invalid"`). Root-i i besohet kësaj zileje (`trust: "single"`). Kjo është
+parazgjedhja. Për më shumë besim shih [Më shumë besim](#më-shumë-besim).
+
+Për të ditur që gjendja është e freskët, shto një RPC Solana:
+
+```js
+const zilja = new Zilja("https://zilja.example", { solanaRpc: "https://api.mainnet-beta.solana.com" });
 ```
 
 Me React, p.sh. pranë balancës në kuletë:
@@ -53,7 +60,7 @@ do të thotë vetvetiu "kjo është gjendja aktuale e konsensusit".
 
 | `trust` | Çfarë do të thotë | Si arrihet |
 |---|---|---|
-| `single` | Root-i i besohet një zileje | Një `endpoint` + `minTrust: "single"` |
+| `single` | Root-i i besohet një zileje (parazgjedhja) | Një zile mjafton |
 | `agreement` | Disa zile të pavarura japin të njëjtin root për të njëjtin slot | ≥ `minAgree` (2) zile dakord |
 | `quorum` | Validatorët me > 2/3 të stake-ut e firmosën root-in | `quorum: true` + `solanaRpc` |
 | `user` | Root-in e dhe vetë | `root: "<64 hex>"` |
@@ -77,6 +84,25 @@ testohen me të njëjtët vektorë (`test/policy-vectors.json`).
 > s'numërohet (`quorum_epoch_unsupported`). Light client-i që e verifikon edhe
 > tabelën (nga një checkpoint, epokë pas epoke) është punë e ardhshme.
 
+## Më shumë besim
+
+Opsionale. Parazgjedhja (`single`) i beson root-it të një zileje; këto e forcojnë:
+
+```js
+import { ZiljaClient } from "zilja-verify";
+
+// agreement: disa zile të pavarura duhet të japin të njëjtin root.
+const a = new ZiljaClient({ endpoints: ["https://zilja-1.example", "https://zilja-2.example"], minTrust: "agreement" });
+
+// quorum: validatorët me > 2/3 të stake-ut e firmosën root-in.
+const q = new ZiljaClient({ endpoints: ["https://zilja-1.example"], solanaRpc: "https://api.mainnet-beta.solana.com", quorum: true, minTrust: "quorum" });
+
+// aggregator: firmat e shumë validatorëve me një thirrje (getZiljaQuorumBundle).
+const g = new ZiljaClient({ endpoints: ["https://zilja-1.example"], solanaRpc: "https://api.mainnet-beta.solana.com", quorum: true, minTrust: "quorum", aggregators: ["https://aggregator.example"] });
+```
+
+`new Zilja(url, { also: ["https://zilja-2.example"], minTrust: "agreement" })` është e njëjta gjë si `a`.
+
 ## Dëftesë për një slot të kaluar
 
 Zilet me pemë në disk mbajnë ~32 slotet e fundit:
@@ -91,7 +117,7 @@ const r = await zilja.verifyAccount(pubkey, { slot: 312345678 });
 import { Connection, PublicKey } from "@solana/web3.js";
 import { VerifiableConnection } from "zilja-verify";
 
-const zilja = { endpoints: ["https://zile-a.example", "https://zile-b.example"], solanaRpc: "https://api.mainnet-beta.solana.com" };
+const zilja = { endpoints: ["https://zilja.example"], solanaRpc: "https://api.mainnet-beta.solana.com" };
 const conn = new VerifiableConnection({ zilja, PublicKey });
 const info = await conn.getAccountInfo(new PublicKey(addr));          // AccountInfo | null, e verifikuar
 const [a, b] = await conn.getMultipleAccountsInfo([addrA, addrB]);   // një multi-proof

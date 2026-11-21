@@ -146,18 +146,22 @@ node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC" --min-trust single
 if node "$ROOT/web/check.mjs" "$ZILJA" "$NOBODY" --min-trust single 2>/dev/null; then echo "GABIM: JS pranoi mospërfshirje nga pemë jo e plotë"; exit 1; fi
 echo "-- SDK zilja-verify (paketa npm):"
 node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --rpc "$RPC" --min-trust single
-if node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" >/dev/null; then
-  echo "GABIM: me një zile të vetme, parazgjedhja (minTrust=agreement) s'duhet të kalojë"; exit 1
+# Parazgjedhja "single": një zile mjafton, pa flamurë, në SDK, CLI dhe faqe (P-11: i njëjti vendim).
+node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --rpc "$RPC"
+"$CHECK" "$ZILJA" "$FERMER" "$RPC"
+node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC"
+echo "   ✅ SDK = CLI = faqja: një zile mjafton me parazgjedhjen (single)"
+# "agreement" i kërkuar: një zile s'mjafton (min-agree s'ulet vetë, L-01).
+if node "$ROOT/sdk/js/examples/verify.mjs" "$FERMER" --zilja "$ZILJA" --min-trust agreement >/dev/null; then
+  echo "GABIM: me një zile të vetme, minTrust=agreement s'duhet të kalojë"; exit 1
 fi
-echo "   ✅ SDK: parazgjedhja minTrust=agreement me një zile refuzohet siç duhet (L-01)"
-# P-11: e njëjta parazgjedhje (agreement) në CLI dhe në faqe: një zile e vetme s'mjafton.
-if "$CHECK" "$ZILJA" "$FERMER" "$RPC" >/dev/null; then echo "GABIM: zilja-check pranoi një zile të vetme me parazgjedhjen"; exit 1; fi
-if node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC" >/dev/null; then echo "GABIM: faqja pranoi një zile të vetme me parazgjedhjen"; exit 1; fi
+if "$CHECK" "$ZILJA" "$FERMER" "$RPC" --min-trust agreement >/dev/null; then echo "GABIM: zilja-check pranoi agreement me një zile"; exit 1; fi
+if node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC" --min-trust agreement >/dev/null; then echo "GABIM: faqja pranoi agreement me një zile"; exit 1; fi
 # Dy zile (këtu e njëjta zile me dy adresa: 127.0.0.1 dhe localhost) me të njëjtin root → agreement.
 ZILJA2="${ZILJA/127.0.0.1/localhost}"
-"$CHECK" "$ZILJA" "$FERMER" "$RPC" --also "$ZILJA2"
-node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC" --also "$ZILJA2"
-echo "   ✅ CLI = faqja = SDK: një zile refuzohet, dy zile që pajtohen kalojnë"
+"$CHECK" "$ZILJA" "$FERMER" "$RPC" --also "$ZILJA2" --min-trust agreement
+node "$ROOT/web/check.mjs" "$ZILJA" "$FERMER" "$RPC" --also "$ZILJA2" --min-trust agreement
+echo "   ✅ CLI = faqja = SDK: agreement refuzon një zile, dy zile që pajtohen kalojnë"
 echo "-- root i rremë duhet të refuzohet:"
 if "$CHECK" "$ZILJA" "$FERMER" --root "$(printf 'ab%.0s' $(seq 1 32))"; then
   echo "GABIM: root i rremë u pranua"; exit 1

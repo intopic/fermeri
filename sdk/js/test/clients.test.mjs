@@ -5,7 +5,7 @@
 
 import { readFileSync } from "node:fs";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { ZiljaClient, attestMessage, authorizeMessage, revokeMessage, bytesToHex } from "../src/index.js";
+import { Zilja, ZiljaClient, attestMessage, authorizeMessage, revokeMessage, bytesToHex } from "../src/index.js";
 import { checkAccount } from "../../../web/check-core.js";
 
 const v = JSON.parse(readFileSync(new URL("./vectors.json", import.meta.url), "utf8"));
@@ -63,18 +63,28 @@ const uniq = () => `http://z${Math.random().toString(36).slice(2)}`;
   expect("G10: tre shkrime të së njëjtës zile → një", c.endpoints.length === 2 && c.endpoints[0] === "https://zile.example", JSON.stringify(c.endpoints));
   let threw = false;
   try {
-    new ZiljaClient({ endpoints: ["http://a", "HTTP://A:80/"], minAgree: 2, fetch: async () => ({}) });
+    new ZiljaClient({ endpoints: ["http://a", "HTTP://A:80/"], minTrust: "agreement", minAgree: 2, fetch: async () => ({}) });
   } catch {
     threw = true;
   }
   expect("G10: minAgree 2 me dy shkrime të së njëjtës zile → gabim konfigurimi", threw);
 }
 
+// Hyrja e thjeshtë: new Zilja(url) me një zile jep vendim të plotë me parazgjedhjet.
+{
+  const a = uniq();
+  const r = await new Zilja(a, { fetch: mock({ ziles: { [a]: { proof: proofAt(100) } } }) }).verifyAccount(inc.pubkey);
+  expect("new Zilja(url): një zile → ok, single", r.ok && r.trust === "single" && r.verdict === "exists", JSON.stringify({ ok: r.ok, trust: r.trust, errors: r.errors }));
+  let threw = false;
+  try { new Zilja(); } catch { threw = true; }
+  expect("new Zilja() pa adresë → gabim i qartë", threw);
+}
+
 // 1. minAgree s'ulet vetë kur ka më pak zile se ç'kërkon politika: gabim konfigurimi.
 {
   let threw = false;
   try {
-    new ZiljaClient({ endpoints: ["http://a", "http://b"], minAgree: 3, fetch: async () => ({}) });
+    new ZiljaClient({ endpoints: ["http://a", "http://b"], minTrust: "agreement", minAgree: 3, fetch: async () => ({}) });
   } catch {
     threw = true;
   }
@@ -231,15 +241,19 @@ async function web(opts, ziles) {
 {
   const a = uniq();
   const ziles = { [a]: { proof: proofAt(100) } };
+  // Parazgjedhja "single": një zile mjafton, web dhe SDK japin të njëjtin vendim.
   const w = await web({ ziljaUrl: a, pubkey: inc.pubkey }, ziles);
-  // SDK-ja: një zile me parazgjedhjen "agreement" është gabim konfigurimi (minAgree s'ulet vetë).
-  let s;
+  const s = await new ZiljaClient({ endpoints: [a], fetch: mock({ ziles }) }).verifyAccount(inc.pubkey);
+  expect("një zile e vetme me parazgjedhjen: web = SDK = ok (single)", w.ok === s.ok && s.ok === true && s.trust === "single", JSON.stringify({ web: w.ok, webErrors: w.errors, sdk: s.ok }));
+  // Me "agreement" të kërkuar, të dyja e refuzojnë një zile (minAgree s'ulet vetë).
+  const w2 = await web({ ziljaUrl: a, pubkey: inc.pubkey, minTrust: "agreement" }, ziles);
+  let s2;
   try {
-    s = await new ZiljaClient({ endpoints: [a], fetch: mock({ ziles }) }).verifyAccount(inc.pubkey);
+    s2 = await new ZiljaClient({ endpoints: [a], minTrust: "agreement", fetch: mock({ ziles }) }).verifyAccount(inc.pubkey);
   } catch (e) {
-    s = { ok: false, config: /config_min_agree/.test(e.message) };
+    s2 = { ok: false, config: /config_min_agree/.test(e.message) };
   }
-  expect("një zile e vetme: web = SDK (të dyja s'pranojnë me parazgjedhjen 'agreement')", w.ok === s.ok && s.ok === false && s.config && w.errors?.includes("config_min_agree"), JSON.stringify({ web: w.ok, webErrors: w.errors, sdk: s }));
+  expect("një zile me 'agreement': web = SDK, të dyja refuzojnë", w2.ok === false && s2.ok === false && s2.config && w2.errors?.includes("config_min_agree"), JSON.stringify({ web: w2.errors, sdk: s2 }));
 }
 {
   const a = uniq();

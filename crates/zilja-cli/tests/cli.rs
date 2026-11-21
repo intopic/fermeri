@@ -93,10 +93,11 @@ fn pk() -> String {
 }
 
 #[test]
-fn single_endpoint_is_not_enough_by_default() {
-    // Si SDK-ja: parazgjedhja është "agreement" (të paktën 2 zile me të njëjtin root).
-    assert_eq!(check(&[&zile(true, true, PK), &pk()]), 1, "një zile e vetme kaloi me parazgjedhjen");
-    assert_eq!(check(&[&zile(true, true, PK), &pk(), "--min-trust", "single"]), 0);
+fn single_endpoint_is_enough_by_default() {
+    // Si SDK-ja: parazgjedhja është "single" (një zile mjafton, pa flamurë).
+    assert_eq!(check(&[&zile(true, true, PK), &pk()]), 0, "një zile e vetme s'kaloi me parazgjedhjen");
+    // Me "agreement" të kërkuar, një zile s'mjafton (min-agree s'ulet vetë).
+    assert_eq!(check(&[&zile(true, true, PK), &pk(), "--min-trust", "agreement"]), 1);
 }
 
 #[test]

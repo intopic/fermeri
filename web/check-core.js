@@ -33,7 +33,7 @@ const contextKey = (urls, solanaRpc) => JSON.stringify([urls.map(canonicalEndpoi
  * @param {string} [o.solanaRpc]
  * @param {string} [o.rootOverride]
  * @param {string} [o.secondZilja]
- * @param {"single"|"agreement"|"quorum"} [o.minTrust] parazgjedhja "agreement", si SDK-ja
+ * @param {"single"|"agreement"|"quorum"} [o.minTrust] parazgjedhja "single" (një zile mjafton), si SDK-ja
  * @returns {Promise<{ok: boolean, trust: string|null, verdict: string, checks: object|null, errors: string[], steps: {ok: boolean|null, text: string}[], result: object|null}>}
  */
 export async function checkAccount({ ziljaUrl, pubkey, solanaRpc, rootOverride, secondZilja, minTrust }) {

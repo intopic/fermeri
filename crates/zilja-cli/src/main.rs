@@ -1,6 +1,7 @@
 //! `zilja-check`: banori që kontrollon hambarin e vet.
 //!
 //! ```text
+//! zilja-check <ZILJA_URL> <pubkey>                  # mjafton: një zile, parazgjedhjet e sigurta
 //! zilja-check <ZILJA_URL> <pubkey> [SOLANA_RPC_URL]
 //!             [--also <ZILJA_URL>]... [--min-trust single|agreement|quorum] [--min-agree <n>]
 //!             [--quorum] [--genesis <hash>] [--max-lag <n>|none] [--min-slot <n>]
@@ -9,8 +10,8 @@
 //!
 //! Vendimi merret nga e njëjta politikë si SDK-ja dhe faqja (P-11, `policy.rs`):
 //! 1. dëftesa nga zilja e parë, e verifikuar kundër root-it (i serverit, ose `--root` yti);
-//! 2. besimi te root-i: `single` (një zile), `agreement` (≥ min-agree zile me të njëjtin root,
-//!    parazgjedhja), `quorum` (> 2/3 e stake-ut firmosi), `user` (`--root`). A14: `--root` vetëm
+//! 2. besimi te root-i: `single` (një zile, parazgjedhja), `agreement` (≥ min-agree zile me të
+//!    njëjtin root), `quorum` (> 2/3 e stake-ut firmosi), `user` (`--root`). A14: `--root` vetëm
 //!    vërteton përfshirjen te ai root; me `--root-slot` vërtetohet edhe sloti (dhe freskia), me
 //!    `--root-complete` edhe mungesa;
 //! 3. freskia: me `SOLANA_RPC_URL`, sloti nuk duhet të jetë më shumë se `--max-lag` (150) pas të

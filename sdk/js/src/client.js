@@ -484,3 +484,22 @@ export class ZiljaClient {
     return results;
   }
 }
+
+/**
+ * Hyrja e thjeshtë: një zile, parazgjedhjet e sigurta.
+ *
+ *   const zilja = new Zilja("https://zilja.example");
+ *   const r = await zilja.verifyAccount(pubkey);   // r.ok, r.verdict, r.account
+ *
+ * Dëftesa verifikohet gjithmonë kundër root-it; root-i i besohet kësaj zileje ("single"). Për më
+ * shumë besim jep opsionet e ZiljaClient (p.sh. `solanaRpc`, zile të tjera me `also`, `minTrust`).
+ * @param {string} url adresa e zilës
+ * @param {Omit<ConstructorParameters<typeof ZiljaClient>[0], "endpoints"> & {also?: string[]}} [opts]
+ */
+export class Zilja extends ZiljaClient {
+  constructor(url, opts = {}) {
+    if (typeof url !== "string" || !url) throw new Error("duhet adresa e zilës, p.sh. new Zilja(\"https://zilja.example\")");
+    const { also = [], ...rest } = opts;
+    super({ ...rest, endpoints: [url, ...also] });
+  }
+}

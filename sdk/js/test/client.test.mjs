@@ -80,11 +80,14 @@ const byKey = (pk) => vec.cases.find((c) => c.pubkey === pk && (c.name === "incl
   check("lying zilja → invalid", !r.ok && r.verdict === "invalid", r);
 }
 
-// 5) Parazgjedhja (L-01) është "agreement": një zile e vetme refuzohet që në konfigurim (P-11).
+// 5) Parazgjedhja është "single": një zile mjafton. Me "agreement" të kërkuar, një zile e vetme
+// refuzohet që në konfigurim (P-11): minAgree s'ulet vetë.
 {
+  const c = new ZiljaClient({ endpoints: ["a"], fetch: fakeFetch({ a: zilja(byKey) }) });
+  check("parazgjedhja: një zile mjafton (single)", c.minTrust === "single");
   let msg = "";
   try {
-    new ZiljaClient({ endpoints: ["a"], fetch: fakeFetch({ a: zilja(byKey) }) });
+    new ZiljaClient({ endpoints: ["a"], minTrust: "agreement", fetch: fakeFetch({ a: zilja(byKey) }) });
   } catch (e) {
     msg = String(e.message);
   }
@@ -95,7 +98,7 @@ const byKey = (pk) => vec.cases.find((c) => c.pubkey === pk && (c.name === "incl
 {
   let msg = "";
   try {
-    new ZiljaClient({ endpoints: ["a", "a/"], fetch: fakeFetch({ a: zilja(byKey) }) });
+    new ZiljaClient({ endpoints: ["a", "a/"], minTrust: "agreement", fetch: fakeFetch({ a: zilja(byKey) }) });
   } catch (e) {
     msg = String(e.message);
   }

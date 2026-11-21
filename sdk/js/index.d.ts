@@ -154,6 +154,14 @@ export interface VerifyResult {
   warnings: string[];
 }
 
+/**
+ * Hyrja e thjeshtë: një zile, parazgjedhjet e sigurta (`minTrust: "single"`).
+ * `new Zilja(url).verifyAccount(pubkey)`. Për më shumë besim: `also` (zile të tjera), `minTrust`, `quorum`.
+ */
+export class Zilja extends ZiljaClient {
+  constructor(url: string, opts?: Omit<ZiljaClientOptions, "endpoints"> & { also?: string[] });
+}
+
 /** G10: forma kanonike e adresës së një zileje (host i vogël, pa portin parazgjedhës, pa "/" në fund). */
 export function canonicalEndpoint(e: string): string;
 
