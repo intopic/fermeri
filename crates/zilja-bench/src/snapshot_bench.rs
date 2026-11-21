@@ -151,6 +151,14 @@ pub fn ingest(
     let counted = Counted { inner: input, n: 0 };
     let mut dec = zstd::stream::read::Decoder::new(BufReader::with_capacity(8 << 20, counted)).map_err(|e| format!("zstd: {e}"))?;
     let st = ingest_from(&mut dec, tree, sample_n, rng, limit, progress)?;
+    // G26: një arkiv pa asnjë AppendVec (s'është snapshot, ose Agave ndryshoi emrat) ose, pa --limit,
+    // pa asnjë rekord, s'është matje: më parë ndërtohej një pemë bosh dhe raportohej sukses.
+    if st.0.storages == 0 {
+        return Err("arkivi s'ka asnjë skedar accounts/<slot>.<id>: s'është snapshot Solana ose formati ndryshoi".into());
+    }
+    if limit.is_none() && st.0.records == 0 {
+        return Err(format!("{} skedarë llogarish, por asnjë rekord: snapshot-i është bosh ose formati ndryshoi", st.0.storages));
+    }
     let compressed_bytes = dec.get_ref().get_ref().get_ref().n;
     Ok((IngestStats { compressed_bytes, ..st.0 }, st.1))
 }
@@ -776,6 +784,20 @@ mod tests {
         }
         b.into_inner().unwrap().finish().unwrap();
         f
+    }
+
+    /// G26: arkiv pa skedarë llogarish, ose me skedarë pa rekorde → gabim, jo një pemë bosh "e suksesshme".
+    #[test]
+    fn empty_or_foreign_archive_is_an_error() {
+        let mut rng = StdRng::seed_from_u64(1);
+        let dir = tempfile::tempdir().unwrap();
+        let mut tree = PageTree::open(dir.path(), PageOptions { history: 4, cache_depth: 8, durable: false, ..Default::default() }).unwrap();
+        let e = ingest(archive(&[]).path(), &mut tree, 5, &mut rng, None, &|_| {}).unwrap_err();
+        assert!(e.contains("asnjë skedar"), "{e}");
+        let dir2 = tempfile::tempdir().unwrap();
+        let mut tree2 = PageTree::open(dir2.path(), PageOptions { history: 4, cache_depth: 8, durable: false, ..Default::default() }).unwrap();
+        let e = ingest(archive(&[("accounts/100.0".into(), vec![])]).path(), &mut tree2, 5, &mut rng, None, &|_| {}).unwrap_err();
+        assert!(e.contains("asnjë rekord"), "{e}");
     }
 
     /// Përmbledhja e plotë: disa skedarë, versione të vjetra në slote më të ulëta, fshirje me
