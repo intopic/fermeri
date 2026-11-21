@@ -391,6 +391,11 @@ impl Attester {
         }
     }
 
+    /// Autorizimi aktual i çelësit (nëse ka).
+    pub fn authorization(&self) -> Option<Authorization> {
+        self.opts.authorization
+    }
+
     pub fn info(&self) -> AttesterInfo {
         let signer = self.opts.key.verifying_key().to_bytes();
         AttesterInfo {

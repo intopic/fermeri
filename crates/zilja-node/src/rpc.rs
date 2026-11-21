@@ -307,7 +307,8 @@ pub fn handle_jsonrpc(shared: &Shared, body: &str) -> Value {
                     "root": hex::encode(a.root),
                     "validator": bs58::encode(attester.identity).into_string(),
                     "signer": (attester.signer != attester.identity).then(|| bs58::encode(attester.signer).into_string()),
-                    "authorization": attester.authorization.map(|a| json!({
+                    // G07: autorizimi me të cilin u bë kjo firmë, jo ai aktual.
+                    "authorization": a.authorization.map(|a| json!({
                         "fromEpoch": a.from_epoch, "untilEpoch": a.until_epoch, "signature": hex::encode(a.signature),
                     })),
                     "genesis": bs58::encode(attester.genesis).into_string(),

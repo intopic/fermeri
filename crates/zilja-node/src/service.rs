@@ -38,6 +38,9 @@ const WORKER_STACK: usize = 64 << 20;
 pub struct SignedRoot {
     pub root: Hash,
     pub signature: [u8; 64],
+    /// G07: autorizimi i çelësit kur u bë kjo firmë. RPC-ja e jep këtë, jo atë aktual: pas një
+    /// rinovimi, firmat e vjetra mbeten me autorizimin që i mbulon.
+    pub authorization: Option<zilja_verifier::attest::Authorization>,
 }
 
 /// Gjendja që lexon RPC-ja.
@@ -294,8 +297,10 @@ impl Service {
             if let Some(a) = &attester {
                 st.attester = Some(a.info());
                 // I-02: firmat e fundit nga skedari, gati menjëherë pas rinisjes.
+                // G07: log-u s'ruan autorizimin; firmat nga skedari marrin atë të nisjes.
+                let authorization = a.authorization();
                 for (slot, root, signature) in a.recent(ATTEST_HISTORY) {
-                    st.attestations.insert(slot, SignedRoot { root, signature });
+                    st.attestations.insert(slot, SignedRoot { root, signature, authorization });
                 }
             }
             st.tree = tree;
@@ -449,7 +454,7 @@ fn sign_root(st: &mut State, signer: &mut Option<Attester>, m: &Metrics, slot: S
     }
     match a.sign(slot, &root) {
         Ok(signature) => {
-            st.attestations.insert(slot, SignedRoot { root, signature });
+            st.attestations.insert(slot, SignedRoot { root, signature, authorization: a.authorization() });
             while st.attestations.len() > ATTEST_HISTORY {
                 st.attestations.pop_first();
             }
@@ -724,5 +729,61 @@ mod pool_tests {
         assert_eq!(pool_size(Some(4), 16), 4);
         assert_eq!(pool_size(Some(64), 16), 16);
         assert_eq!(pool_size(None, 0), 1);
+    }
+}
+
+#[cfg(test)]
+mod g07_tests {
+    use super::*;
+    use crate::attester::{AttestOptions, Attester};
+    use ed25519_dalek::Signer;
+
+    /// G07: pas rinovimit të autorizimit, firma e vjetër jepet me autorizimin që e mbulon, jo me të riun.
+    #[test]
+    fn attestation_keeps_the_authorization_it_was_signed_under() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("zilja-authorization.json");
+        let id = SigningKey::from_bytes(&[9; 32]);
+        let key = SigningKey::from_bytes(&[3; 32]);
+        let g = [1u8; 32];
+        let write = |from: u64, until: u64| {
+            let m = zilja_verifier::attest::authorize_message(&g, &key.verifying_key().to_bytes(), from, until);
+            let v = serde_json::json!({
+                "version": 2,
+                "identity": bs58::encode(id.verifying_key().to_bytes()).into_string(),
+                "signer": bs58::encode(key.verifying_key().to_bytes()).into_string(),
+                "genesis": bs58::encode(g).into_string(),
+                "fromEpoch": from, "untilEpoch": until,
+                "authorization": hex::encode(id.sign(&m).to_bytes()),
+            });
+            std::fs::write(&f, v.to_string()).unwrap();
+        };
+        write(800, 815);
+        let (_, a0) = crate::attester::read_authorization_file(&f).unwrap();
+        let opts = AttestOptions {
+            key: key.clone(),
+            identity: Some(id.verifying_key().to_bytes()),
+            authorization: Some(a0),
+            authorization_file: Some(f.clone()),
+            revocations_file: None,
+            genesis: g,
+            log: None,
+            adopt_legacy: false,
+        };
+        let mut signer = Some(Attester::open(opts).unwrap());
+        let m = Metrics::default();
+        let mut st = State { complete: true, ready: true, attester: signer.as_ref().map(|a| a.info()), ..Default::default() };
+        sign_root(&mut st, &mut signer, &m, 1, [7; 32]);
+        write(813, 828);
+        std::thread::sleep(std::time::Duration::from_millis(1100)); // rilexohet më së shumti një herë në sekondë
+        sign_root(&mut st, &mut signer, &m, 2, [8; 32]);
+        st.slot = 2;
+        let sh = Shared { state: Arc::new(RwLock::new(st)), metrics: Arc::new(m) };
+        let from = |slot: u64| {
+            let r = crate::rpc::handle_jsonrpc(&sh, &format!(r#"{{"id":1,"method":"getZiljaAttestation","params":[{slot}]}}"#));
+            r["result"]["authorization"]["fromEpoch"].as_u64().unwrap_or_else(|| panic!("{r}"))
+        };
+        assert_eq!(from(2), 813);
+        assert_eq!(from(1), 800, "firma e slotit 1 u bë me autorizimin 800..815");
     }
 }
