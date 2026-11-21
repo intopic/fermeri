@@ -57,6 +57,25 @@ function b64(s) {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
 
+/**
+ * G10: forma kanonike e një adrese zileje, për të njohur dublikatat: host-i me shkronja të vogla, pa
+ * portin parazgjedhës, pa fragment dhe pa "/" në fund. Një adresë që s'është URL mbetet siç është.
+ * @param {string} e
+ */
+export function canonicalEndpoint(e) {
+  const raw = String(e).trim();
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return raw.replace(/\/+$/, "");
+  }
+  u.hash = "";
+  u.pathname = u.pathname.replace(/\/+$/, "");
+  const s = u.href;
+  return u.search ? s : s.replace(/\/+$/, "");
+}
+
 export class ZiljaClient {
   /**
    * @param {object} o
@@ -79,8 +98,9 @@ export class ZiljaClient {
    */
   constructor(o) {
     if (!o?.endpoints?.length) throw new Error("duhet të paktën një adresë zileje");
-    // L-04: e njëjta adresë e dhënë dy herë nuk numërohet si dy zile.
-    this.endpoints = [...new Set(o.endpoints.map((e) => String(e).trim().replace(/\/+$/, "")))];
+    // L-04 / G10: e njëjta adresë e dhënë dy herë (edhe me shkronja të mëdha, portin parazgjedhës
+    // ose "/" në fund) nuk numërohet si dy zile.
+    this.endpoints = [...new Set(o.endpoints.map(canonicalEndpoint))];
     this.solanaRpc = o.solanaRpc;
     this.minAgree = o.minAgree ?? DEFAULTS.minAgree;
     this.quorum = o.quorum ?? false;

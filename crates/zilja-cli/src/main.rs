@@ -100,10 +100,10 @@ fn parse_args() -> Result<Args, String> {
     if quorum && sol.is_none() {
         return Err("--quorum kërkon SOLANA_RPC_URL".into());
     }
-    // E njëjta adresë dy herë s'është dy zile (L-04).
+    // E njëjta adresë dy herë s'është dy zile (L-04), edhe e shkruar ndryshe (G10).
     let mut endpoints: Vec<String> = Vec::new();
     for e in std::iter::once(pos[0].clone()).chain(also) {
-        let n = e.trim_end_matches('/').to_string();
+        let n = zilja_cli::canonical_endpoint(&e);
         if !endpoints.contains(&n) {
             endpoints.push(n);
         }

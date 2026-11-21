@@ -39,6 +39,8 @@ fn main() {
                 _ => return Err(format!("argument i panjohur {a:?}; shih kokën e src/main.rs")),
             }
         }
+        // G10: e njëjta zile e shkruar ndryshe pyetet dhe numërohet një herë.
+        let mut ziljas: Vec<String> = ziljas.iter().map(|z| zilja_cli::canonical_endpoint(z)).collect();
         ziljas.sort();
         ziljas.dedup();
         if ziljas.is_empty() {

@@ -46,6 +46,35 @@ pub fn is_root_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// G10: forma kanonike e adresës së një zileje, për të njohur dublikatat (si `canonicalEndpoint` në
+/// SDK): skema dhe host-i me shkronja të vogla, pa portin parazgjedhës (80/443), pa fragment, pa "/" në fund.
+pub fn canonical_endpoint(e: &str) -> String {
+    let e = e.trim();
+    let Some((scheme, rest)) = e.split_once("://") else { return e.trim_end_matches('/').to_string() };
+    let scheme = scheme.to_ascii_lowercase();
+    let rest = rest.split('#').next().unwrap_or("");
+    let cut = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (auth, tail) = rest.split_at(cut);
+    let (user, hostport) = match auth.rfind('@') {
+        Some(i) => (&auth[..=i], &auth[i + 1..]),
+        None => ("", auth),
+    };
+    let mut hp = hostport.to_ascii_lowercase();
+    let default = match scheme.as_str() {
+        "http" => ":80",
+        "https" => ":443",
+        _ => "",
+    };
+    if !default.is_empty() && hp.ends_with(default) {
+        hp.truncate(hp.len() - default.len());
+    }
+    let tail = match tail.find('?') {
+        Some(q) => format!("{}{}", tail[..q].trim_end_matches('/'), &tail[q..]),
+        None => tail.trim_end_matches('/').to_string(),
+    };
+    format!("{scheme}://{user}{hp}{tail}")
+}
+
 /// u64 nga JSON sipas `zilja_verifier::wire`: tekst dhjetor, ose numër ≤ 2^53 - 1 (F-08).
 pub fn u64_field(v: &Value) -> Option<u64> {
     match v {
@@ -208,6 +237,19 @@ pub fn quorum_by_root(ziljas: &[String], epoch: u64, slot: u64, genesis: &[u8; 3
 
 #[cfg(test)]
 mod tests {
+    /// G10: e njëjta zile e shkruar ndryshe → e njëjta formë.
+    #[test]
+    fn canonical_endpoint_merges_spellings() {
+        use super::canonical_endpoint as c;
+        assert_eq!(c("HTTPS://Zile.Example:443/"), "https://zile.example");
+        assert_eq!(c("https://zile.example//"), "https://zile.example");
+        assert_eq!(c("http://h:80/rpc/"), "http://h/rpc");
+        assert_eq!(c("http://h:8899"), "http://h:8899");
+        assert_eq!(c("http://[::1]:80/"), "http://[::1]");
+        assert_eq!(c("https://u:P@H.com/x/?q=1#f"), "https://u:P@h.com/x?q=1");
+        assert_eq!(c("zile.local/"), "zile.local");
+    }
+
     /// H2: RPC-të publike (Solana, zilet pas proxy-t TLS) janë `https://`. Pa backend TLS, `ureq`
     /// refuzonte skemën para se të lidhej ("Unknown Scheme"); tani lidhja provohet vërtet.
     #[test]

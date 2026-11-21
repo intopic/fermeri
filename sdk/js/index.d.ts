@@ -152,6 +152,9 @@ export interface VerifyResult {
   warnings: string[];
 }
 
+/** G10: forma kanonike e adresës së një zileje (host i vogël, pa portin parazgjedhës, pa "/" në fund). */
+export function canonicalEndpoint(e: string): string;
+
 export class ZiljaClient {
   /** Hedh gabim për konfigurim të pavlefshëm (p.sh. një zile me minTrust "agreement"). */
   constructor(options: ZiljaClientOptions);

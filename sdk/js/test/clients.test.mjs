@@ -57,6 +57,19 @@ function mock({ ziles, sol = {} }) {
 const proofAt = (slot, c = inc, complete = true) => ({ slot, root: c.root, complete, pubkey: c.pubkey, account: c.account ?? null, proof: c.proof });
 const uniq = () => `http://z${Math.random().toString(36).slice(2)}`;
 
+// G10: e njëjta zile e shkruar ndryshe (shkronja, port parazgjedhës, "/" në fund) numërohet një herë.
+{
+  const c = new ZiljaClient({ endpoints: ["https://Zile.Example:443/", "https://zile.example", "HTTPS://ZILE.EXAMPLE//", "http://zile.example:8899"], fetch: async () => ({}) });
+  expect("G10: tre shkrime të së njëjtës zile → një", c.endpoints.length === 2 && c.endpoints[0] === "https://zile.example", JSON.stringify(c.endpoints));
+  let threw = false;
+  try {
+    new ZiljaClient({ endpoints: ["http://a", "HTTP://A:80/"], minAgree: 2, fetch: async () => ({}) });
+  } catch {
+    threw = true;
+  }
+  expect("G10: minAgree 2 me dy shkrime të së njëjtës zile → gabim konfigurimi", threw);
+}
+
 // 1. minAgree s'ulet vetë kur ka më pak zile se ç'kërkon politika: gabim konfigurimi.
 {
   let threw = false;
