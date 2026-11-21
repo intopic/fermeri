@@ -147,7 +147,7 @@ export interface VerifyResult {
   quorum: { reached: boolean; stakePercent: number; validSignatures: number } | null;
   /** Krahasimi me të dhënat e `solanaRpc`, nëse u bë. */
   /** `bytes` jepet vetëm kur `matches === true`: vetëm atëherë të dhënat janë të verifikuara. */
-  data: { checked: boolean; matches: boolean; rpcSlot: number; bytes: Uint8Array | null } | null;
+  data: { checked: boolean; matches: boolean; rpcSlot: number | null; bytes: Uint8Array | null } | null;
   checks: Checks;
   /** Kodet e kontrolleve që dështuan (p.sh. "stale", "root_conflict", "absence_incomplete"). */
   errors: string[];

@@ -410,15 +410,17 @@ export class ZiljaClient {
       try {
         // Agave pranon ≤ 100 llogari për getMultipleAccounts: kërkesa ndahet në copa.
         const values = [];
-        let rpcSlot = null;
+        // G30: sloti i secilës copë veç: copat lexohen njëra pas tjetrës dhe mund të jenë në slote të
+        // ndryshme. Një copë pa `context.slot` jep null për llogaritë e veta, jo slotin e një tjetre.
+        const rpcSlots = [];
         for (let c = 0; c < want.length; c += 100) {
           const part = want.slice(c, c + 100);
           const info = await this.rpc(this.solanaRpc, "getMultipleAccounts", [part.map((i) => pubkeys[i]), { encoding: "base64", commitment: "finalized" }]);
           if (!Array.isArray(info?.value) || info.value.length !== part.length) throw new Error("getMultipleAccounts: përgjigje e pavlefshme");
-          // L5: një copë pa `context.slot` s'e prish slotin e të tjerave (Math.min me undefined = NaN).
           const cs = info?.context?.slot;
-          if (Number.isSafeInteger(cs)) rpcSlot = rpcSlot == null ? cs : Math.min(rpcSlot, cs);
+          const chunkSlot = Number.isSafeInteger(cs) ? cs : null;
           values.push(...info.value);
+          rpcSlots.push(...info.value.map(() => chunkSlot));
         }
         for (const [j, i] of want.entries()) {
           const v = values[j];
@@ -430,7 +432,7 @@ export class ZiljaClient {
             same = (await dataMatches(account, bytes)) && exactU64(v.lamports) === account.lamports && v.owner === account.owner && v.executable === account.executable;
           }
           datas[i] = { status: same ? "match" : "mismatch" };
-          dataReports[i] = { checked: true, matches: same, rpcSlot, bytes: same ? bytes : null };
+          dataReports[i] = { checked: true, matches: same, rpcSlot: rpcSlots[j], bytes: same ? bytes : null };
         }
       } catch (e) {
         for (const i of want) {

@@ -148,13 +148,14 @@ class FakePublicKey {
   expect("G01: kit getBalance i llogarisë që s'ekziston → 0n", gone.value === 0n, String(gone.value));
 }
 
-// L5: një copë e getMultipleAccounts pa `context.slot` s'e bën rpcSlot NaN.
+// L5 / G30: një copë e getMultipleAccounts pa `context.slot` s'e bën rpcSlot NaN, dhe s'merr slotin e
+// një cope tjetër: llogaritë e saj kanë rpcSlot null, ato të copës së parë 100.
 {
   calls.length = 0;
   const list = Array.from({ length: 150 }, (_, i) => (i % 2 ? fx.ata : fx.wallet));
   const r = await new ZiljaClient({ ...world({ noContextSecond: true }), minTrust: "agreement" }).verifyAccounts(list);
   const slots = r.map((x) => x.data && x.data.rpcSlot);
-  expect("L5: rpcSlot = 100 edhe kur një copë s'ka context", slots.every((s) => s === 100), JSON.stringify(slots.slice(0, 3)));
+  expect("G30: rpcSlot sipas copës (100 për të parën, null për copën pa context)", slots.slice(0, 100).every((s) => s === 100) && slots.slice(100).every((s) => s === null), JSON.stringify([slots[0], slots[99], slots[100], slots[149]]));
 }
 
 // G12: vetëm llogari tokeni / mint të vërteta lexohen si të tilla.
