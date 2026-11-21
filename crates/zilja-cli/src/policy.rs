@@ -202,7 +202,8 @@ pub fn decide(i: &Input) -> Decision {
         }
         let mut quorum_root: Option<&str> = None;
         if let Some(groups) = &i.quorum {
-            if i.quorum_epoch_ok == Some(false) {
+            // G25: kuorumi numërohet vetëm kur epoka u konfirmua; `None` = s'dihet, pra jo.
+            if i.quorum_epoch_ok != Some(true) {
                 warnings.push("quorum_epoch_unsupported");
             } else {
                 let mut reached: Vec<&str> = Vec::new();

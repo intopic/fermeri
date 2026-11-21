@@ -86,7 +86,8 @@ export function decide(i) {
     if (i.endpoints >= 2 && agreeing >= p.minAgree) trust = "agreement";
     let quorumRoot = null;
     if (i.quorum) {
-      if (i.quorumEpochOk === false) warnings.push("quorum_epoch_unsupported");
+      // G25: kuorumi numërohet vetëm kur epoka u konfirmua (`true`); `null`/mungesë = s'dihet, pra jo.
+      if (i.quorumEpochOk !== true) warnings.push("quorum_epoch_unsupported");
       else {
         const reached = [...new Set(i.quorum.filter((g) => g.reached).map((g) => g.root))];
         if (reached.length > 1) errors.push("quorum_split");

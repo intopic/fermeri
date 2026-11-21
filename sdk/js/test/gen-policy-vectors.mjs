@@ -47,6 +47,8 @@ const cases = {
   quorum_other_root: base(q([{ root: R2, reached: true }])),
   quorum_split: base(q([{ root: R, reached: true }, { root: R2, reached: true }])),
   quorum_wrong_epoch: base({ ...q([{ root: R, reached: true }]), quorumEpochOk: false }),
+  // G25: epoka e panjohur (null) s'numërohet si e konfirmuar.
+  quorum_epoch_unknown: base({ ...q([{ root: R, reached: true }]), quorumEpochOk: null }),
   quorum_without_rpc_config: base({ policy: { minTrust: "quorum" } }),
   // A14: referenca vetëm-hash vërteton përfshirjen; sloti dhe plotësia e serverit s'i besohen.
   anchor_hash_only_inclusion: base({ endpoints: 1, others: [], anchor: { slot: null, complete: null } }),

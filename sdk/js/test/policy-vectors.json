@@ -1530,6 +1530,69 @@
   }
  },
  {
+  "name": "quorum_epoch_unknown",
+  "input": {
+   "policy": {
+    "minTrust": "quorum",
+    "minAgree": 2,
+    "maxSlotLag": null,
+    "minSlot": null
+   },
+   "request": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": null
+   },
+   "endpoints": 2,
+   "quorumEnabled": true,
+   "anchor": null,
+   "primary": {
+    "pubkey": "Acc1111111111111111111111111111111111111111",
+    "slot": 100,
+    "root": "abababababababababababababababababababababababababababababababab",
+    "complete": true,
+    "verdict": "exists"
+   },
+   "others": [
+    {
+     "ok": true,
+     "slot": 100,
+     "root": "abababababababababababababababababababababababababababababababab",
+     "complete": true
+    }
+   ],
+   "quorum": [
+    {
+     "root": "abababababababababababababababababababababababababababababababab",
+     "reached": true
+    }
+   ],
+   "quorumEpochOk": null,
+   "finalizedSlot": null,
+   "highestSeen": null,
+   "data": null
+  },
+  "expect": {
+   "ok": false,
+   "verdict": "exists",
+   "trust": "agreement",
+   "agreeing": 2,
+   "checks": {
+    "proof": "valid",
+    "completeness": "complete",
+    "root": "agreement",
+    "freshness": "unchecked",
+    "data": "unchecked"
+   },
+   "errors": [
+    "trust_below_min"
+   ],
+   "warnings": [
+    "quorum_epoch_unsupported"
+   ],
+   "raiseFloor": null
+  }
+ },
+ {
   "name": "quorum_without_rpc_config",
   "input": {
    "policy": {
