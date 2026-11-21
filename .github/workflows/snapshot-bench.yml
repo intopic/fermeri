@@ -44,6 +44,9 @@ on:
     # Çdo të hënë: kontroll i formatit mbi Testnet (nëse Agave ndryshon AppendVec-un, dështon këtu).
     - cron: "17 3 * * 1"
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -115,18 +118,40 @@ jobs:
       - name: build
         run: cargo build --release -p zilja-bench --bin zilja-snapshot-bench
       - name: bench (snapshot i plotë, streaming)
+        # G05: inputet kalojnë vetëm si env dhe kontrollohen; asnjë shprehje inputs brenda `run`
+        # (do të ishte kod shell-i i futur nga kushdo që nis workflow-n, në makinën tënde).
         env:
           URL: ${{ inputs.snapshot_url }}
+          SLOTS: ${{ inputs.slots }}
+          UPDATES: ${{ inputs.updates }}
+          PROOFS: ${{ inputs.proofs }}
+          COLD: ${{ inputs.cold }}
+          RPC_CLIENTS: ${{ inputs.rpc_clients }}
+          RPC_SECONDS: ${{ inputs.rpc_seconds }}
+          RUN_ID: ${{ github.run_id }}
         run: |
+          bad() { echo "input i pavlefshëm: $1='$2'" >&2; exit 2; }
+          [[ $URL =~ ^https?://[A-Za-z0-9._~:/?#@%+=,\&-]+$ ]] || bad snapshot_url "$URL"
+          [[ $SLOTS =~ ^[0-9]{1,7}$ ]] || bad slots "$SLOTS"
+          [[ $UPDATES =~ ^[0-9]{1,9}(,[0-9]{1,9})*$ ]] || bad updates "$UPDATES"
+          [[ $PROOFS =~ ^[0-9]{1,9}$ ]] || bad proofs "$PROOFS"
+          [[ $COLD =~ ^(none|profile|slot)$ ]] || bad cold "$COLD"
+          RPC=()
+          if [ -n "$RPC_CLIENTS" ]; then
+            [[ $RPC_CLIENTS =~ ^[0-9]{1,5}(,[0-9]{1,5})*$ ]] || bad rpc_clients "$RPC_CLIENTS"
+            [[ $RPC_SECONDS =~ ^[0-9]{1,5}$ ]] || bad rpc_seconds "$RPC_SECONDS"
+            RPC=(--rpc-clients "$RPC_CLIENTS" --rpc-seconds "$RPC_SECONDS" --rpc-one-ip)
+          fi
           # Dosje e re për çdo ekzekutim (bench-i s'fshin asgjë që s'e krijoi).
-          W="${ZILJA_BENCH_DIR:-$HOME/zilja-bench}/run-${{ github.run_id }}"
+          W="${ZILJA_BENCH_DIR:-$HOME/zilja-bench}/run-$RUN_ID"
           mkdir -p "$W/out"
           echo "W=$W" >> "$GITHUB_ENV"
           curl -fsSL --retry 3 "$URL" | ./target/release/zilja-snapshot-bench - "$W/db" \
-            --out "$W/out/results.csv" --cache-depth 20 --slots "${{ inputs.slots }}" \
-            --updates "${{ inputs.updates }}" --proofs "${{ inputs.proofs }}" --cold "${{ inputs.cold }}" ${{ inputs.rpc_clients != '' && format('--rpc-clients {0} --rpc-seconds {1} --rpc-one-ip', inputs.rpc_clients, inputs.rpc_seconds) || '' }} > "$W/out/stdout.json"
-          st=${PIPESTATUS[1]}
-          [ "$st" = 0 ] || exit "$st"
+            --out "$W/out/results.csv" --cache-depth 20 --slots "$SLOTS" \
+            --updates "$UPDATES" --proofs "$PROOFS" --cold "$COLD" "${RPC[@]}" > "$W/out/stdout.json"
+          st=("${PIPESTATUS[@]}")
+          [ "${st[0]}" = 0 ] || { echo "curl dështoi (${st[0]})"; exit "${st[0]}"; }
+          [ "${st[1]}" = 0 ] || exit "${st[1]}"
           python3 scripts/plot-bench.py "$W/out/results.csv"
       - uses: actions/upload-artifact@v4
         if: always()
