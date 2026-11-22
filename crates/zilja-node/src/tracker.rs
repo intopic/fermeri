@@ -171,7 +171,8 @@ impl Tracker {
     /// Dritarja e slotit `s` për grupimin: `ceil(s / K)`. Kufiri i dritares `n` është sloti `n·K`.
     fn window(&self, s: Slot) -> u64 {
         let k = self.root_every.max(1);
-        s.div_ceil(k)
+        // Sloti 0 (gjeneza) i përket dritares 1: pema fillestare ka tashmë root-in e slotit 0.
+        s.div_ceil(k).max(1)
     }
 
     /// A18: vendos buxhetin e kujtesës.
@@ -582,7 +583,7 @@ impl Tracker {
                 for (key, (_, m)) in bank.updates {
                     g.updates.insert(key, m);
                 }
-                if k > 1 && bank.slot.is_multiple_of(k) {
+                if k > 1 && bank.slot > 0 && bank.slot.is_multiple_of(k) {
                     closed.push(self.group.take().unwrap());
                 }
                 chain_anc.push((bank.slot, bank.ancestors));
@@ -776,6 +777,20 @@ mod tests {
 
     /// Kufiri i kapërcyer (sloti 16 pa bllok): dritarja mbyllet te sloti i fundit kanonik (15),
     /// kur vjen banka e parë e dritares tjetër.
+    /// Gjeneza: sloti 0 s'merr root të dytë (pema fillestare e ka), shkon te dritarja 1–4.
+    #[test]
+    fn root_every_k_genesis_slot_joins_first_window() {
+        let mut t = Tracker::new();
+        t.set_root_every(4);
+        t.handle(status(0, None, Some(0), Status::CreatedBank));
+        t.handle(acc(0, 0, 0, 0, 0));
+        let out = t.handle(status(0, None, Some(0), Status::Rooted));
+        assert!(out.iter().all(|o| matches!(o, Output::Startup { .. })), "pa Rooted te sloti 0: {out:?}");
+        chain(&mut t, 1, 4, &[]);
+        let r = rooted_all(t.handle(status(4, Some(3), Some(4), Status::Rooted)));
+        assert_eq!(r.iter().map(|x| (x.0, x.1)).collect::<Vec<_>>(), vec![(4, 5)]);
+    }
+
     #[test]
     fn root_every_k_skipped_boundary_closes_at_last_slot() {
         let mut t = started(10);
