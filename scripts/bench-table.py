@@ -85,6 +85,14 @@ def main():
                       f"{f(lat.get('p50'), 2)} | {f(lat.get('p99'), 2)} | {f(lat.get('max'), 1)} | {f(l['by_kind']['multi'].get('p99'), 2)} | "
                       f"{f(l['error_pct'], 2)} | {l['busy_503']} | {l.get('refused', 0)} | {l['client_out_of_ports']} | {wr['late']}/{wr['slots']} | "
                       f"{f(wr['total_ms'].get('p99'), 1)} | {f(wr['write_hold_ms'].get('p99'), 2)} | {f(l['cpu_pct'], 0)} | {l['verified']} | {l['invalid']} |")
+    if any(s.get("batch") for _, s in cases):
+        w("\n## Grupimi i sloteve: një përditësim çdo K slote\n")
+        w("| rasti | K | llogari unike/grup | grupi p50 ms | grupi p99 ms | grupi max ms | p99 pa ckpt | ms/slot |")
+        w("|---|---|---|---|---|---|---|---|")
+        for n, s in cases:
+            for k, v in sorted((s.get("batch") or {}).items(), key=lambda kv: int(kv[0])):
+                g, nk = v["group_ms"], v.get("group_ms_without_checkpoints", {})
+                w(f"| {n} | {k} | {int(v['unique_updates_per_group']):,} | {f(g.get('p50'))} | {f(g.get('p99'))} | {f(g.get('max'))} | {f(nk.get('p99'))} | {f(v['ms_per_slot_mean'])} |")
     warns = [(n, x) for n, s in cases for x in s.get("warnings", [])]
     if warns or failed or rpc_failed:
         w("\n## Paralajmërime\n")
@@ -115,6 +123,9 @@ def main():
   njëkohësisht): kështu sillet sot një klient i madh pas një IP-je të vetme. **porta** > 0: klientët e testit
   mbaruan portat e makinës (s'është faji i zilës). Klientët dhe serveri ndajnë CPU-në e së njëjtës makinë,
   ndaj kërkesa/s është kufiri i poshtëm i asaj që jep zilja me klientë nga rrjeti.
+- **Grupimi** (`BATCH`): një përditësim i vetëm me U llogari unike çdo K slote. U vjen nga matja e Mainnet-it
+  (llogaritë unike të K sloteve bashkë: 1:1502, 2:2340, 4:3827, 8:6134). **ms/slot** = koha mesatare e grupit / K;
+  krahasoje me kohën e slotit të rrjetit (~200 ms).
 - Ndryshimet janë sintetike dhe uniforme mbi `mostra` llogari (75% ndryshime, 15% të reja, 10% fshirje), jo
   trafik real: në Mainnet disa llogari janë shumë të nxehta, kështu që rastet cold janë kufiri i sipërm.
 """)

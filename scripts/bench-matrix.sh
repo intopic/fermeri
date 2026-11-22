@@ -37,6 +37,8 @@
 #   RPC_SLOT_MS=400                RPC_SLOT_MS me RPC_SLOT_UPDATES ndryshime, si në Mainnet, dhe
 #   RPC_SLOT_UPDATES=5000          mat edhe një klient të madh nga NJË IP (kufiri i prodhimit:
 #   RPC_ONE_IP=1                   2 lidhje njëkohësisht). 1 në 100 përgjigje verifikohet plotësisht.
+#   BATCH=                        grupimi i sloteve, K:U (U = llogari unike për grup), p.sh. sipas
+#                                 matjes së Mainnet-it: BATCH=1:1502,2:2340,4:3827,8:6134 (bosh = pa këtë fazë)
 #   BIN=target/release/zilja-snapshot-bench (ndërtohet nëse mungon)
 #
 # Çdo rast ndërton pemën nga e para. Me Mainnet të plotë kjo është disa orë për rast: zgjidh grupet,
@@ -63,6 +65,7 @@ if [ "${1:-}" = "publish" ]; then
     n=$(basename "$d"); [ -f "$d/summary.json" ] || continue
     mkdir -p "$DEST/$n"
     cp "$d/summary.json" "$DEST/$n/"
+    [ -f "$d/batch.csv" ] && cp "$d/batch.csv" "$DEST/$n/"
     cp "$d"/*.png "$DEST/$n/" 2>/dev/null || true
     gzip -c "$d/timeline.csv" > "$DEST/$n/timeline.csv.gz" 2>/dev/null || true
   done
@@ -159,6 +162,9 @@ RPC_SECONDS="${RPC_SECONDS:-30}"
 RPC_SLOT_MS="${RPC_SLOT_MS:-400}"
 RPC_SLOT_UPDATES="${RPC_SLOT_UPDATES:-5000}"
 RPC_ONE_IP="${RPC_ONE_IP:-1}"
+BATCH="${BATCH:-}"
+BATCH_ARGS=()
+[ -n "$BATCH" ] && BATCH_ARGS=(--batch "$BATCH")
 RPC_ARGS=()
 if [ -n "$RPC_CLIENTS" ]; then
   RPC_ARGS=(--rpc-clients "$RPC_CLIENTS" --rpc-seconds "$RPC_SECONDS" --rpc-slot-ms "$RPC_SLOT_MS" --rpc-slot-updates "$RPC_SLOT_UPDATES")
@@ -228,7 +234,7 @@ case "$SNAP" in *mainnet*) echo mainnet > "$OUT/network" ;; *testnet*) echo test
 # Matrix-i mund të niset disa herë në të njëjtën dosje me parametra të ndryshëm (rastet e mbaruara
 # kapërcehen, snapshot-i ripërdoret): çdo nisje shtohet te runs.log; parametrat e çdo rasti janë te
 # <rasti>/summary.json.
-echo "$(date -Is) BENCH_GROUPS='$BENCH_GROUPS' LIMITS='$LIMITS' CASE_LIMIT=$CASE_LIMIT COLD_LIMIT=$COLD_LIMIT COLD_MODES='$COLD_MODES' CACHE_DEPTHS='$CACHE_DEPTHS' SEEDS='$SEEDS' UPDATES=$UPDATES SLOTS=$SLOTS SAMPLE=$SAMPLE COLD_SAMPLE=$COLD_SAMPLE PROOFS=$PROOFS RPC_CLIENTS=$RPC_CLIENTS RPC_SECONDS=$RPC_SECONDS RPC_SLOT_MS=$RPC_SLOT_MS RPC_SLOT_UPDATES=$RPC_SLOT_UPDATES RPC_ONE_IP=$RPC_ONE_IP" >> "$OUT/runs.log"
+echo "$(date -Is) BENCH_GROUPS='$BENCH_GROUPS' LIMITS='$LIMITS' CASE_LIMIT=$CASE_LIMIT COLD_LIMIT=$COLD_LIMIT COLD_MODES='$COLD_MODES' CACHE_DEPTHS='$CACHE_DEPTHS' SEEDS='$SEEDS' UPDATES=$UPDATES SLOTS=$SLOTS SAMPLE=$SAMPLE COLD_SAMPLE=$COLD_SAMPLE PROOFS=$PROOFS RPC_CLIENTS=$RPC_CLIENTS RPC_SECONDS=$RPC_SECONDS RPC_SLOT_MS=$RPC_SLOT_MS RPC_SLOT_UPDATES=$RPC_SLOT_UPDATES RPC_ONE_IP=$RPC_ONE_IP BATCH=$BATCH" >> "$OUT/runs.log"
 {
   echo "data: $(date -Is)"
   echo "git: $(cd "$ROOT" && git rev-parse --short HEAD 2>/dev/null) $(cd "$ROOT" && git status --porcelain 2>/dev/null | grep -q . && echo '(me ndryshime lokale)')"
@@ -274,7 +280,7 @@ for c in "${CASES[@]}"; do
   t0=$(date +%s)
   # shellcheck disable=SC2086
   "$BIN" "$SNAP" "$db" --out "$dir/results.csv" $args \
-      --updates "$UPDATES" --slots "$SLOTS" --proofs "$PROOFS" "${RPC_ARGS[@]}" \
+      --updates "$UPDATES" --slots "$SLOTS" --proofs "$PROOFS" "${BATCH_ARGS[@]}" "${RPC_ARGS[@]}" \
       > "$dir/stdout.json" 2> "$dir/bench.log"
   st=$?
   du -sh "$db" 2>/dev/null | cut -f1 > "$dir/db_size" || true

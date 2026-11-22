@@ -18,6 +18,10 @@
 //!    versioni me slotin më të madh, si në plugin (F-02); `lamports = 0` = e fshirë.
 //! 3. `finish_snapshot`, pastaj slote me 75% ndryshime çelësash realë, 15% të reja, 10% fshirje, për
 //!    çdo profil `--updates`; matet `prepare_slot`, `commit_slot`, checkpoint-et, RSS/HWM, CPU, I/O.
+//!    Me `--batch K:U,…` (opsionale), grupimi i sloteve: për çdo K, një përditësim i vetëm me U
+//!    llogari unike çdo K slote (U = llogaritë unike të K sloteve bashkë, të matura në Mainnet:
+//!    `1:1502,2:2340,4:3827,8:6134` nga 150 blloqe, nëntor 2026). Matet koha e grupit dhe koha për
+//!    slot (= grupi / K), me të njëjtën përzierje 75/15/10. Një rresht për grup te `batch.csv`.
 //! 4. `--proofs` dëftesa (gjysma aktuale, gjysma historike), secila e verifikuar kundër root-it.
 //!
 //! Cache-i i sistemit (R8): pema sapo është shkruar, pra `pages.dat` është zakonisht i tëri në
@@ -382,11 +386,50 @@ struct Args {
     slot: Option<u64>,
     cold: Cold,
     rpc: snapshot_rpc::RpcOpts,
+    /// `--batch`: (K slote për grup, llogari unike për grup).
+    batch: Vec<(u64, usize)>,
+}
+
+/// `K:U,K:U,…` → [(K, U)]; K ≥ 1, U ≥ 1.
+fn parse_batch(s: &str) -> Result<Vec<(u64, usize)>, String> {
+    s.split(',')
+        .map(|x| {
+            let (k, u) = x.trim().split_once(':').ok_or(format!("--batch: {x:?} (pritet K:U, p.sh. 4:3827)"))?;
+            let k: u64 = k.parse().map_err(|_| format!("--batch: K i pavlefshëm {k:?}"))?;
+            let u: usize = u.parse().map_err(|_| format!("--batch: U i pavlefshëm {u:?}"))?;
+            if k == 0 || u == 0 {
+                return Err(format!("--batch: K dhe U duhet ≥ 1 ({x:?})"));
+            }
+            Ok((k, u))
+        })
+        .collect()
+}
+
+/// `n` ndryshime: 75% llogari ekzistuese të mostrës, 15% të reja, 10% fshirje. Llogaritë e reja
+/// shtohen te mostra pas grupit (ndryshohen/fshihen më vonë).
+fn gen_updates(n: usize, sample: &mut Vec<Key>, rng: &mut StdRng) -> Vec<Update> {
+    let mut created: Vec<Key> = Vec::new();
+    let mut ups: Vec<Update> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let r: f64 = rng.gen();
+        if r < 0.75 && !sample.is_empty() {
+            ups.push((sample[rng.gen_range(0..sample.len())], Some(rand_meta(rng))));
+        } else if r < 0.90 || sample.len() < 2 {
+            let k: Key = rng.gen();
+            created.push(k);
+            ups.push((k, Some(rand_meta(rng))));
+        } else {
+            let i = rng.gen_range(0..sample.len());
+            ups.push((sample.swap_remove(i), None));
+        }
+    }
+    sample.append(&mut created);
+    ups
 }
 
 fn parse_args() -> Result<Args, String> {
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "përdorimi: zilja-snapshot-bench <snapshot.tar.zst> <db_dir> [--out results.csv] [--cache-depth 20] [--slots 300] [--updates 5000,15000,30000] [--proofs 5000] [--sample 500000] [--limit N] [--ingest-only] [--seed 1] [--slot S] [--cold none|profile|slot] [--rpc-clients 1,8,32,128] [--rpc-seconds 30] [--rpc-slot-ms 400] [--rpc-slot-updates 5000] [--rpc-verify-every 100] [--rpc-multi-keys 10] [--rpc-one-ip]\n<snapshot.tar.zst> mund të jetë `-` (stdin): curl -sL URL | zilja-snapshot-bench - <db_dir> --limit 3000000 …";
+    let usage = "përdorimi: zilja-snapshot-bench <snapshot.tar.zst> <db_dir> [--out results.csv] [--cache-depth 20] [--slots 300] [--updates 5000,15000,30000] [--proofs 5000] [--sample 500000] [--limit N] [--ingest-only] [--seed 1] [--slot S] [--cold none|profile|slot] [--rpc-clients 1,8,32,128] [--rpc-seconds 30] [--rpc-slot-ms 400] [--rpc-slot-updates 5000] [--rpc-verify-every 100] [--rpc-multi-keys 10] [--rpc-one-ip] [--batch 1:1502,2:2340,4:3827,8:6134]\n<snapshot.tar.zst> mund të jetë `-` (stdin): curl -sL URL | zilja-snapshot-bench - <db_dir> --limit 3000000 …";
     if a.len() < 2 {
         return Err(usage.into());
     }
@@ -405,6 +448,7 @@ fn parse_args() -> Result<Args, String> {
         slot: None,
         cold: Cold::None,
         rpc: snapshot_rpc::RpcOpts { clients: vec![], seconds: 30, slot_ms: 400, slot_updates: 5_000, verify_every: 100, multi_keys: 10, one_ip: false },
+        batch: vec![],
     };
     let mut it = a[2..].iter();
     while let Some(k) = it.next() {
@@ -428,6 +472,7 @@ fn parse_args() -> Result<Args, String> {
             "--rpc-verify-every" => r.rpc.verify_every = v()?.parse().map_err(|e| format!("--rpc-verify-every: {e}"))?,
             "--rpc-multi-keys" => r.rpc.multi_keys = v()?.parse().map_err(|e| format!("--rpc-multi-keys: {e}"))?,
             "--rpc-one-ip" => r.rpc.one_ip = true,
+            "--batch" => r.batch = parse_batch(&v()?)?,
             "--cold" => {
                 r.cold = match v()?.as_str() {
                     "none" => Cold::None,
@@ -527,7 +572,7 @@ fn run() -> Result<(), String> {
         "cache_depth": a.cache_depth,
         "params": {
             "cold": format!("{:?}", a.cold).to_lowercase(), "sample": a.sample, "slots": a.slots, "updates": a.updates,
-            "proofs": a.proofs, "seed": a.seed, "limit": a.limit,
+            "proofs": a.proofs, "seed": a.seed, "limit": a.limit, "batch": a.batch,
         },
         "ram": {
             "mem_available_gb_at_start": mem_avail0, "pages_gb_vs_mem_total": file_gb(&pages) / meminfo_gb("MemTotal:").max(1e-9),
@@ -553,7 +598,6 @@ fn run() -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     let mut slot = snap_slot;
     let mut profiles = serde_json::Map::new();
-    let mut created: Vec<Key> = Vec::new();
     let mut cold_warn: Vec<String> = Vec::new();
     let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
     for &n in &a.updates {
@@ -568,22 +612,7 @@ fn run() -> Result<(), String> {
         let mut first_cold: Option<(u64, u64)> = None;
         for _ in 0..a.slots {
             slot += 1;
-            let mut ups: Vec<Update> = Vec::with_capacity(n);
-            for _ in 0..n {
-                let r: f64 = rng.gen();
-                if r < 0.75 && !sample.is_empty() {
-                    ups.push((sample[rng.gen_range(0..sample.len())], Some(rand_meta(&mut rng))));
-                } else if r < 0.90 || sample.len() < 2 {
-                    let k: Key = rng.gen();
-                    created.push(k);
-                    ups.push((k, Some(rand_meta(&mut rng))));
-                } else {
-                    let i = rng.gen_range(0..sample.len());
-                    ups.push((sample.swap_remove(i), None));
-                }
-            }
-            // Llogaritë e reja bëhen pjesë e mostrës (ndryshohen/fshihen më vonë).
-            sample.append(&mut created);
+            let ups = gen_updates(n, &mut sample, &mut rng);
             if a.cold == Cold::Slot {
                 drop_os_cache(&pages)?;
             }
@@ -676,6 +705,66 @@ fn run() -> Result<(), String> {
         );
     }
     summary["slots"] = Value::Object(profiles);
+
+    // 3b. Grupimi i sloteve: një përditësim me U llogari unike çdo K slote.
+    if !a.batch.is_empty() {
+        let mut groups = serde_json::Map::new();
+        let bpath = out_dir.join("batch.csv");
+        let mut bcsv = std::fs::File::create(&bpath).map_err(|e| format!("{}: {e}", bpath.display()))?;
+        writeln!(bcsv, "k,slot,unique_updates,total_ms,ms_per_slot,checkpoint,rss_mb,read_ms,tree_ms,fsync_ms,disk_reads,pages_written").map_err(|e| e.to_string())?;
+        for &(k, u) in &a.batch {
+            if a.cold != Cold::None {
+                drop_os_cache(&pages)?;
+            }
+            let n_groups = (a.slots / k).max(1);
+            let (mut tot, mut nock) = (Vec::new(), Vec::new());
+            for _ in 0..n_groups {
+                slot += k; // root-i i grupit merr slotin kufi (shumëfish i K-së në protokoll)
+                let ups = gen_updates(u, &mut sample, &mut rng);
+                if a.cold == Cold::Slot {
+                    drop_os_cache(&pages)?;
+                }
+                let t0 = Instant::now();
+                let p = tree.prepare_slot(slot, ups, None).map_err(|e| format!("prepare_slot {slot}: {e}"))?;
+                tree.commit_slot(slot, p).map_err(|e| format!("commit_slot {slot}: {e}"))?;
+                let tm = t0.elapsed().as_secs_f64() * 1e3;
+                let st = tree.last_timing().unwrap_or_default();
+                tot.push(tm);
+                if !st.checkpoint {
+                    nock.push(tm);
+                }
+                writeln!(
+                    bcsv,
+                    "{k},{slot},{u},{tm:.3},{:.3},{},{:.0},{:.3},{:.3},{:.3},{},{}",
+                    tm / k as f64,
+                    st.checkpoint as u8,
+                    proc_status("VmRSS:"),
+                    ms(st.read),
+                    ms(st.tree),
+                    ms(st.fsync),
+                    st.disk_reads,
+                    st.pages
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            let mean = tot.iter().sum::<f64>() / tot.len().max(1) as f64;
+            eprintln!(
+                "grupi K={k} ({u} llogari unike): p50 {:.1} ms, p99 {:.1} ms për grup | {:.1} ms/slot mesatarisht",
+                pct(&mut tot.clone(), 0.5),
+                pct(&mut tot.clone(), 0.99),
+                mean / k as f64
+            );
+            groups.insert(
+                k.to_string(),
+                json!({
+                    "slots_per_group": k, "unique_updates_per_group": u, "groups": n_groups,
+                    "group_ms": stats(tot), "group_ms_without_checkpoints": stats(nock),
+                    "ms_per_slot_mean": mean / k as f64,
+                }),
+            );
+        }
+        summary["batch"] = Value::Object(groups);
+    }
     summary["after_slots"] = json!({"hwm_mb": proc_status("VmHWM:"), "rss_mb": proc_status("VmRSS:"), "pages_gb": file_gb(&pages), "accounts": tree.len()});
     if !cold_warn.is_empty() {
         for w in &cold_warn {
@@ -855,6 +944,47 @@ mod tests {
             }
         }
         assert!(lv[0]["writer"]["slots"].as_u64().unwrap() > 0, "slotet vazhdojnë gjatë ngarkesës");
+    }
+
+    /// `--batch K:U,…`: vlerat e Mainnet-it lexohen; K ose U zero dhe formatet e gabuara refuzohen.
+    #[test]
+    fn batch_arg_parses_and_rejects() {
+        assert_eq!(parse_batch("1:1502,2:2340,4:3827,8:6134").unwrap(), vec![(1, 1502), (2, 2340), (4, 3827), (8, 6134)]);
+        assert_eq!(parse_batch(" 4:10 ").unwrap(), vec![(4, 10)]);
+        for bad in ["", "4", "0:10", "4:0", "a:1", "4:b", "4:10,", "4:10:3"] {
+            assert!(parse_batch(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// Grupi zbatohet si një slot i vetëm në pemë: root-i del i njëjtë me pemën në RAM.
+    #[test]
+    fn batch_group_commits_like_one_slot() {
+        let mut rng = StdRng::seed_from_u64(3);
+        let dir = tempfile::tempdir().unwrap();
+        let mut tree = PageTree::open(dir.path(), PageOptions { history: 4, cache_depth: 8, durable: false, ..Default::default() }).unwrap();
+        let init: Vec<Key> = (0..500).map(|_| rng.gen()).collect();
+        let mut mem: std::collections::BTreeMap<Key, AccountMeta> = Default::default();
+        let mut ups0 = Vec::new();
+        for k in &init {
+            let m = rand_meta(&mut rng);
+            mem.insert(*k, m.clone());
+            ups0.push((*k, Some(m)));
+        }
+        let p = tree.prepare_slot(10, ups0, None).unwrap();
+        tree.commit_slot(10, p).unwrap();
+        let mut sample = init.clone();
+        let ups = gen_updates(300, &mut sample, &mut rng);
+        assert_eq!(ups.len(), 300);
+        for (k, m) in &ups {
+            match m {
+                Some(m) => mem.insert(*k, m.clone()),
+                None => mem.remove(k),
+            };
+        }
+        let p = tree.prepare_slot(14, ups, None).unwrap();
+        let root = tree.commit_slot(14, p).unwrap();
+        let want = Tree::from_accounts(mem.into_iter().map(|(k, m)| (k, Some(m))).collect());
+        assert_eq!(root, want.root());
     }
 
     /// Një rekord që s'përputhet me formatin ndal leximin (s'kapërcehet në heshtje).
