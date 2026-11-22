@@ -29,6 +29,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Mutex, RwLock};
 
 /// Madhësia e bllokut në skedar (= faqja e sistemit të skedarëve dhe e NVMe-së).
@@ -831,7 +832,8 @@ pub struct PageTree {
     _lock: File,
     data: File,
     log: File,
-    log_len: u64,
+    /// Atomik, që checkpoint-i të bëhet edhe me `&self` (`maintenance`, nën kyçin e leximit).
+    log_len: AtomicU64,
     o: PageOptions,
     state: Option<State>,
     root_id: Option<PageId>,
@@ -845,7 +847,11 @@ pub struct PageTree {
     snapshot_peak_blocks: usize,
     /// Faqet e lexuara për slotin që po zbatohet, sipas rrugës së rrënjës.
     work: RwLock<HashMap<PKey, WorkPage>>,
-    records_since_ckpt: u64,
+    records_since_ckpt: AtomicU64,
+    /// Checkpoint-i shtyhet nga `commit_slot` te `maintenance` (jashtë kyçit të shkrimit).
+    defer_ckpt: bool,
+    /// Një checkpoint është i nevojshëm dhe pret `maintenance`.
+    ckpt_due: AtomicBool,
     /// Numri rendor i rekordit të fundit të shkruar.
     rec_seq: u64,
     commits: u64,
@@ -916,7 +922,7 @@ impl PageTree {
             _lock: lock,
             data,
             log,
-            log_len: 0,
+            log_len: AtomicU64::new(0),
             o: o.clone(),
             state: None,
             root_id: None,
@@ -926,7 +932,9 @@ impl PageTree {
             pinned: HashMap::default(),
             snapshot_peak_blocks: 0,
             work: RwLock::new(HashMap::default()),
-            records_since_ckpt: 0,
+            records_since_ckpt: AtomicU64::new(0),
+            defer_ckpt: false,
+            ckpt_due: AtomicBool::new(false),
             rec_seq: 0,
             commits: 0,
             last_blocks: AtomicU64::new(0),
@@ -1035,7 +1043,7 @@ impl PageTree {
                 self.rec_seq = rec.seq;
                 self.root_id = rec.root_id;
                 self.state = Some(rec.st);
-                self.records_since_ckpt += 1;
+                *self.records_since_ckpt.get_mut() += 1;
             }
             pos += n;
         }
@@ -1050,7 +1058,7 @@ impl PageTree {
                 sync_dir(&self.dir)?;
             }
         }
-        self.log_len = pos as u64;
+        *self.log_len.get_mut() = pos as u64;
         self.alloc = Mutex::new(alloc);
         Ok(())
     }
@@ -1293,17 +1301,17 @@ impl PageTree {
 
     fn append_log(&mut self, rec: &LogRec, sync: bool) -> Result<(), String> {
         let b = rec.framed()?;
-        self.log.seek(SeekFrom::Start(self.log_len)).map_err(|e| e.to_string())?;
+        self.log.seek(SeekFrom::Start(*self.log_len.get_mut())).map_err(|e| e.to_string())?;
         self.log.write_all(&b).map_err(io("shkrimi i log-ut"))?;
         if sync {
             self.log.sync_data().map_err(io("fsync i log-ut"))?;
         }
-        self.log_len += b.len() as u64;
+        *self.log_len.get_mut() += b.len() as u64;
         Ok(())
     }
 
     /// Gjendja e plotë në `meta.ckpt` (atomike: skedar i përkohshëm + rename), pastaj log-u zbrazet.
-    fn checkpoint(&mut self) -> Result<(), String> {
+    fn checkpoint(&self) -> Result<(), String> {
         let Some(st) = self.state.clone() else {
             return Ok(());
         };
@@ -1339,8 +1347,9 @@ impl PageTree {
         }
         // Rekordet e vjetra kapërcehen nga numri rendor edhe nëse kjo ndërpritet këtu.
         self.log.set_len(0).map_err(io("zbrazja e log-ut"))?;
-        self.log_len = 0;
-        self.records_since_ckpt = 0;
+        self.log_len.store(0, Ordering::Relaxed);
+        self.records_since_ckpt.store(0, Ordering::Relaxed);
+        self.ckpt_due.store(false, Ordering::Relaxed);
         Ok(())
     }
 
@@ -1348,7 +1357,7 @@ impl PageTree {
     pub fn clear(&mut self) -> Result<(), String> {
         self.data.set_len(0).map_err(io("fshirja e faqeve"))?;
         self.log.set_len(0).map_err(io("fshirja e log-ut"))?;
-        self.log_len = 0;
+        *self.log_len.get_mut() = 0;
         remove_file(&self.dir.join("meta.ckpt"))?;
         remove_dir_all(&self.dir.join("staging"))?;
         *self.alloc.get_mut().unwrap() = Alloc::default();
@@ -1360,7 +1369,8 @@ impl PageTree {
         self.staged = 0;
         self.stage_buf.clear();
         self.stage_sums.clear();
-        self.records_since_ckpt = 0;
+        *self.records_since_ckpt.get_mut() = 0;
+        *self.ckpt_due.get_mut() = false;
         self.rec_seq = 0;
         Ok(())
     }
@@ -1803,6 +1813,18 @@ impl Source for PageTree {
 }
 
 impl StateTree for PageTree {
+    fn set_background_maintenance(&mut self, on: bool) {
+        self.defer_ckpt = on;
+    }
+
+    fn maintenance(&self) -> Result<bool, String> {
+        if !self.ckpt_due.load(Ordering::Relaxed) {
+            return Ok(false);
+        }
+        self.checkpoint()?;
+        Ok(true)
+    }
+
     fn root(&self) -> Hash {
         self.state.as_ref().map_or(EMPTY, |s| s.root.hash)
     }
@@ -2128,10 +2150,18 @@ impl StateTree for PageTree {
         }
         self.root_id = rec.root_id;
         self.state = Some(rec.st);
-        self.records_since_ckpt += 1;
-        let ckpt = self.records_since_ckpt >= self.o.ckpt_every || self.log_len > self.o.ckpt_log_mb << 20;
+        let recs = *self.records_since_ckpt.get_mut() + 1;
+        *self.records_since_ckpt.get_mut() = recs;
+        let log_len = *self.log_len.get_mut();
+        let due = recs >= self.o.ckpt_every || log_len > self.o.ckpt_log_mb << 20;
+        // Me `maintenance` checkpoint-i bëhet jashtë kyçit të shkrimit; këtu vetëm nëse
+        // `maintenance` mungon aq gjatë sa log-u kalon dyfishin e kufirit (log-u s'rritet pa fund).
+        let forced = recs >= 2 * self.o.ckpt_every || log_len > 2 * (self.o.ckpt_log_mb << 20);
+        let ckpt = due && (!self.defer_ckpt || forced);
         if ckpt {
             self.checkpoint()?;
+        } else if due {
+            *self.ckpt_due.get_mut() = true;
         }
         let write = p.t_write.saturating_sub(p.t_tree);
         self.last_timing = Some(SlotTiming {

@@ -348,6 +348,20 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// operacion; pa këtë, një klient që dërgon një bajt në çdo 4 s e mbante punëtorin pa fund.
 pub const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 const WORKERS: usize = 8;
+/// Prioriteti i punëtorëve HTTP: `nice` +5 mbi thread-in që i nis. Kur bërthamat janë të zëna,
+/// thread-i i pemës (përditësimi i slotit) dhe validatori fitojnë kundrejt dëftesave: një dëftesë
+/// pak më e vonë s'prish gjë, një përditësim i vonuar e shtyn zilen prapa.
+pub const RPC_NICE: i32 = 5;
+
+/// Ul prioritetin e thread-it që e thërret (në Linux `nice` vlen për thread-in, jo për procesin).
+/// Ulja lejohet gjithmonë; gabimi injorohet, sepse prioriteti s'prek korrektësinë.
+fn lower_priority() {
+    #[cfg(target_os = "linux")]
+    // SAFETY: `nice` vetëm ndryshon prioritetin e thread-it aktual.
+    unsafe {
+        libc::nice(RPC_NICE);
+    }
+}
 /// R4-3: sa lidhje njëkohësisht (në radhë + në shërbim) lejohen nga një IP në një port. Me 8
 /// punëtorë, një sulmues duhet ≥ 4 IP për t'i zënë të gjithë (secila lidhje zgjat ≤ afatin e
 /// kërkesës). Loopback-u përjashtohet si parazgjedhje: një reverse proxy në të njëjtin host
@@ -505,6 +519,7 @@ pub fn serve_handler<H: HttpHandler>(bind: &str, shared: Arc<H>, routes: Routes,
         let rx = rx.clone();
         let sh = shared.clone();
         threads.push(std::thread::Builder::new().name(format!("zilja-http-{i}")).spawn(move || {
+            lower_priority();
             // `_slot` lirohet në fund të çdo iterimi, pasi lidhja mbyllet.
             for (mut stream, accepted, _slot) in rx.iter() {
                 let until = accepted + deadline;

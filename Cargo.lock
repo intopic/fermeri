@@ -4776,6 +4776,7 @@ dependencies = [
  "crossbeam-channel",
  "ed25519-dalek",
  "hex",
+ "libc",
  "log",
  "rand 0.8.8",
  "rayon",

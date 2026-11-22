@@ -16,6 +16,7 @@
 //!   "tree_engine": "pages",
 //!   "history_slots": 32,
 //!   "cache_depth": 20,
+//!   "root_every": 4,
 //!   "metrics_bind": "127.0.0.1:7798",
 //!   "cors": false,
 //!   "snapshot_on_resume": false }
@@ -107,7 +108,7 @@ pub struct Config {
     #[serde(default)]
     pub snapshot_on_resume: bool,
     /// P-10: /health = 503 kur root-i i fundit është më i vjetër se kaq sekonda (0 = pa kontroll).
-    /// Në Solana rrënjosja ndodh çdo ~0.4 s; 60 s do të thotë që zilja ose validatori kanë mbetur pas.
+    /// Në Solana rrënjosja ndodh çdo ~0.2–0.4 s (root-i i zilës çdo `root_every` slote); 60 s do të thotë që zilja ose validatori kanë mbetur pas.
     #[serde(default = "default_max_root_age")]
     pub max_root_age_secs: u64,
     /// A18: mbi kaq banka të parrënjosura zilja ndalon (fail-closed) para se të shterojë kujtesën
@@ -117,7 +118,18 @@ pub struct Config {
     /// A18: mbi kaq ndryshime llogarish në pritje (~250 B secili) zilja ndalon. 0 = pa kufi.
     #[serde(default = "default_max_pending_updates")]
     pub max_pending_updates: usize,
+    /// Grupimi i sloteve (SPEC §3): root-i llogaritet dhe firmoset vetëm te slotet `slot % K == 0`.
+    /// Parazgjedhja 4 (~0.8–1.6 s). 1 = çdo slot. Të gjitha zilet e një kuorumi duhet ta kenë të njëjtin.
+    #[serde(default = "default_root_every")]
+    pub root_every: u64,
 }
+
+fn default_root_every() -> u64 {
+    4
+}
+
+/// Kufijtë e `root_every`: mbi 32 slote (~6–13 s) dëftesat vjetrohen dhe pritja rritet pa fitim.
+pub const ROOT_EVERY_RANGE: std::ops::RangeInclusive<u64> = 1..=32;
 
 fn default_max_pending_banks() -> usize {
     zilja_node::tracker::Limits::default().max_pending_banks
@@ -197,6 +209,9 @@ impl Config {
             if !CACHE_DEPTH_RANGE.contains(&cd) && !(test_override && cd <= 24) {
                 return Err(format!("cache_depth {cd} jashtë kufijve {CACHE_DEPTH_RANGE:?}"));
             }
+        }
+        if !ROOT_EVERY_RANGE.contains(&self.root_every) {
+            return Err(format!("root_every {} jashtë kufijve {ROOT_EVERY_RANGE:?}", self.root_every));
         }
         if self.history_slots.is_some_and(|h| h > 100_000) {
             return Err("history_slots shumë i madh (> 100000)".into());
@@ -373,7 +388,7 @@ impl GeyserPlugin for ZiljaPlugin {
             }
             None => None,
         };
-        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree, mid_run_load: is_reload, max_root_age_secs: Some(cfg.max_root_age_secs), limits: Some(zilja_node::tracker::Limits { max_pending_banks: cfg.max_pending_banks, max_pending_updates: cfg.max_pending_updates }), threads: cfg.threads }).map_err(custom)?;
+        let service = Service::start_opts(Options { roots_log: cfg.roots_log.clone(), attest, tree, mid_run_load: is_reload, max_root_age_secs: Some(cfg.max_root_age_secs), limits: Some(zilja_node::tracker::Limits { max_pending_banks: cfg.max_pending_banks, max_pending_updates: cfg.max_pending_updates }), threads: cfg.threads, root_every: cfg.root_every }).map_err(custom)?;
         self.resuming.store(service.resumed, Ordering::Relaxed);
         self.snapshot_on_resume.store(cfg.snapshot_on_resume, Ordering::Relaxed);
         let main = rpc::serve_routes(&cfg.bind, service.shared.clone(), rpc::Routes { jsonrpc: true, metrics: false, cors: cfg.cors })
@@ -572,6 +587,15 @@ mod tests {
             sent.iter().any(|e| matches!(e, Event::BankCleared { slot: 77, bank_id: 9 })),
             "banka e pastruar s'arriti te tracker-i: {sent:?}"
         );
+    }
+
+    #[test]
+    fn root_every_is_validated() {
+        let cfg = |extra: &str| serde_json::from_str::<Config>(&format!(r#"{{"libpath": "x"{extra}}}"#)).unwrap();
+        assert_eq!(cfg("").root_every, 4, "parazgjedhja K = 4");
+        assert!(cfg(r#", "root_every": 1"#).validate().is_ok());
+        assert!(cfg(r#", "root_every": 0"#).validate().is_err());
+        assert!(cfg(r#", "root_every": 33"#).validate().is_err());
     }
 
     #[test]

@@ -831,3 +831,51 @@ fn last_timing_reports_phases_and_checkpoints() {
     assert_eq!(ckpts, vec![16, 32], "checkpoint çdo 16 slote");
     assert!(reads > 0, "faqet e thella lexohen nga disku (cache_depth 8)");
 }
+
+/// Checkpoint-i në sfond: `commit_slot` s'e bën (vetëm e shënon), `maintenance` e bën me `&self`;
+/// pa `maintenance`, `commit_slot` e bën vetë kur log-u arrin dyfishin e kufirit. Rihapja jep
+/// gjithmonë të njëjtën pemë.
+#[test]
+fn background_checkpoint_is_deferred_and_bounded() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut rng = StdRng::seed_from_u64(77);
+    let mut keys = Vec::new();
+    let mut mem = Tree::new();
+    let mut o = opts(4, 4);
+    o.ckpt_every = 10;
+    let mut t = PageTree::open(dir.path(), o.clone()).unwrap();
+    t.set_background_maintenance(true);
+    t.finish_snapshot(0, true).unwrap();
+    let log_len = |d: &std::path::Path| std::fs::metadata(d.join("meta.log")).unwrap().len();
+    for slot in 1..=10u64 {
+        let b = random_batch(&mut rng, &mut keys, 50);
+        t.apply_slot(slot, b.clone(), None).unwrap();
+        mem.apply_batch(b);
+        if slot < 10 {
+            assert!(!t.maintenance().unwrap(), "s'ka checkpoint para slotit 10");
+        }
+    }
+    assert!(log_len(dir.path()) > 0, "commit_slot s'e bën checkpoint-in");
+    assert!(t.maintenance().unwrap());
+    assert_eq!(log_len(dir.path()), 0, "maintenance e zbrazi log-un");
+    assert!(!t.maintenance().unwrap());
+    // Pa maintenance: 19 rekorde mbeten në log, i 20-ti e detyron checkpoint-in brenda commit_slot.
+    for slot in 11..=29u64 {
+        let b = random_batch(&mut rng, &mut keys, 50);
+        t.apply_slot(slot, b.clone(), None).unwrap();
+        mem.apply_batch(b);
+    }
+    assert!(log_len(dir.path()) > 0);
+    let b = random_batch(&mut rng, &mut keys, 50);
+    t.apply_slot(30, b.clone(), None).unwrap();
+    mem.apply_batch(b);
+    assert_eq!(log_len(dir.path()), 0, "kufiri i dyfishtë e detyron checkpoint-in");
+    let b = random_batch(&mut rng, &mut keys, 50);
+    t.apply_slot(31, b.clone(), None).unwrap();
+    mem.apply_batch(b);
+    drop(t);
+    let t = PageTree::open(dir.path(), o).unwrap();
+    assert_eq!(t.version(), Some(31));
+    assert_eq!(t.root(), mem.root());
+    t.verify_integrity().unwrap();
+}

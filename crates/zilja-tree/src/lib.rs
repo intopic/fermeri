@@ -310,6 +310,15 @@ pub trait StateTree: Send + Sync {
         let (ups, fp) = *p.downcast::<(Vec<Update>, Option<Fingerprint>)>().map_err(|_| "commit_slot: përgatitje e gabuar")?;
         self.apply_slot(slot, ups, fp)
     }
+    /// Kur `true`, punët e rralla e të gjata të ruajtjes (checkpoint-i) s'bëhen brenda
+    /// `commit_slot` (nën kyçin e shkrimit, që ndal dëftesat), por te `maintenance`, që thirret
+    /// me `&self` pasi kyçi lëshohet. Parazgjedhja s'ka asgjë të tillë.
+    fn set_background_maintenance(&mut self, _on: bool) {}
+    /// Bën punën e shtyrë nga `commit_slot`, nëse ka (`true` kur bëri diçka). Thirret nga i
+    /// njëjti thread që bën commit, kurrë njëkohësisht me `commit_slot`.
+    fn maintenance(&self) -> Result<bool, String> {
+        Ok(false)
+    }
     /// Dëftesa në slotin e fundit (`at = None`) ose në një slot të kaluar.
     fn prove_at(&self, key: &Key, at: Option<u64>) -> Result<ProofAt, ProveError>;
     /// Slotet për të cilat mund të jepen dëftesa: (më i vjetri, më i riu).

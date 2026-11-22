@@ -46,6 +46,9 @@ pub enum Event {
 /// Gjurma e zinxhirit: (slot, bank_hash). Ruhet me pemën dhe kontrollohet pas rinisjes.
 pub type Fingerprint = zilja_tree::Fingerprint;
 
+/// Paraardhësit e një banke nga SlotHashes: (slot, bank_hash), nga më i riu.
+type Ancestors = Vec<(Slot, [u8; 32])>;
+
 #[derive(Debug, PartialEq)]
 pub enum Output {
     /// Pema fillestare nga snapshot-i: (sloti i llogarisë, ndryshimi).
@@ -128,7 +131,20 @@ pub struct Tracker {
     /// A18: ndryshimet e llogarive në pritje (në të gjitha bankat e parrënjosura).
     pending_updates: usize,
     broken: bool,
+    /// Grupimi i sloteve: root-i del vetëm për slotin e fundit kanonik të çdo dritareje prej
+    /// `root_every` slotesh (kufiri = shumëfish i `root_every`). 0 ose 1 = çdo slot i rrënjosur.
+    root_every: u64,
+    /// Dritarja e hapur: (dritarja, sloti i fundit i rrënjosur në të, slote, ndryshimet e bashkuara).
+    group: Option<Group>,
     pub stats: TrackerStats,
+}
+
+#[derive(Debug)]
+struct Group {
+    window: u64,
+    last_slot: Slot,
+    slots: usize,
+    updates: HashMap<Key, Option<AccountMeta>>,
 }
 
 impl Tracker {
@@ -143,6 +159,19 @@ impl Tracker {
 
     pub fn set_mid_run_load(&mut self, v: bool) {
         self.mid_run_load = v;
+    }
+
+    /// Grupimi i sloteve (`root_every` = K): një root për slotin e fundit kanonik të çdo dritareje
+    /// `((n−1)·K, n·K]`. I njëjti rregull në çdo nyje jep root-e te të njëjtat slote, sido që
+    /// validatori t'i njoftojë rrënjosjet (një nga një ose disa bashkë). 0 ose 1 = çdo slot.
+    pub fn set_root_every(&mut self, k: u64) {
+        self.root_every = k.max(1);
+    }
+
+    /// Dritarja e slotit `s` për grupimin: `ceil(s / K)`. Kufiri i dritares `n` është sloti `n·K`.
+    fn window(&self, s: Slot) -> u64 {
+        let k = self.root_every.max(1);
+        s.div_ceil(k)
     }
 
     /// A18: vendos buxhetin e kujtesës.
@@ -530,14 +559,38 @@ impl Tracker {
         // lidhjen BankId → hash-i i bankës; hash-i nxirret nga SlotHashes i pasardhësve, të cilët
         // lidhen me slotin, jo me BankId-në. Vetëm me një bankë të vetme në slot ky hash është i saji.
         let live_at_slot = self.banks.values().filter(|b| b.slot == slot && !b.dead).count();
-        let slots_in_batch = chain.len();
-        let mut merged: HashMap<Key, Option<AccountMeta>> = HashMap::new();
+        // Grupimi: bankat e zinxhirit (nga më e vjetra) ndahen sipas dritareve. Një dritare mbyllet kur
+        // arrin kufirin (sloti n·K) ose kur vjen një bankë e dritares tjetër; e fundit, e pambyllur,
+        // mbetet e hapur për rrënjosjen e radhës. Me K = 1 çdo slot mbyllet menjëherë.
+        let k = self.root_every.max(1);
+        let mut closed: Vec<Group> = Vec::new();
+        // Gjurmët e mundshme për slotet e grupeve: hash-et e paraardhësve në bankat e zinxhirit.
+        let mut chain_anc: Vec<(Slot, Ancestors)> = Vec::new();
+        let mut live_at: HashMap<Slot, usize> = HashMap::new();
+        for b in self.banks.values().filter(|b| !b.dead && b.slot <= slot) {
+            *live_at.entry(b.slot).or_default() += 1;
+        }
         for b in &chain {
             if let Some(bank) = self.banks.remove(b) {
-                for (k, (_, m)) in bank.updates {
-                    merged.insert(k, m);
+                let w = self.window(bank.slot);
+                if k > 1 && self.group.as_ref().is_some_and(|g| g.window != w) {
+                    closed.push(self.group.take().unwrap());
                 }
+                let g = self.group.get_or_insert_with(|| Group { window: w, last_slot: bank.slot, slots: 0, updates: HashMap::new() });
+                g.last_slot = bank.slot;
+                g.slots += 1;
+                for (key, (_, m)) in bank.updates {
+                    g.updates.insert(key, m);
+                }
+                if k > 1 && bank.slot.is_multiple_of(k) {
+                    closed.push(self.group.take().unwrap());
+                }
+                chain_anc.push((bank.slot, bank.ancestors));
             }
+        }
+        // K = 1: si më parë, një Rooted i vetëm për gjithë zinxhirin.
+        if k <= 1 {
+            closed.extend(self.group.take());
         }
         // Hidh fork-et e braktisura.
         let before = self.banks.len();
@@ -565,8 +618,33 @@ impl Tracker {
         }
         self.last_fp = fingerprint;
         // A18: ndryshimet në pritje pas heqjes së zinxhirit dhe të fork-eve.
-        self.pending_updates = self.banks.values().map(|b| b.updates.len()).sum();
-        vec![Output::Rooted { slot, slots_in_batch, updates: merged.into_iter().collect(), fingerprint }]
+        self.pending_updates = self.banks.values().map(|b| b.updates.len()).sum::<usize>() + self.group.as_ref().map_or(0, |g| g.updates.len());
+        closed
+            .into_iter()
+            .map(|g| {
+                let fp = if g.last_slot == slot {
+                    fingerprint
+                } else {
+                    // Sloti i grupit është nën S: hash-i i bankës së tij nga SlotHashes i pasardhësve
+                    // (bankat e zinxhirit pas tij dhe ato që mbetën), vetëm kur është i vetëm dhe i qartë.
+                    let mut seen: Vec<[u8; 32]> = chain_anc
+                        .iter()
+                        .filter(|(s, _)| *s > g.last_slot)
+                        .flat_map(|(_, a)| a.iter())
+                        .chain(self.banks.values().filter(|b| !b.dead).flat_map(|b| b.ancestors.iter()))
+                        .filter(|(s, _)| *s == g.last_slot)
+                        .map(|(_, h)| *h)
+                        .collect();
+                    seen.sort();
+                    seen.dedup();
+                    match seen.as_slice() {
+                        [h] if live_at.get(&g.last_slot).copied().unwrap_or(0) <= 1 => Some((g.last_slot, *h)),
+                        _ => None,
+                    }
+                };
+                Output::Rooted { slot: g.last_slot, slots_in_batch: g.slots, updates: g.updates.into_iter().collect(), fingerprint: fp }
+            })
+            .collect()
     }
 }
 
@@ -644,6 +722,70 @@ mod tests {
         // Rooted i vjetër: injorohet.
         assert!(t.handle(status(12, Some(11), Some(2), Status::Rooted)).is_empty());
         assert_eq!(t.stats.stale_roots_ignored, 1);
+    }
+
+    /// Zinxhiri 10 → 11 → … → `to`, një llogari për slot (çelësi = sloti % 4, vlera = sloti).
+    fn chain(t: &mut Tracker, from: Slot, to: Slot, skip: &[Slot]) {
+        let mut parent = from - 1;
+        for s in from..=to {
+            if skip.contains(&s) {
+                continue;
+            }
+            t.handle(status(s, Some(parent), Some(s), Status::CreatedBank));
+            t.handle(acc(s, s, (s % 4) as u8, s, s));
+            parent = s;
+        }
+    }
+    fn rooted_all(out: Vec<Output>) -> Vec<(Slot, usize, Vec<Update>)> {
+        out.into_iter()
+            .map(|o| match o {
+                Output::Rooted { slot, slots_in_batch, updates, .. } => (slot, slots_in_batch, sorted(updates)),
+                x => panic!("pritej Rooted, erdhi {x:?}"),
+            })
+            .collect()
+    }
+
+    /// Grupimi K = 4: root-e vetëm te kufijtë 12 dhe 16, me ndryshimet e bashkuara, sido që
+    /// rrënjosjet të vijnë një nga një apo të gjitha bashkë (të njëjtat root-e në çdo nyje).
+    #[test]
+    fn root_every_k_is_deterministic() {
+        let mut one = started(10);
+        one.set_root_every(4);
+        chain(&mut one, 11, 17, &[]);
+        let mut a = Vec::new();
+        for s in 11..=17 {
+            a.extend(rooted_all(one.handle(status(s, Some(s - 1), Some(s), Status::Rooted))));
+        }
+        let mut all = started(10);
+        all.set_root_every(4);
+        chain(&mut all, 11, 17, &[]);
+        let b = rooted_all(all.handle(status(17, Some(16), Some(17), Status::Rooted)));
+        let want = vec![
+            (12, 2, sorted(vec![(key(3), meta(11)), (key(0), meta(12))])),
+            (16, 4, sorted(vec![(key(1), meta(13)), (key(2), meta(14)), (key(3), meta(15)), (key(0), meta(16))])),
+        ];
+        assert_eq!(a, want);
+        assert_eq!(b, want);
+        // Sloti 17 mbetet në dritaren e hapur: del te kufiri 20 bashkë me 18–20.
+        assert_eq!(one.pending_updates(), 1);
+        chain(&mut one, 18, 20, &[]);
+        let c = rooted_all(one.handle(status(20, Some(19), Some(20), Status::Rooted)));
+        assert_eq!(c, vec![(20, 4, sorted(vec![(key(1), meta(17)), (key(2), meta(18)), (key(3), meta(19)), (key(0), meta(20))]))]);
+        assert_eq!(one.pending_updates(), 0);
+    }
+
+    /// Kufiri i kapërcyer (sloti 16 pa bllok): dritarja mbyllet te sloti i fundit kanonik (15),
+    /// kur vjen banka e parë e dritares tjetër.
+    #[test]
+    fn root_every_k_skipped_boundary_closes_at_last_slot() {
+        let mut t = started(10);
+        t.set_root_every(4);
+        chain(&mut t, 11, 17, &[16]);
+        let r = rooted_all(t.handle(status(15, Some(14), Some(15), Status::Rooted)));
+        assert_eq!(r.iter().map(|x| x.0).collect::<Vec<_>>(), vec![12], "15 pret: dritarja 13–16 s'është mbyllur");
+        let r = rooted_all(t.handle(status(17, Some(15), Some(17), Status::Rooted)));
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].0, r[0].1), (15, 3));
     }
 
     #[test]

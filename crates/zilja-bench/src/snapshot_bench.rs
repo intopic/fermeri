@@ -429,7 +429,7 @@ fn gen_updates(n: usize, sample: &mut Vec<Key>, rng: &mut StdRng) -> Vec<Update>
 
 fn parse_args() -> Result<Args, String> {
     let a: Vec<String> = std::env::args().skip(1).collect();
-    let usage = "përdorimi: zilja-snapshot-bench <snapshot.tar.zst> <db_dir> [--out results.csv] [--cache-depth 20] [--slots 300] [--updates 5000,15000,30000] [--proofs 5000] [--sample 500000] [--limit N] [--ingest-only] [--seed 1] [--slot S] [--cold none|profile|slot] [--rpc-clients 1,8,32,128] [--rpc-seconds 30] [--rpc-slot-ms 400] [--rpc-slot-updates 5000] [--rpc-verify-every 100] [--rpc-multi-keys 10] [--rpc-one-ip] [--batch 1:1502,2:2340,4:3827,8:6134]\n<snapshot.tar.zst> mund të jetë `-` (stdin): curl -sL URL | zilja-snapshot-bench - <db_dir> --limit 3000000 …";
+    let usage = "përdorimi: zilja-snapshot-bench <snapshot.tar.zst> <db_dir> [--out results.csv] [--cache-depth 20] [--slots 300] [--updates 5000,15000,30000] [--proofs 5000] [--sample 500000] [--limit N] [--ingest-only] [--seed 1] [--slot S] [--cold none|profile|slot] [--rpc-clients 1,8,32,128] [--rpc-seconds 30] [--rpc-slot-ms 200] [--rpc-slot-updates 5000] [--rpc-root-every 4] [--rpc-verify-every 100] [--rpc-multi-keys 10] [--rpc-one-ip] [--batch 1:1502,2:2340,4:3827,8:6134]\n<snapshot.tar.zst> mund të jetë `-` (stdin): curl -sL URL | zilja-snapshot-bench - <db_dir> --limit 3000000 …";
     if a.len() < 2 {
         return Err(usage.into());
     }
@@ -447,7 +447,7 @@ fn parse_args() -> Result<Args, String> {
         seed: 1,
         slot: None,
         cold: Cold::None,
-        rpc: snapshot_rpc::RpcOpts { clients: vec![], seconds: 30, slot_ms: 400, slot_updates: 5_000, verify_every: 100, multi_keys: 10, one_ip: false },
+        rpc: snapshot_rpc::RpcOpts { clients: vec![], seconds: 30, slot_ms: 200, slot_updates: 5_000, verify_every: 100, multi_keys: 10, one_ip: false, root_every: 1 },
         batch: vec![],
     };
     let mut it = a[2..].iter();
@@ -468,6 +468,7 @@ fn parse_args() -> Result<Args, String> {
             "--rpc-clients" => r.rpc.clients = v()?.split(',').map(|x| x.trim().parse::<usize>().map_err(|e| format!("--rpc-clients: {e}"))).collect::<Result<_, _>>()?,
             "--rpc-seconds" => r.rpc.seconds = v()?.parse().map_err(|e| format!("--rpc-seconds: {e}"))?,
             "--rpc-slot-ms" => r.rpc.slot_ms = v()?.parse().map_err(|e| format!("--rpc-slot-ms: {e}"))?,
+            "--rpc-root-every" => r.rpc.root_every = v()?.parse().map_err(|e| format!("--rpc-root-every: {e}"))?,
             "--rpc-slot-updates" => r.rpc.slot_updates = v()?.parse().map_err(|e| format!("--rpc-slot-updates: {e}"))?,
             "--rpc-verify-every" => r.rpc.verify_every = v()?.parse().map_err(|e| format!("--rpc-verify-every: {e}"))?,
             "--rpc-multi-keys" => r.rpc.multi_keys = v()?.parse().map_err(|e| format!("--rpc-multi-keys: {e}"))?,
@@ -804,7 +805,7 @@ fn run() -> Result<(), String> {
     if !a.rpc.clients.is_empty() {
         phase.store(4, Ordering::Relaxed);
         let (complete, root_now) = (a.limit.is_none(), tree.root());
-        eprintln!("rpc: {:?} klientë × {} s, slot çdo {} ms me {} ndryshime …", a.rpc.clients, a.rpc.seconds, a.rpc.slot_ms, a.rpc.slot_updates);
+        eprintln!("rpc: {:?} klientë × {} s, slot çdo {} ms me {} ndryshime, pema çdo {} slote …", a.rpc.clients, a.rpc.seconds, a.rpc.slot_ms, a.rpc.slot_updates, a.rpc.root_every);
         let r = snapshot_rpc::run(Box::new(tree), complete, slot, root_now, pubs, sample, &a.rpc, a.seed, a.cold, &pages);
         match r {
             Ok(v) => summary["rpc"] = v,
@@ -932,7 +933,7 @@ mod tests {
 
         // R9: faza RPC mbi të njëjtën pemë, me slote në sfond: çdo përgjigje verifikohet.
         let tks: Vec<Key> = sample.iter().map(tree_key).collect();
-        let o = snapshot_rpc::RpcOpts { clients: vec![1, 4], seconds: 1, slot_ms: 50, slot_updates: 20, verify_every: 1, multi_keys: 5, one_ip: true };
+        let o = snapshot_rpc::RpcOpts { clients: vec![1, 4], seconds: 1, slot_ms: 50, slot_updates: 20, verify_every: 1, multi_keys: 5, one_ip: true, root_every: 2 };
         let r = snapshot_rpc::run(Box::new(tree), true, 300, root, sample, tks, &o, 1, Cold::None, &dir.path().join("pages.dat")).unwrap();
         let lv = r["levels"].as_array().unwrap();
         assert_eq!(lv.len(), 3, "1, 4 dhe 4 nga një IP");

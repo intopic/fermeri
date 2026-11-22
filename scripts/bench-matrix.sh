@@ -34,9 +34,10 @@
 #   PROOFS=20000
 #   RPC_CLIENTS=1,8,32,128        (R9: dëftesa nga shumë klientë njëkohësisht mbi HTTP, në çdo rast;
 #   RPC_SECONDS=30                 bosh = pa këtë fazë). Gjatë saj zilja zbaton një slot çdo
-#   RPC_SLOT_MS=400                RPC_SLOT_MS me RPC_SLOT_UPDATES ndryshime, si në Mainnet, dhe
+#   RPC_SLOT_MS=200                RPC_SLOT_MS me RPC_SLOT_UPDATES ndryshime, si në Mainnet, dhe
 #   RPC_SLOT_UPDATES=5000          mat edhe një klient të madh nga NJË IP (kufiri i prodhimit:
 #   RPC_ONE_IP=1                   2 lidhje njëkohësisht). 1 në 100 përgjigje verifikohet plotësisht.
+#   RPC_ROOT_EVERY=4               Pema përditësohet çdo K slote (grupimi, SPEC §3); 1 = çdo slot.
 #   BATCH=                        grupimi i sloteve, K:U (U = llogari unike për grup), p.sh. sipas
 #                                 matjes së Mainnet-it: BATCH=1:1502,2:2340,4:3827,8:6134 (bosh = pa këtë fazë)
 #   BIN=target/release/zilja-snapshot-bench (ndërtohet nëse mungon)
@@ -159,15 +160,16 @@ COLD_SAMPLE="${COLD_SAMPLE:-5000000}"
 PROOFS="${PROOFS:-20000}"
 RPC_CLIENTS="${RPC_CLIENTS-1,8,32,128}"
 RPC_SECONDS="${RPC_SECONDS:-30}"
-RPC_SLOT_MS="${RPC_SLOT_MS:-400}"
+RPC_SLOT_MS="${RPC_SLOT_MS:-200}"
 RPC_SLOT_UPDATES="${RPC_SLOT_UPDATES:-5000}"
 RPC_ONE_IP="${RPC_ONE_IP:-1}"
+RPC_ROOT_EVERY="${RPC_ROOT_EVERY:-4}"
 BATCH="${BATCH:-}"
 BATCH_ARGS=()
 [ -n "$BATCH" ] && BATCH_ARGS=(--batch "$BATCH")
 RPC_ARGS=()
 if [ -n "$RPC_CLIENTS" ]; then
-  RPC_ARGS=(--rpc-clients "$RPC_CLIENTS" --rpc-seconds "$RPC_SECONDS" --rpc-slot-ms "$RPC_SLOT_MS" --rpc-slot-updates "$RPC_SLOT_UPDATES")
+  RPC_ARGS=(--rpc-clients "$RPC_CLIENTS" --rpc-seconds "$RPC_SECONDS" --rpc-slot-ms "$RPC_SLOT_MS" --rpc-slot-updates "$RPC_SLOT_UPDATES" --rpc-root-every "$RPC_ROOT_EVERY")
   [ "$RPC_ONE_IP" = 1 ] && RPC_ARGS+=(--rpc-one-ip)
 fi
 # Listat pranojnë edhe presje (p.sh. LIMITS=1000000,full), që të kalojnë lehtë nëpër `env`.
@@ -234,7 +236,7 @@ case "$SNAP" in *mainnet*) echo mainnet > "$OUT/network" ;; *testnet*) echo test
 # Matrix-i mund të niset disa herë në të njëjtën dosje me parametra të ndryshëm (rastet e mbaruara
 # kapërcehen, snapshot-i ripërdoret): çdo nisje shtohet te runs.log; parametrat e çdo rasti janë te
 # <rasti>/summary.json.
-echo "$(date -Is) BENCH_GROUPS='$BENCH_GROUPS' LIMITS='$LIMITS' CASE_LIMIT=$CASE_LIMIT COLD_LIMIT=$COLD_LIMIT COLD_MODES='$COLD_MODES' CACHE_DEPTHS='$CACHE_DEPTHS' SEEDS='$SEEDS' UPDATES=$UPDATES SLOTS=$SLOTS SAMPLE=$SAMPLE COLD_SAMPLE=$COLD_SAMPLE PROOFS=$PROOFS RPC_CLIENTS=$RPC_CLIENTS RPC_SECONDS=$RPC_SECONDS RPC_SLOT_MS=$RPC_SLOT_MS RPC_SLOT_UPDATES=$RPC_SLOT_UPDATES RPC_ONE_IP=$RPC_ONE_IP BATCH=$BATCH" >> "$OUT/runs.log"
+echo "$(date -Is) BENCH_GROUPS='$BENCH_GROUPS' LIMITS='$LIMITS' CASE_LIMIT=$CASE_LIMIT COLD_LIMIT=$COLD_LIMIT COLD_MODES='$COLD_MODES' CACHE_DEPTHS='$CACHE_DEPTHS' SEEDS='$SEEDS' UPDATES=$UPDATES SLOTS=$SLOTS SAMPLE=$SAMPLE COLD_SAMPLE=$COLD_SAMPLE PROOFS=$PROOFS RPC_CLIENTS=$RPC_CLIENTS RPC_SECONDS=$RPC_SECONDS RPC_SLOT_MS=$RPC_SLOT_MS RPC_SLOT_UPDATES=$RPC_SLOT_UPDATES RPC_ONE_IP=$RPC_ONE_IP RPC_ROOT_EVERY=$RPC_ROOT_EVERY BATCH=$BATCH" >> "$OUT/runs.log"
 {
   echo "data: $(date -Is)"
   echo "git: $(cd "$ROOT" && git rev-parse --short HEAD 2>/dev/null) $(cd "$ROOT" && git status --porcelain 2>/dev/null | grep -q . && echo '(me ndryshime lokale)')"

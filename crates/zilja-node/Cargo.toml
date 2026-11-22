@@ -16,6 +16,7 @@ serde_json = { workspace = true }
 bs58 = { workspace = true }
 hex = { workspace = true }
 log = { workspace = true }
+libc = "0.2"
 
 
 [dev-dependencies]

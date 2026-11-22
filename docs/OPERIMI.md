@@ -83,7 +83,7 @@ Pra, pas një ndalimi mjafton **një rinisje** e validatorit.
 - Pas rinisjes, gjendja nga disku **s'shërbehet** derisa banka e parë e re ta konfirmojë. Kjo
   zgjat zakonisht pak sekonda.
 - `max_root_age_secs` (parazgjedhja 60, 0 = pa kontroll): rrënjosja në Solana ndodh çdo
-  ~0.4 s, ndaj 60 s pa root të ri do të thotë që zilja ose validatori kanë mbetur pas. Gjatë kësaj
+  ~0.4 s (në Alpenglow ~0.2 s, dhe me `root_every: 4` një root çdo ~0.8 s), ndaj 60 s pa root të ri do të thotë që zilja ose validatori kanë mbetur pas. Gjatë kësaj
   kohe RPC-ja përgjigjet ende, me slotin në çdo përgjigje, por `/health` = 503 i largon
   klientët nga kjo zile.
 - **Punëtori bie** (panic) ose mbaron papritur: kalon nëpër të njëjtën rrugë ndalimi
@@ -346,6 +346,8 @@ nuk mjafton: `ok` / kodi 0 kërkon që të kalojnë katër kontrolle të ndara.
 
 - `cache_depth`: 12–24. Me ~2^thellësi nyje në RAM, 20 do të thotë ~1M nyje (~150 MB).
 - `history_slots`: ≤ 100 000. Dëftesat historike jepen vetëm për 1024 slotet e fundit (root-et në RAM), ndaj vlera mbi 1024 s'i zgjat; `provableFrom` tregon kufirin e vërtetë (G06).
+- `root_every`: 1–32, parazgjedhja 4. Pema përditësohet dhe root-i firmoset vetëm te slotet `slot % K == 0` (SPEC §3): me slote 200 ms, një root çdo ~0.8 s, me ~2.2 herë më pak punë për slot se K = 1 (matja te `bench-results/`). **Të gjitha zilet e një kuorumi duhet ta kenë të njëjtin K**, që firmat të bien mbi të njëjtat slote. Ndryshimi i K kërkon vetëm rinisje: pema në disk mbetet e vlefshme.
+- Prioriteti: përditësimi i pemës fiton kundrejt dëftesave. Checkpoint-i (rrallë, ~çdo 256 root-e) bëhet pas commit-it nën kyçin e leximit, ndaj dëftesat s'presin (`zilja_bg_checkpoints`, `zilja_last_checkpoint_us`); punëtorët HTTP kanë `nice` +5, që kur bërthamat janë të zëna thread-i i pemës dhe validatori të shkojnë të parët.
 - `block_cache_mb`: s'ekziston më (RocksDB u hoq); refuzohet me mesazh.
 - `threads` (L2): thread-et e pool-it Rayon të pemës. Mungon ose 0 = sa bërthama ka makina (si më parë). Në një validator me bërthama të zëna mund të kufizohet, p.sh. `"threads": 8`; vlera mbi numrin e bërthamave kufizohet te ai numër.
 
@@ -561,14 +563,15 @@ Profilet: 1 000 – 100 000 ndryshime/slot, 1 024 slote secili (≥ 4 checkpoint
 
 Në fund të çdo rasti, **dëftesa nga shumë klientë njëkohësisht** (R9): pema e rastit i jepet serverit
 të vërtetë HTTP të zilës (8 punëtorë, afati 5 s, pa keep-alive, si në prodhim), dhe 1, 8, 32, 128
-klientë e pyesin për 30 s secili. Ndërkohë zilja zbaton një slot çdo 400 ms me 5 000 ndryshime, me
+klientë e pyesin për 30 s secili. Ndërkohë zilja merr një slot çdo 200 ms me 5 000 ndryshime dhe,
+si në prodhim me `root_every: 4`, e përditëson pemën çdo 4 slote me ndryshimet e bashkuara, me
 të njëjtën rrugë si plugin-i, që të shihet edhe a mbetet prapa nën ngarkesë. Përzierja: 60% dëftesa
 për llogari ekzistuese (pubkey të vërteta nga snapshot-i), 10% që s'ekzistojnë, 15% historike, 15%
 multi-proof me 10 llogari. Një nga 100 përgjigje verifikohet plotësisht (dëftesa kundër root-it dhe
 root-i kundër atij që zilja llogariti për atë slot); një e pavlefshme e ndal bench-in. Në fund, një
 matje shtesë me kufirin e prodhimit për **një IP** (2 lidhje njëkohësisht), si një klient i madh pas
 një adrese të vetme. Ndryshoret: `RPC_CLIENTS`, `RPC_SECONDS`, `RPC_SLOT_MS`, `RPC_SLOT_UPDATES`,
-`RPC_ONE_IP`; `RPC_CLIENTS=` (bosh) e heq këtë fazë.
+`RPC_ONE_IP`, `RPC_ROOT_EVERY`; `RPC_CLIENTS=` (bosh) e heq këtë fazë.
 Të gjitha ndryshohen me ndryshore, p.sh. vetëm Mainnet i plotë, ngrohtë dhe ftohtë:
 `BENCH_GROUPS="size cold" LIMITS=full scripts/bench-matrix.sh https://api.mainnet-beta.solana.com/snapshot.tar.bz2 ~/zilja-mainnet`.
 Komanda mund të niset sërish pas një ndërprerjeje: rastet e mbaruara kapërcehen.

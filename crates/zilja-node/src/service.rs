@@ -87,6 +87,9 @@ pub struct Metrics {
     pub last_apply_us: AtomicU64,
     pub max_apply_us: AtomicU64,
     pub total_apply_us: AtomicU64,
+    /// Checkpoint-et e bëra jashtë kyçit të shkrimit (dëftesat s'presin) dhe koha e të fundit.
+    pub bg_checkpoints: AtomicU64,
+    pub last_checkpoint_us: AtomicU64,
     pub events_received: AtomicU64,
     pub missing_parents: AtomicU64,
     pub abandoned_banks: AtomicU64,
@@ -176,7 +179,9 @@ impl Metrics {
             g("accounts", "Numri i llogarive në pemë", &self.accounts),
             g("startup_accounts", "Llogaritë nga snapshot-i", &self.startup_accounts),
             g("startup_build_ms", "Koha e ndërtimit të pemës fillestare (ms)", &self.startup_build_ms),
-            g("batches", "Grupet e aplikuara (një për çdo Rooted)", &self.batches),
+            g("batches", "Grupet e aplikuara (një për çdo dritare root_every)", &self.batches),
+            g("bg_checkpoints", "Checkpoint-et e bëra jashtë kyçit të shkrimit", &self.bg_checkpoints),
+            g("last_checkpoint_us", "Koha e checkpoint-it të fundit në sfond (µs)", &self.last_checkpoint_us),
             g("updates_applied", "Ndryshimet e llogarive të aplikuara gjithsej", &self.updates_applied),
             g("last_batch_updates", "Ndryshimet në grupin e fundit", &self.last_batch_updates),
             g("last_apply_us", "Koha e aplikimit të grupit të fundit (µs)", &self.last_apply_us),
@@ -235,6 +240,11 @@ pub struct Options {
     /// L2: thread-et e pool-it Rayon të pemës (`None` ose 0 = sa bërthama ka makina). Në një
     /// validator, ku bërthamat i duhen edhe vetë validatorit, mund të kufizohet.
     pub threads: Option<usize>,
+    /// Grupimi i sloteve (SPEC §3): pema përditësohet dhe root-i firmoset vetëm te slotet
+    /// kufitare `slot % root_every == 0` (ose te sloti i fundit kanonik i dritares kur kufiri
+    /// kapërcehet). 0 ose 1 = çdo slot i rrënjosur. Të gjitha zilet e një kuorumi duhet ta kenë
+    /// të njëjtin, që firmat të bien mbi të njëjtat slote.
+    pub root_every: u64,
 }
 
 pub struct Service {
@@ -286,11 +296,14 @@ impl Service {
         let mut tracker = Tracker::new();
         tracker.set_mid_run_load(opts.mid_run_load);
         tracker.set_limits(opts.limits.unwrap_or_default());
+        tracker.set_root_every(opts.root_every);
         let attester = match opts.attest {
             Some(a) => Some(Attester::open(a).map_err(std::io::Error::other)?),
             None => None,
         };
-        let tree = opts.tree.unwrap_or_else(|| Box::new(MemTree::new()));
+        let mut tree = opts.tree.unwrap_or_else(|| Box::new(MemTree::new()));
+        // Checkpoint-et jashtë kyçit të shkrimit: worker-i i bën me `maintenance` pas commit-it.
+        tree.set_background_maintenance(true);
         let resume = tree.resume_point();
         {
             let mut st = shared.state.write().unwrap();
@@ -642,6 +655,21 @@ fn worker_loop(rx: Receiver<Event>, shared: Shared, mut log: Option<RootsLog>, m
                     m.max_apply_us.fetch_max(us, Ordering::Relaxed);
                     m.total_apply_us.fetch_add(us, Ordering::Relaxed);
                     write_root(&mut log, slot, &root);
+                    // Checkpoint-i (i rrallë, i gjatë) nën kyçin e leximit: dëftesat vazhdojnë.
+                    let tc = Instant::now();
+                    // Kyçi lëshohet para `match`: `halt` merr kyçin e shkrimit.
+                    let mres = shared.state.read().unwrap().tree.maintenance();
+                    match mres {
+                        Ok(true) => {
+                            m.bg_checkpoints.fetch_add(1, Ordering::Relaxed);
+                            m.last_checkpoint_us.store(tc.elapsed().as_micros() as u64, Ordering::Relaxed);
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            halt(&shared, &mut tracker, format!("checkpoint-i dështoi: {e}"));
+                            break;
+                        }
+                    }
                 }
                 Output::Broken(why) => {
                     halt(&shared, &mut tracker, why);

@@ -54,6 +54,23 @@ Rregullat:
 - Brenda një sloti, për çdo llogari mbetet versioni me `write_version` më të madh.
 - Te snapshot-i fiton versioni me slotin më të madh (F-02).
 
+**Grupimi i sloteve (`root_every` = K, parazgjedhja 4).** Pema s'përditësohet për çdo slot të
+rrënjosur, por një herë për dritare. Dritarja e slotit s është `ceil(s / K)`, pra slotet
+`(n−1)·K + 1 … n·K`, dhe kufiri i saj është `n·K`. Rregullat:
+- Ndryshimet e sloteve kanonike të një dritareje bashkohen sipas radhës së zinxhirit (për çdo
+  llogari mbetet versioni i fundit) dhe aplikohen bashkë.
+- Root-i (dhe firma, §7) llogaritet vetëm te sloti i fundit kanonik i dritares: te `n·K` kur ai
+  slot ka bllok, përndryshe te sloti i fundit para tij, kur rrënjoset sloti i parë i dritares
+  pasardhëse.
+- Dritarja mbyllet sipas zinxhirit, jo sipas radhës së njoftimeve: rrënjosja një nga një dhe
+  rrënjosja e shumë sloteve bashkë japin të njëjtat root-e në të njëjtat slote. Prandaj zile të
+  ndryshme me të njëjtin K firmosin të njëjtat (slot, root).
+- Ndryshimet e dritares së hapur mbahen në RAM dhe s'shërbehen; pas rinisjes ato vijnë sërish nga
+  ledger-i i validatorit, sepse zinxhiri duhet të lidhet me slotin e fundit të pemës.
+- K = 1 është sjellja e mëparshme (një root për çdo njoftim Rooted). Për K > 1, slotet pa root
+  pyeten si më parë: `getAccountProof` me `slot` jep gjendjen e slotit të fundit me root ≤ `slot`
+  (§6), dhe `slot` në përgjigje është ai slot kufitar.
+
 ## 4. Dëftesa (binar)
 
 ```
@@ -156,7 +173,7 @@ gabuar kthejnë `-32602` (L-04). Shih `docs/OPERIMI.md` për portet dhe proxy-n.
 
 Me pemën në disk, `slot` mund të jetë çdo slot brenda kujtesës (`provableFrom` deri te sloti
 i fundit; parazgjedhja 32 slote). `provableFrom` është prerja e dy kufijve: historia e pemës
-(`history_slots`) dhe root-et që zilja mban në RAM (1024 slotet e fundit, dhe pas rinisjes vetëm
+(`history_slots`) dhe root-et që zilja mban në RAM (1024 root-et e fundit, dhe pas rinisjes vetëm
 ato që nga rinisja), ndaj `history_slots` mbi 1024 s'e zgjat dot (G06). Dëftesa jep gjendjen pas slotit të fundit të rrënjosur
 ≤ `slot`, dhe **`slot` në përgjigje është ai slot i rrënjosur** (L-05). Kontrata (A19):
 - `slot` nën kujtesë → `-32007` (jashtë historisë);
@@ -204,7 +221,8 @@ dëftesat merren nga i njëjti root:
 ```
 
 Pa parametër: sloti i fundit, me edhe `"accounts"` (numri i llogarive të pemës aktuale). Me
-`slot`: root-i i atij sloti nga unaza e 1024 sloteve të fundit, ose `-32005` kur s'është aty;
+`slot`: root-i i atij sloti nga unaza e 1024 root-eve të fundit (me K = 4, ~4096 slote), ose `-32005`
+kur s'është aty, edhe për një slot pa root brenda dritares (vetëm slotet kufitare kanë root, §3);
 mbi slotin e fundit `-32008`. A19: një root historik **s'ka** `accounts`, sepse ai numër është
 i pemës aktuale, jo i asaj pamjeje. Më shumë se një parametër → `-32602`.
 

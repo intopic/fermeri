@@ -20,7 +20,7 @@
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -42,6 +42,9 @@ pub struct RpcOpts {
     pub verify_every: u64,
     pub multi_keys: usize,
     pub one_ip: bool,
+    /// Grupimi i sloteve (SPEC §3): pema përditësohet vetëm te slotet `slot % K == 0`, me
+    /// ndryshimet e K sloteve të bashkuara (versioni i fundit i çdo llogarie). 1 = çdo slot.
+    pub root_every: u64,
 }
 
 const KINDS: [&str; 4] = ["current", "missing", "historic", "multi"];
@@ -223,7 +226,7 @@ type WriterLog = Arc<Mutex<(Vec<[f64; 4]>, u64)>>;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
-    tree: Box<dyn StateTree>,
+    mut tree: Box<dyn StateTree>,
     complete: bool,
     slot: u64,
     root: Hash,
@@ -235,6 +238,8 @@ pub fn run(
     pages: &Path,
 ) -> Result<Value, String> {
     let shared = Shared::default();
+    // Si në shërbim: checkpoint-i pas commit-it, nën kyçin e leximit.
+    tree.set_background_maintenance(true);
     {
         let mut st = shared.state.write().unwrap();
         st.tree = tree;
@@ -253,14 +258,16 @@ pub fn run(
     // Shkruesi: slote me ritmin e Mainnet-it, me rrugën e plugin-it (Faster-1).
     let writer = {
         let (shared, cur, lo, stop, wlog, werr) = (shared.clone(), cur.clone(), lo.clone(), stop.clone(), wlog.clone(), werr.clone());
-        let (n, every, pages) = (o.slot_updates, Duration::from_millis(o.slot_ms.max(1)), pages.to_path_buf());
+        let k = o.root_every.max(1);
+        let (n, every, pages) = (o.slot_updates, Duration::from_millis(o.slot_ms.max(1) * k), pages.to_path_buf());
         let mut rng = StdRng::seed_from_u64(seed ^ 0x5107);
         std::thread::spawn(move || {
             while n > 0 && !stop.load(Ordering::Relaxed) {
                 let t0 = Instant::now();
-                let s = cur.load(Ordering::Relaxed) + 1;
-                let mut ups: Vec<Update> = Vec::with_capacity(n);
-                for _ in 0..n {
+                // Kufiri i ardhshëm i dritares: K slote me nga `n` ndryshime, një commit.
+                let s = (cur.load(Ordering::Relaxed) / k + 1) * k;
+                let mut ups: Vec<Update> = Vec::with_capacity(n * k as usize);
+                for _ in 0..n * k as usize {
                     let r: f64 = rng.gen();
                     if r < 0.75 && !sample.is_empty() {
                         ups.push((sample[rng.gen_range(0..sample.len())], Some(rand_meta(&mut rng))));
@@ -272,6 +279,14 @@ pub fn run(
                         let i = rng.gen_range(0..sample.len());
                         ups.push((sample.swap_remove(i), None));
                     }
+                }
+                if k > 1 {
+                    // Si tracker-i: për çdo llogari mbetet versioni i fundit i dritares.
+                    let mut last: HashMap<Key, usize> = HashMap::with_capacity(ups.len());
+                    for (i, u) in ups.iter().enumerate() {
+                        last.insert(u.0, i);
+                    }
+                    ups = ups.into_iter().enumerate().filter(|(i, u)| last[&u.0] == *i).map(|(_, u)| u).collect();
                 }
                 if cold == Cold::Slot {
                     if let Err(e) = drop_os_cache(&pages) {
@@ -298,6 +313,11 @@ pub fn run(
                         drop(st);
                         lo.store(l, Ordering::Relaxed);
                         cur.store(s, Ordering::Relaxed);
+                        let mres = shared.state.read().unwrap().tree.maintenance();
+                        if let Err(e) = mres {
+                            *werr.lock().unwrap() = Some(format!("checkpoint pas slotit {s}: {e}"));
+                            break;
+                        }
                     }
                     Err(e) => {
                         *werr.lock().unwrap() = Some(format!("slot {s}: {e}"));
@@ -421,7 +441,7 @@ pub fn run(
     }
     let out = json!({
         "mix": {"current": 0.60, "missing": 0.10, "historic": 0.15, "multi": 0.15, "multi_keys": o.multi_keys},
-        "slot_ms": o.slot_ms, "slot_updates": o.slot_updates, "server_workers": 8, "keep_alive": false,
+        "slot_ms": o.slot_ms, "slot_updates": o.slot_updates, "root_every": o.root_every, "server_workers": 8, "keep_alive": false,
         "levels": levels,
     });
     if !invalid_all.is_empty() {
